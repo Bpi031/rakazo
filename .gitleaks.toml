@@ -1,0 +1,31 @@
+title = "Rost managed Rakazo credential checks"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Exact upstream synthetic fixture strings, never deployment credentials"
+regexTarget = "secret"
+regexes = [
+  '''^sk-test-key-12345678$''',
+  '''^sk-test-api-key-12345678$''',
+  '''^synthetic-key-123$''',
+  '''^synthetic-eval-encryption-key-at-least-32-characters$''',
+  '''^replace-with-32-plus-character-secret$''',
+]
+
+[[rules]]
+id = "rost-requesty-api-key"
+description = "Requesty API credential"
+regex = '''rqsty-sk-[A-Za-z0-9+/=_-]{20,}'''
+keywords = ["rqsty-sk-"]
+
+[[rules]]
+id = "rost-solver-license-fields"
+description = "Commercial solver activation or access fields"
+regex = '''(?mi)^\s*(?:KEY|CKEY|HOSTID|LICENSEID|WLSACCESSID|WLSSECRET|CSAPIACCESSID|CSAPISECRET|CLOUDACCESSID|CLOUDSECRET)\s*=\s*[A-Za-z0-9_+/=-]{6,}\s*$'''
+
+[[rules]]
+id = "rost-machine-license-header"
+description = "Machine-bound solver license header"
+regex = '''(?mi)^\s*TYPE\s*=\s*NODE\s*$'''

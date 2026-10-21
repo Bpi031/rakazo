@@ -1,0 +1,16 @@
+/* Adapted from CopilotKit/OpenBot (MIT), layout/stagger.tsx and lib/motion.ts.
+ * Copyright (c) 2026 CopilotKit. See OPENBOT_LICENSE.txt beside this file.
+ * CSS replaces motion/react to use the existing bundle and accessibility model. */
+@keyframes workspace-enter { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+.workspace-enter { animation: workspace-enter 200ms cubic-bezier(.23,1,.32,1) both; }
+.workspace-panel-enter { animation: workspace-enter 180ms cubic-bezier(.23,1,.32,1) both; }
+/* Stable message keys keep this entrance from replaying during streaming/refetch. */
+.workspace-message-enter { animation: workspace-enter 200ms cubic-bezier(.23,1,.32,1) backwards; }
+[data-agent-report] button, [data-agent-report] input {
+  transition: background-color 120ms ease-out, border-color 120ms ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .workspace-enter, .workspace-panel-enter, .workspace-message-enter { animation: none; }
+  [data-agent-report] button, [data-agent-report] input { transition: none; }
+  [data-testid="bots-sidebar"] { transition: none !important; }
+}

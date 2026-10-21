@@ -1,0 +1,76 @@
+import assert from 'node:assert/strict';
+import type {PrismaClient} from '@rakazo/db';
+import type {Actor} from '@rakazo/contracts';
+import {NativeControl} from './native-control.js';
+
+export async function nativeChecks(db:PrismaClient, actor:Actor, other:Actor, botId:string) {
+  process.env.ROST_AGENT_NATIVE='1';
+  let checks=0;
+  const ok=(v:unknown)=>{assert.ok(v);checks++;};
+  const reject=async(p:Promise<unknown>)=>{await assert.rejects(p);checks++;};
+  const service=new NativeControl(db, {async *execute(_c:unknown, command:any) {
+    const v=JSON.parse(Buffer.from(command.argv[4],'base64').toString());
+    yield {type:'stdout',data:JSON.stringify(v.operation==='read'?{text:'Private source'}:{files:v.paths.map((path:string)=>({path,sha256:'a'.repeat(64),bytes:5}))})};
+    yield {type:'exit',code:0};
+  }} as any);
+  const bot=await db.bot.findUniqueOrThrow({where:{id:botId},include:{thread:true}});
+  const run=async()=>{
+    const task=await db.task.create({data:{userId:actor.userId,spaceId:actor.spaceId,botId,threadId:bot.thread!.id,prompt:'Offline lifecycle',status:'queued'}});
+    return db.run.create({data:{userId:actor.userId,spaceId:actor.spaceId,botId,threadId:bot.thread!.id,taskId:task.id,trigger:'user',status:'running',leaseOwner:'offline',leaseFence:1,modelId:'test-model',modelProvider:'codex-foundry'}});
+  };
+  const choose=async(preferences:any)=>{
+    const view=await service.view(actor,botId);
+    return service.decide(actor,{operation:'native_settings',botId,revision:(view.preferences as any).revision,preferences});
+  };
+  await reject(service.view(other,botId));
+  await reject(service.decide(other,{operation:'native_settings',botId,revision:0,preferences:{mode:'execute',persistence:true,action:'none'}}));
+  await choose({mode:'plan',persistence:true,action:'none'});
+  await reject(service.decide(actor,{operation:'native_settings',botId,revision:0,preferences:{mode:'execute',persistence:true,action:'none'}}));
+  const first=await run();const prep=await service.prepare(first.id,'fingerprint');
+  ok(prep.mode==='plan'&&!prep.previous);
+  await reject(service.prepare(first.id,'fingerprint'));
+  const concurrent=await run();await reject(service.prepare(concurrent.id,'fingerprint'));
+  await db.run.update({where:{id:concurrent.id},data:{status:'cancelled'}});
+  await service.finish(first.id,{completed:false,paused:true,threadId:'paused-thread',turnId:'question'});
+  await reject(service.prepare(first.id,'fingerprint'));
+  await db.run.update({where:{id:first.id},data:{status:'running',leaseFence:2}});
+  ok(!(await service.prepare(first.id,'fingerprint')).previous);
+  ok((await service.tool(first.id,'workspace_read',{path:'workspace/policy.rost'})).text==='Private source');
+  await reject(service.tool(first.id,'shell',{command:'touch source'}));
+  const claim={schema:'rakazo/completion/v1',kind:'artifacts',outcome:'complete',message:'Draft files',deliverables:[{path:'workspace/draft.xlsx',sha256:'a'.repeat(64)}],evidence:[{kind:'validation',path:'workspace/validation.json',sha256:'a'.repeat(64)}]};
+  ok((await service.receipt(first.id,claim)).status==='files_verified');
+  const view=await service.view(actor,botId);
+  const completion=view.records.find(r=>r.kind==='native_completion')!.payload as any;
+  ok(completion.validationAssessment==='model_supplied_unverified'&&completion.policyApprovalGranted===false);
+  ok((await service.receipt(first.id,{...claim,deliverables:[{path:'workspace/draft.xlsx',sha256:'b'.repeat(64)}]})).status==='needs_review');
+  await reject(service.receipt(first.id,{...claim,deliverables:[]}));
+  await service.finish(first.id,{completed:true,threadId:'native-thread',turnId:'native-turn'});
+  await db.run.update({where:{id:first.id},data:{status:'completed'}});
+  await choose({mode:'execute',persistence:true,action:'fork'});
+  const next=await run();const fork=await service.prepare(next.id,'fingerprint');
+  ok(fork.previous?.threadId==='native-thread'&&fork.action==='fork'&&fork.mode==='plan');
+  ok((await service.view(actor,botId)).preferences && ((await service.view(actor,botId)).preferences as any).action==='none');
+  await db.run.update({where:{id:next.id},data:{status:'cancelled'}});
+  await service.finish(next.id,{completed:true,threadId:'not-resumable',turnId:'cancelled'});
+  const third=await run();ok(!(await service.prepare(third.id,'fingerprint')).previous);
+  await service.finish(third.id,{completed:true,threadId:'n3',turnId:'v3'});
+  await db.run.update({where:{id:third.id},data:{status:'failed'}});
+  const failedParent=await run();ok(!(await service.prepare(failedParent.id,'fingerprint')).previous);
+  await service.finish(failedParent.id,{completed:true,threadId:'n4',turnId:'v4'});
+  await db.run.update({where:{id:failedParent.id},data:{status:'completed'}});
+  const drift=await run();ok(!(await service.prepare(drift.id,'new-fingerprint')).previous);
+  await service.finish(drift.id,{completed:false});
+  await db.run.update({where:{id:drift.id},data:{status:'failed'}});
+  await choose({mode:'execute',persistence:true,action:'compact'});
+  const noContext=await run();await reject(service.prepare(noContext.id,'new-fingerprint'));
+  await db.run.update({where:{id:noContext.id},data:{status:'cancelled'}});
+  await choose({mode:'execute',persistence:true,action:'none'});
+  const beforeClear=await run();await service.prepare(beforeClear.id,'clear-fingerprint');
+  await service.finish(beforeClear.id,{completed:true,threadId:'must-not-resurrect',turnId:'before-clear'});
+  await db.run.update({where:{id:beforeClear.id},data:{status:'completed'}});
+  await db.thread.update({where:{id:bot.thread!.id},data:{historyCompactionGeneration:{increment:1}}});
+  const afterClear=await run();ok(!(await service.prepare(afterClear.id,'clear-fingerprint')).previous);
+  await service.finish(afterClear.id,{completed:false});
+  await db.run.update({where:{id:afterClear.id},data:{status:'cancelled'}});
+  return checks;
+}
