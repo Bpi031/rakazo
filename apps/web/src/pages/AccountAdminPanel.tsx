@@ -77,9 +77,11 @@ export function AccountAdminPanel() {
     const name = view?.members.find((member) => member.userId === action.userId)?.name ?? "Member";
     if (action.kind === "member_role") return `${name}: role → ${action.role}`;
     if (action.kind === "member_state") return `${name}: account → ${action.state}`;
-    if (action.kind === "invite") return `Invite ${action.email} as ${action.role}`;
+    if (action.kind === "invite") return `Invite ${action.email} as ${action.role === "admin" ? "Manager" : "Member"}?`;
     return `Revoke invitation ${view?.invitations.find((invite) => invite.id === action.inviteId)?.email ?? ""}`;
   }
+  const memberInvite = review?.action.kind === "invite" && review.action.role === "member";
+  const managerInvite = review?.action.kind === "invite" && review.action.role === "admin";
   const confirmation = registrationReview
     ? "APPLY REGISTRATION"
     : review
@@ -421,12 +423,15 @@ export function AccountAdminPanel() {
             aria-describedby={undefined}
             className="max-h-[90vh] max-w-lg overflow-auto rounded-lg p-5"
           >
-            <DialogTitle>Review account changes</DialogTitle>
+            <DialogTitle>{memberInvite ? "Review invitation" : "Review account changes"}</DialogTitle>
             <p className="break-words text-sm">
               {registrationReview
                 ? `Public registration: ${registrationReview.enabled ? "Open" : "Closed"}. Admission: ${registrationReview.allowlist.length ? registrationReview.allowlist.join(", ") : "Anyone"}. Existing accounts remain unchanged.`
                 : description(review!.action)}
             </p>
+            {managerInvite && (
+              <p className="text-sm">Managers can administer team members and bots.</p>
+            )}
             {review?.action.kind === "member_state" && review.action.state !== "active" && (
               <p className="text-sm text-destructive">
                 This archives the member’s bots. Active or unknown work blocks the change.
@@ -439,16 +444,18 @@ export function AccountAdminPanel() {
                 {JSON.stringify(registrationReview ?? review?.action, null, 2)}
               </pre>
             </details>
-            <label className="block space-y-1 text-sm">
-              <span>Confirmation</span>
-              <Input
-                aria-label="Account confirmation phrase"
-                placeholder={confirmation}
-                value={phrase}
-                onChange={(e) => setPhrase(e.target.value)}
-                disabled={busy}
-              />
-            </label>
+            {!memberInvite && (
+              <label className="block space-y-1 text-sm">
+                <span>Confirmation</span>
+                <Input
+                  aria-label="Account confirmation phrase"
+                  placeholder={confirmation}
+                  value={phrase}
+                  onChange={(e) => setPhrase(e.target.value)}
+                  disabled={busy}
+                />
+              </label>
+            )}
             <label className="block space-y-1 text-sm">
               <span>Your password</span>
               <Input
@@ -465,7 +472,7 @@ export function AccountAdminPanel() {
                 Cancel
               </Button>
               <Button
-                disabled={busy || phrase !== confirmation || !password}
+                disabled={busy || (!memberInvite && phrase !== confirmation) || !password}
                 onClick={() =>
                   void work(async () => {
                     const result = registrationReview
@@ -477,7 +484,7 @@ export function AccountAdminPanel() {
                       : await accountAdminApi<{ enrollmentToken?: string }>("confirm", {
                           id: review!.id,
                           digest: review!.digest,
-                          phrase,
+                          phrase: memberInvite ? confirmation : phrase,
                           password,
                         });
                     if (
@@ -489,11 +496,11 @@ export function AccountAdminPanel() {
                       setToken(result.enrollmentToken);
                     closeReview();
                     await load();
-                    setNotice("Account settings saved.");
+                    setNotice(memberInvite ? "Invitation created." : "Account settings saved.");
                   })
                 }
               >
-                Apply changes
+                {memberInvite ? "Confirm invite" : "Apply changes"}
               </Button>
             </div>
           </DialogContent>

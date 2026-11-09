@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Archive, Bot, Check, MailPlus, Plus, RefreshCw, Save, Trash2, X } from "lucide-react";
-import { Dialog, DialogContent, DialogTitle } from "@rakazo/ui-web";
+import { Button, Dialog, DialogContent, DialogTitle } from "@rakazo/ui-web";
 import { selectSpace } from "../lib/rpc";
 import { teamApi as api, TeamUnavailable } from "./team-api";
 
@@ -42,6 +42,8 @@ export function TeamSettingsPanel() {
       await refresh(); } catch (e) { setError(String(e)); } finally { setPassword(""); setBusy(false); }
   }
   const propose = (action: unknown) => perform(async () => { const next = await api<Action>("propose", { action }); setSelected(next); setPhrase(""); });
+  const memberInvite = selected?.action.kind === "invite" && selected.action.role === "member";
+  const managerInvite = selected?.action.kind === "invite" && selected.action.role === "admin";
   const own = view?.members.find((member) => member.userId === view.userId);
   const ownBots = own?.bots.filter((bot) => !bot.archived) ?? [];
   if (!view && !error) return <section className="space-y-4 p-5 text-sm">
@@ -89,12 +91,23 @@ export function TeamSettingsPanel() {
       {action.status === "pending" && <button className={icon} title="Review exact action" aria-label="Review exact action" disabled={busy} onClick={() => { setSelected(action); setPhrase(""); }}><Check size={16}/></button>}</div>)}</>}
     <Dialog open={Boolean(selected)} onOpenChange={(open) => { if (!open) { setSelected(null); setPassword(""); } }}>
     {selected && <DialogContent aria-describedby={undefined} className="max-h-[90vh] w-[calc(100%-2rem)] max-w-lg space-y-3 overflow-auto rounded p-5">
-      <DialogTitle className="text-base font-semibold">Confirm Exact Action</DialogTitle><pre className="whitespace-pre-wrap break-all text-xs">{JSON.stringify(selected.action, null, 2)}</pre><code className="block break-all text-xs">{selected.digest}</code>
-      <p className="text-xs">Destructive operations may stop the computer and remove files. Active or unknown solver work blocks them.</p>
-      <input className="w-full border border-border bg-background p-2" aria-label="Exact confirmation phrase" placeholder={"APPLY " + selected.id} value={phrase} onChange={(e) => setPhrase(e.target.value)}/>
+      <DialogTitle className="text-base font-semibold">{memberInvite ? "Review invitation" : "Confirm Exact Action"}</DialogTitle>
+      {memberInvite || managerInvite ? <>
+        <p className="break-words text-sm">Invite {String(selected.action.email)} as {managerInvite ? "Manager" : "Member"}?</p>
+        {managerInvite && <p className="text-sm">Managers can administer team members and bots.</p>}
+      </> : <>
+        <pre className="whitespace-pre-wrap break-all text-xs">{JSON.stringify(selected.action, null, 2)}</pre>
+        <code className="block break-all text-xs">{selected.digest}</code>
+        <p className="text-xs">Destructive operations may stop the computer and remove files. Active or unknown solver work blocks them.</p>
+      </>}
+      {!memberInvite && <input className="w-full border border-border bg-background p-2" aria-label="Exact confirmation phrase" placeholder={"APPLY " + selected.id} value={phrase} onChange={(e) => setPhrase(e.target.value)}/>}
       <input className="w-full border border-border bg-background p-2" aria-label="Your account password" placeholder="Your account password" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)}/>
       <div className="flex justify-end gap-2"><button className={icon} title="Cancel" aria-label="Cancel" onClick={() => { setSelected(null); setPassword(""); }}><X size={16}/></button>
-        <button className={icon} title="Confirm action" aria-label="Confirm action" disabled={busy || phrase !== "APPLY " + selected.id || !password} onClick={() => void perform(async () => { const result = await api("confirm", { id: selected.id, digest: selected.digest, phrase, password }); setSelected(null); return result; })}><Check size={16}/></button></div>
+        <Button title={memberInvite ? "Confirm invite" : "Confirm action"} aria-label={memberInvite ? "Confirm invite" : "Confirm action"}
+          disabled={busy || (!memberInvite && phrase !== "APPLY " + selected.id) || !password}
+          onClick={() => void perform(async () => { const result = await api("confirm", { id: selected.id, digest: selected.digest, phrase: memberInvite ? "APPLY " + selected.id : phrase, password }); setSelected(null); return result; })}>
+          <Check size={16}/>{memberInvite ? "Confirm invite" : null}
+        </Button></div>
     </DialogContent>}
     </Dialog>
     <h3 className="text-sm font-semibold">Cross-User Requests</h3>

@@ -138,6 +138,46 @@ it("organization managers do not see deployment registration or role escalation 
   );
   expect(host.querySelector('[aria-label="Invitation role"] option[value="admin"]')).toBeNull();
 });
+it.each(["member", "admin"] as const)("confirms a %s invitation with the intended safeguards", async (role) => {
+  const action = { kind: "invite", email: "new@example.test", role };
+  const digest = "b".repeat(64);
+  vi.mocked(accountAdminApi).mockImplementation(async (operation) => {
+    if (operation === "view") return structuredClone(view) as any;
+    if (operation === "confirm") return { enrollmentToken: "invite-token" } as any;
+    return { id: "review", digest, action, status: "pending", expiresAt: "2099-01-01T00:00:00Z" } as any;
+  });
+  await render();
+  await value('[aria-label="Member email"]', action.email);
+  const select = host.querySelector<HTMLSelectElement>('[aria-label="Invitation role"]')!;
+  await act(async () => {
+    select.value = role;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  const form = host.querySelector('[aria-label="Member invitations"] form')!;
+  await act(async () => form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+  expect(accountAdminApi).toHaveBeenCalledWith("propose", { action });
+  const member = role === "member";
+  expect(host.querySelector('[role="dialog"]')?.textContent).toContain(
+    `Invite ${action.email} as ${member ? "Member" : "Manager"}?`,
+  );
+  const confirm = button(member ? "Confirm invite" : "Apply changes");
+  expect(confirm.disabled).toBe(true);
+  expect(accountAdminApi).not.toHaveBeenCalledWith("confirm", expect.anything());
+  await value('[aria-label="Admin account password"]', "current-password");
+  const confirmationField = '[aria-label="Account confirmation phrase"]';
+  if (member) {
+    expect(host.querySelector(confirmationField)).toBeNull();
+  } else {
+    expect(host.textContent).toContain("Managers can administer team members and bots.");
+    expect(confirm.disabled).toBe(true);
+    await value(confirmationField, "APPLY review");
+  }
+  await act(async () => confirm.click());
+  expect(accountAdminApi).toHaveBeenCalledWith("confirm", {
+    id: "review", digest, phrase: "APPLY review", password: "current-password",
+  });
+  expect(host.querySelector<HTMLTextAreaElement>("#private-invite-token")?.value).toBe("invite-token");
+});
 it("failed saves do not claim success or erase the review; password is cleared", async () => {
   await render();
   await act(async () => button("Review changes").click());
