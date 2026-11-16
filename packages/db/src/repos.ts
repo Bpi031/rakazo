@@ -1,6 +1,7 @@
 import type { Actor, Bot, BotSection, MessageBlock, SpaceBot } from "@rakazo/contracts";
 import { BOT_COLORS, InstructionVersionSchema } from "@rakazo/contracts";
 import { BACKGROUND_RUN_TRIGGERS, isBackgroundRunTrigger, userVisibleMessages } from "@rakazo/core";
+import { checkpointMessageWhere } from "./checkpoints.js";
 import type { PrismaClient } from "./client.js";
 import type { ComputerMode } from "./computers.js";
 import { ensureComputerRecord, parseComputerMode } from "./computers.js";
@@ -351,6 +352,16 @@ export function createRepos(prisma: PrismaClient) {
       return Promise.all(
         bots.map(async (bot) => {
           let messages = bot.thread?.messages ?? [];
+          const checkpointWhere = bot.thread?.activeBranchId
+            ? await checkpointMessageWhere(prisma, bot.thread.id)
+            : null;
+          if (checkpointWhere && bot.thread) {
+            messages = await prisma.message.findMany({
+              where: checkpointWhere,
+              orderBy: { seq: "desc" },
+              take: SIDEBAR_PREVIEW_MESSAGE_WINDOW,
+            });
+          }
           let preview = "";
           for (let attempt = 0; attempt < 5; attempt++) {
             const windowRunIds = [
@@ -376,7 +387,11 @@ export function createRepos(prisma: PrismaClient) {
             const oldest = messages[messages.length - 1];
             if (!oldest) break;
             messages = await prisma.message.findMany({
-              where: { threadId: bot.thread.id, seq: { lt: oldest.seq } },
+              where: {
+                ...(checkpointWhere ? { AND: [checkpointWhere] } : {}),
+                threadId: bot.thread.id,
+                seq: { lt: oldest.seq },
+              },
               orderBy: { seq: "desc" },
               take: SIDEBAR_PREVIEW_MESSAGE_WINDOW,
             });
@@ -431,7 +446,8 @@ export function createRepos(prisma: PrismaClient) {
         };
       },
     ): Promise<Bot> {
-      if (process.env.TEAM_MANAGEMENT_ENABLED === "1") input = { ...input, computerMode: "dedicated" };
+      if (process.env.TEAM_MANAGEMENT_ENABLED === "1")
+        input = { ...input, computerMode: "dedicated" };
       let color = input.color;
       if (color === undefined) {
         const count = await prisma.bot.count({
@@ -611,7 +627,8 @@ export function createRepos(prisma: PrismaClient) {
     },
 
     async setBotComputer(actor: Actor, botId: string, mode: ComputerMode): Promise<Bot> {
-      if (process.env.TEAM_MANAGEMENT_ENABLED === "1" && mode !== "dedicated") throw new IsolationError("Team bots require private computers");
+      if (process.env.TEAM_MANAGEMENT_ENABLED === "1" && mode !== "dedicated")
+        throw new IsolationError("Team bots require private computers");
       const bot = await prisma.bot.findFirst({
         where: { id: botId, spaceId: actor.spaceId, userId: actor.userId },
         include: { computer: true },

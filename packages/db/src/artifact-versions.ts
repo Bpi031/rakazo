@@ -17,15 +17,26 @@ export async function resolveNextArtifactVersion(
       userId: params.userId,
       botId: params.botId,
       groupId: params.groupId ?? null,
+      checkpointHidden: false,
       name: { equals: params.name, mode: "insensitive" },
     },
     orderBy: [{ version: "desc" }, { createdAt: "desc" }],
     select: { id: true, rootArtifactId: true, version: true },
   });
   if (!previous) return { rootArtifactId: null, version: 1 };
+  const rootArtifactId = previous.rootArtifactId ?? previous.id;
+  const latest = await prisma.artifact.findFirst({
+    where: {
+      spaceId: params.spaceId,
+      userId: params.userId,
+      OR: [{ id: rootArtifactId }, { rootArtifactId }],
+    },
+    orderBy: { version: "desc" },
+    select: { version: true },
+  });
   return {
-    rootArtifactId: previous.rootArtifactId ?? previous.id,
-    version: previous.version + 1,
+    rootArtifactId,
+    version: Math.max(previous.version, latest?.version ?? 0) + 1,
   };
 }
 
@@ -46,10 +57,7 @@ export async function withResolvedArtifactVersion<T>(
     groupId?: string | null;
     name: string;
   },
-  attempt: (
-    db: Pick<Prisma.TransactionClient, "artifact">,
-    version: ArtifactVersionWrite,
-  ) => Promise<T>,
+  attempt: (db: Prisma.TransactionClient, version: ArtifactVersionWrite) => Promise<T>,
 ): Promise<T> {
   let lastError: unknown;
   for (let i = 0; i < MAX_VERSION_ALLOCATION_ATTEMPTS; i++) {

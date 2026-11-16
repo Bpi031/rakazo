@@ -1,12 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdir, readFile, writeFile, open, rename, lstat } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { z } from "zod";
+import type { AdapterContext, SandboxProvider } from "@rakazo/adapter-kit";
 import type { Actor } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
-import type { SandboxProvider, AdapterContext } from "@rakazo/adapter-kit";
-import { createRepos } from "@rakazo/db";
+import { checkpointThreadLock, createRepos } from "@rakazo/db";
+import { z } from "zod";
 import { toComputerRef } from "./computer-support.js";
 import { teamDigest } from "./team-policy.js";
 
@@ -95,6 +95,48 @@ type Stored = { id: string; actorUserId: string; spaceId: string; botId: string;
 
 export class PriorityService {
   constructor(private readonly deps: { prisma: PrismaClient; sandbox: SandboxProvider; dataDir: string }) {}
+  /** Internal checkpoint boundary: capture the exact presentation binding, without running policy code. */
+  async captureCheckpointBinding(actor: Actor, botId: string): Promise<Data | null> {
+    await this.owned(actor, botId);
+    return this.withBotLock(actor, botId, async () => {
+      const { value } = await this.binding(actor, botId);
+      return value ? (JSON.parse(JSON.stringify(value)) as Data) : null;
+    });
+  }
+  /** Restore only after workspace files. A selected draft never grants approval or compute. */
+  async restoreCheckpointBinding(actor: Actor, botId: string, snapshot: unknown): Promise<void> {
+    await this.owned(actor, botId);
+    if (snapshot !== null) {
+      if (
+        !snapshot ||
+        typeof snapshot !== "object" ||
+        Array.isArray(snapshot) ||
+        Buffer.byteLength(JSON.stringify(snapshot)) > 4_194_304
+      )
+        throw new Error("Invalid checkpoint policy binding");
+      const value = snapshot as Data;
+      if (
+        value.botId !== botId ||
+        !relative.safeParse(value.policy).success ||
+        !workingDirectory.safeParse(value.workingDirectory).success ||
+        !hex.safeParse(value.sourceSha256).success
+      )
+        throw new Error("Invalid checkpoint policy binding");
+    }
+    await this.withBotLock(actor, botId, async () => {
+      const binding = await this.binding(actor, botId);
+      if (snapshot === null) {
+        await unlink(binding.file).catch((error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT") throw error;
+        });
+        return;
+      }
+      const value = JSON.parse(JSON.stringify(snapshot)) as Data;
+      if (value.selection)
+        value.selection = { ...value.selection, policyApprovalGranted: false, solveStarted: false };
+      await this.saveBinding(binding.file, value);
+    });
+  }
   private async owned(actor: Actor, botId: string) {
     const bot = await createRepos(this.deps.prisma).getBot(actor, botId);
     if (!bot.computer || bot.computer.state !== "running" || !bot.computer.providerRef) throw new Error("Start the bot computer first");
@@ -131,7 +173,31 @@ export class PriorityService {
     const file = path.join(await this.directory(actor), teamDigest(botId) + ".binding.lock");
     const lock = await open(file, "wx", 0o600).catch(() => { throw new Error("Policy review is busy; inspect before retrying"); });
     try { return await operation(); }
-    finally { await lock.close(); const { unlink } = await import("node:fs/promises"); await unlink(file); }
+    finally { await lock.close(); await unlink(file); }
+  }
+  private async withCheckpointMutation<T>(
+    actor: Actor,
+    botId: string,
+    operation: () => Promise<T>,
+    expectedGeneration?: number,
+  ): Promise<T> {
+    return this.deps.prisma.$transaction(
+      async (tx) => {
+        const target = await tx.thread.findFirstOrThrow({
+          where: { botId, spaceId: actor.spaceId, userId: actor.userId },
+          select: { id: true },
+        });
+        await checkpointThreadLock(tx, target.id);
+        const thread = await tx.thread.findUniqueOrThrow({ where: { id: target.id } });
+        if (
+          thread.checkpointBlocked ||
+          (expectedGeneration !== undefined && thread.checkpointGeneration !== expectedGeneration)
+        )
+          throw new Error("Checkpoint branch changed; refresh the policy");
+        return this.withBotLock(actor, botId, operation);
+      },
+      { maxWait: 10000, timeout: 120000 },
+    );
   }
   private bindingValue(botId: string, value: Data) {
     return { botId, policy: value.policy, workingDirectory: value.workingDirectory, sourceSha256: value.sourceSha256,
@@ -164,20 +230,20 @@ export class PriorityService {
     if (status !== 0 || value.error) throw new Error(typeof value.error === "string" ? value.error.slice(0,300) : "Rost rule review failed");
     return { value, computerId: bot.computerId! };
   }
-  async inspect(actor: Actor, input: z.infer<typeof prioritySchemas.inspect>) {
+  async inspect(actor: Actor, input: z.infer<typeof prioritySchemas.inspect>, expectedGeneration?: number) {
     input = prioritySchemas.inspect.parse(input);
-    return this.withBotLock(actor, input.botId, async () => {
+    return this.withCheckpointMutation(actor, input.botId, async () => {
     const { value: result, computerId } = await this.execute(actor, input.botId, { ...input, operation: "inspect" });
     const binding = await this.binding(actor, input.botId);
     const value = this.bindingValue(input.botId, result);
     const selection = this.selection(binding.value?.selection, value, computerId);
     await this.saveBinding(binding.file, { ...value, selection });
     return { ...result, selection, viewUrl: "/app/" + encodeURIComponent(input.botId) + "?rules=current" };
-    });
+    }, expectedGeneration);
   }
-  async current(actor: Actor, botId: string) {
+  async current(actor: Actor, botId: string, expectedGeneration?: number) {
     await this.owned(actor, botId);
-    return this.withBotLock(actor, botId, async () => {
+    return this.withCheckpointMutation(actor, botId, async () => {
     const binding = await this.binding(actor, botId);
     if (!binding.value) return { status: "not_registered", botId, selection: null };
     const { value, computerId } = await this.execute(actor, botId, { operation: "inspect", policy: binding.value.policy,
@@ -186,11 +252,11 @@ export class PriorityService {
     const selection = this.selection(binding.value.selection, current, computerId);
     await this.saveBinding(binding.file, { ...current, selection });
     return { status: "current", ...value, selection, viewUrl: "/app/" + encodeURIComponent(botId) + "?rules=current" };
-    });
+    }, expectedGeneration);
   }
-  async review(actor: Actor, input: z.infer<typeof prioritySchemas.review>) {
+  async review(actor: Actor, input: z.infer<typeof prioritySchemas.review>, expectedGeneration?: number) {
     input = prioritySchemas.review.parse(input);
-    return this.withBotLock(actor, input.botId, async () => {
+    return this.withCheckpointMutation(actor, input.botId, async () => {
     const { value, computerId } = await this.execute(actor, input.botId, { ...input, operation: "review" });
     const binding = await this.binding(actor, input.botId);
     const expectedBinding = this.bindingValue(input.botId, value);
@@ -206,7 +272,7 @@ export class PriorityService {
     if ((await readdir(directory)).filter((name) => name.endsWith(".json")).length >= 1000) throw new Error("Review archive limit reached; operator archival required");
     await writeFile(path.join(directory, id + ".json"), JSON.stringify(row), { flag: "wx", mode: 0o600 });
     return this.dto(row);
-    });
+    }, expectedGeneration);
   }
   private dto(row: Stored) {
     return { id: row.id, botId: row.botId, digest: row.digest, createdAt: row.createdAt, expiresAt: row.expiresAt,
@@ -225,7 +291,7 @@ export class PriorityService {
   /** Called only by the reauthenticated browser boundary, never an agent tool. */
   async apply(actor: Actor, id: string, digest: string) {
     const initial = await this.load(actor, id);
-    return this.withBotLock(actor, initial.row.botId, async () => {
+    return this.withCheckpointMutation(actor, initial.row.botId, async () => {
     const { row, file } = await this.load(actor, id);
     if (row.digest !== digest) throw new Error("Review digest changed");
     const bot = await this.owned(actor, row.botId);
@@ -260,20 +326,20 @@ export class PriorityService {
     if (run.status !== "running" || !["user", "follow_up"].includes(run.trigger)) throw new Error("A direct owned agent turn is required");
     const user = await this.deps.prisma.user.findUniqueOrThrow({ where: { id: run.userId } });
     const actor = { userId: run.userId, spaceId: run.spaceId, email: user.email, isDeploymentOwner: false };
-    if (args.operation === "current") return priorityAgentResult(await this.current(actor, run.botId));
+    if (args.operation === "current") return priorityAgentResult(await this.current(actor, run.botId, run.checkpointGeneration));
     if (args.operation === "list") {
       const parsed = detailQuery.safeParse(Object.fromEntries(["section", "sourceSha256", "snapshotSha256", "offset", "limit", "groupId"]
         .filter((key) => args[key] !== undefined).map((key) => [key, args[key]])));
       if (!parsed.success) return argumentError([...new Set(parsed.error.issues.map((issue) => String(issue.path[0] ?? "arguments")))].slice(0, 8));
-      return priorityAgentResult(await this.current(actor, run.botId), parsed.data);
+      return priorityAgentResult(await this.current(actor, run.botId, run.checkpointGeneration), parsed.data);
     }
     if (args.operation === "inspect" || args.operation === "review") {
       const input = { botId: run.botId, policy: args.policy, workingDirectory: args.workingDirectory };
       const parsed = args.operation === "inspect" ? prioritySchemas.inspect.safeParse(input) :
         prioritySchemas.review.safeParse({ ...input, sourceSha256: args.sourceSha256, changes: args.changes });
       if (!parsed.success) return argumentError([...new Set(parsed.error.issues.map((issue) => String(issue.path[0] ?? "arguments")))].slice(0, 8));
-      if (args.operation === "inspect") return priorityAgentResult(await this.inspect(actor, parsed.data as z.infer<typeof prioritySchemas.inspect>));
-      return priorityAgentResult(await this.review(actor, parsed.data as z.infer<typeof prioritySchemas.review>));
+      if (args.operation === "inspect") return priorityAgentResult(await this.inspect(actor, parsed.data as z.infer<typeof prioritySchemas.inspect>, run.checkpointGeneration));
+      return priorityAgentResult(await this.review(actor, parsed.data as z.infer<typeof prioritySchemas.review>, run.checkpointGeneration));
     }
     throw new Error("Agents can inspect/list/propose soft priorities, never apply them");
   }

@@ -16,6 +16,7 @@ export * from "./team-workflows.js";
 export * from "./team-leadership.js";
 export * from "./agent-workbench.js";
 export * from "./native-agent.js";
+export * from "./checkpoints.js";
 export * from "./history.js";
 export * from "./ids.js";
 export * from "./integration-settings.js";

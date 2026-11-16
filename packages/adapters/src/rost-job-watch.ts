@@ -1,10 +1,11 @@
-import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import type { SandboxProvider, AdapterContext } from "@rakazo/adapter-kit";
+import { readFileSync } from "node:fs";
+import type { AdapterContext, SandboxProvider } from "@rakazo/adapter-kit";
 import type { PrismaClient } from "@rakazo/db";
+import { assertCheckpointGeneration, CheckpointConflictError } from "@rakazo/db";
 import { z } from "zod";
-import { memberScope } from "./team-storage.js";
 import { toComputerRef } from "./computer-support.js";
+import { memberScope } from "./team-storage.js";
 
 const observer = readFileSync(new URL("./rost-job-observer.py", import.meta.url), "utf8");
 export const RostJobOut = z.string().min(1).max(512).refine(
@@ -22,6 +23,7 @@ const Watch = z.object({
   schema: z.literal("rost/job-watch/v1"),
   out: RostJobOut,
   computerId: z.string().min(1),
+  checkpointGeneration: z.number().int().nonnegative().default(0),
   binding: Observation.shape.binding,
   deadlineUtc: Observation.shape.deadlineUtc,
   checks: z.number().int().nonnegative(),
@@ -33,6 +35,21 @@ const Watch = z.object({
 type Scope = { userId: string; spaceId: string; botId: string };
 type Deps = { prisma: PrismaClient; sandbox?: SandboxProvider };
 
+export class StaleRostWatchError extends Error {
+  constructor() {
+    super("Rost watch belongs to an inactive checkpoint generation");
+  }
+}
+
+async function assertCurrentWatch(deps: Deps, threadId: string, generation: number) {
+  try {
+    await assertCheckpointGeneration(deps.prisma, threadId, generation);
+  } catch (error) {
+    if (error instanceof CheckpointConflictError) throw new StaleRostWatchError();
+    throw error;
+  }
+}
+
 async function observe(deps: Deps, scope: Scope, out: string) {
   await memberScope(deps.prisma, scope.userId, scope.spaceId);
   const bot = await deps.prisma.bot.findFirstOrThrow({
@@ -43,6 +60,8 @@ async function observe(deps: Deps, scope: Scope, out: string) {
       || bot.computer.userId !== scope.userId || bot.computer.spaceId !== scope.spaceId
       || !bot.computer.providerRef || bot.computer.state !== "running")
     throw new Error("Existing owned private running computer required");
+  const checkpointGeneration = bot.thread.checkpointGeneration ?? 0;
+  await assertCurrentWatch(deps, bot.thread.id, checkpointGeneration);
   const context: AdapterContext = {
     ...scope, operationId: "rost-watch:" + randomUUID(), traceId: "rost-job-observe",
     signal: AbortSignal.timeout(20_000),
@@ -67,14 +86,19 @@ async function observe(deps: Deps, scope: Scope, out: string) {
     id: scope.botId, userId: scope.userId, spaceId: scope.spaceId, archivedAt: null,
     computerId: bot.computer.id,
   } });
-  return { ...value, computerId: bot.computer.id, threadId: bot.thread.id };
+  await assertCurrentWatch(deps, bot.thread.id, checkpointGeneration);
+  return { ...value, computerId: bot.computer.id, threadId: bot.thread.id, checkpointGeneration };
 }
 
 export async function createRostJobWatch(deps: Deps, scope: Scope, out: string, threadId?: string | null) {
   out = RostJobOut.parse(out);
   const value = await observe(deps, scope, out);
   if (threadId && threadId !== value.threadId) throw new Error("A private owned bot thread is required");
+  const thread = await deps.prisma.thread.findUniqueOrThrow({ where: { id: value.threadId } });
+  if (thread.checkpointBlocked || (thread.checkpointGeneration ?? 0) !== value.checkpointGeneration)
+    throw new StaleRostWatchError();
   return Watch.parse({ schema: "rost/job-watch/v1", out, computerId: value.computerId,
+    checkpointGeneration: thread.checkpointGeneration ?? 0,
     binding: value.binding, deadlineUtc: value.deadlineUtc, checks: 0, failures: 0 });
 }
 
@@ -97,6 +121,12 @@ export function reduceRostWatch(raw: unknown, observation: unknown, at = new Dat
 
 export async function pollRostJobWatch(deps: Deps, scope: Scope, raw: unknown) {
   const previous = Watch.parse(raw);
+  const bot = await deps.prisma.bot.findFirstOrThrow({
+    where: { id: scope.botId, userId: scope.userId, spaceId: scope.spaceId, archivedAt: null },
+    include: { thread: true },
+  });
+  if (!bot.thread) throw new StaleRostWatchError();
+  await assertCurrentWatch(deps, bot.thread.id, previous.checkpointGeneration);
   let value;
   try {
     const current = await observe(deps, scope, previous.out);
@@ -105,6 +135,8 @@ export async function pollRostJobWatch(deps: Deps, scope: Scope, raw: unknown) {
       status: current.status, ...(current.observedStatus ? { observedStatus: current.observedStatus } : {}),
     };
   } catch { /* Bounded transient retries stay token-free; the third failure requests attention. */ }
+  // A completion read can overlap a rollback; never turn that late observation into a wake.
+  await assertCurrentWatch(deps, bot.thread.id, previous.checkpointGeneration);
   return reduceRostWatch(previous, value);
 }
 

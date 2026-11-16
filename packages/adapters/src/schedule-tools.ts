@@ -1,5 +1,4 @@
 import type { JobPublisher, SandboxProvider } from "@rakazo/adapter-kit";
-import { createRostJobWatch, assertRostWatchTriggers } from "./rost-job-watch.js";
 import { routineJobKey, routineWakeupJob } from "@rakazo/adapter-kit";
 import {
   cronFromPreset,
@@ -9,6 +8,8 @@ import {
   ONCE_ROUTINE_CRON,
 } from "@rakazo/core";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
+import { checkpointThreadLock } from "@rakazo/db";
+import { assertRostWatchTriggers, createRostJobWatch } from "./rost-job-watch.js";
 
 export { isOneShotRoutineCron, ONCE_ROUTINE_CRON };
 
@@ -209,6 +210,8 @@ export async function createScheduleFromTool(
     botId: string;
     userId: string;
     threadId: string;
+    runId?: string;
+    checkpointGeneration?: number;
     name: string;
     prompt: string;
     timezone?: string;
@@ -228,21 +231,33 @@ export async function createScheduleFromTool(
     ? await createRostJobWatch(deps, input, input.rostJobOut, input.threadId) : undefined;
   assertRostWatchTriggers(jobWatch, { crons: [resolved.cron] });
 
-  const row = await deps.prisma.routine.create({
-    data: {
-      spaceId: input.spaceId,
-      botId: input.botId,
-      userId: input.userId,
-      threadId: input.threadId,
-      name,
-      prompt,
-      crons: [resolved.cron],
-      timezone,
-      notify: true,
-      active: true,
-      nextRunAt: resolved.nextRunAt,
-      ...(jobWatch ? { jobWatch } : {}),
-    },
+  const row = await deps.prisma.$transaction(async (tx) => {
+    await checkpointThreadLock(tx, input.threadId);
+    const thread = await tx.thread.findUniqueOrThrow({ where: { id: input.threadId } });
+    if (
+      thread.checkpointBlocked ||
+      (input.checkpointGeneration !== undefined &&
+        input.checkpointGeneration !== thread.checkpointGeneration) ||
+      (jobWatch && jobWatch.checkpointGeneration !== thread.checkpointGeneration)
+    )
+      throw new Error("Checkpoint branch changed; refresh before scheduling");
+    return tx.routine.create({
+      data: {
+        spaceId: input.spaceId,
+        botId: input.botId,
+        userId: input.userId,
+        threadId: input.threadId,
+        checkpointGeneration: thread.checkpointGeneration ?? 0,
+        name,
+        prompt,
+        crons: [resolved.cron],
+        timezone,
+        notify: true,
+        active: true,
+        nextRunAt: resolved.nextRunAt,
+        ...(jobWatch ? { jobWatch } : {}),
+      },
+    });
   });
 
   try {
@@ -266,6 +281,7 @@ export async function createScheduleFromTool(
       threadId: input.threadId,
       botId: input.botId,
       type: "routine.created",
+      runId: input.runId,
       payload: { name: row.name },
     });
   } catch {

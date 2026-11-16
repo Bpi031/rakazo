@@ -22,6 +22,7 @@ import type {
 import {
   applyMessagingOutboundStatus,
   ChatSdkMessagingSurface,
+  CheckpointService,
   CodexCatalogCache,
   ComposioConnector,
   createBackgroundJobHandlers,
@@ -84,6 +85,7 @@ import { mountTeamHttp, mountDisabledTeamHttp } from "./team-http.js";
 import { mountManagedServiceGuards } from "./managed-services.js";
 import { mountManagedUsage } from "./managed-usage.js";
 import { mountPriorityHttp } from "./policy-priorities-http.js";
+import { mountCheckpointHttp } from "./checkpoints-http.js";
 import { mountWorkspaceInsights, WorkspaceInsights } from "./workspace-insights.js";
 import { PriorityService } from "@rakazo/adapters";
 import type { Actor, AuthCapabilities } from "@rakazo/contracts";
@@ -468,7 +470,12 @@ export async function createApp(
   // One cache serves models.list, selection validation, and run-time model
   // resolution alike, so a list call warms the run path in this process.
   const codexCatalog = new CodexCatalogCache();
+  const checkpoints =
+    env.agentRuntime === "codex"
+      ? new CheckpointService({ prisma, sandbox, dataDir: env.dataDir })
+      : undefined;
   const executor = createRunExecutor({
+    checkpoints,
     maxUploadSizeBytes: env.maxUploadSizeBytes,
     contextStrategy,
     prisma,
@@ -659,6 +666,7 @@ export async function createApp(
     return actor && { actor, sessionId: session.session.id };
   };
   const sessionActor = async (request: Request) => (await requestSession(request))?.actor ?? null;
+  if (checkpoints) mountCheckpointHttp(app, { service: checkpoints, actor: sessionActor, webOrigin: env.webOrigin, additionalWebOrigins: env.additionalWebOrigins });
   if (env.agentRuntime === "codex") {
     if (workbenchEnabled()) mountAgentWorkbench(app, { service: new AgentWorkbench({ prisma, sandbox }), isDeveloper:developerAccess, native: nativeEnabled()?new NativeControl(prisma,sandbox):undefined, actor: sessionActor,
       webOrigin: env.webOrigin, additionalWebOrigins: env.additionalWebOrigins,

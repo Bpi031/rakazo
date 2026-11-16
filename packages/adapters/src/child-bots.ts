@@ -12,6 +12,7 @@ import { type Actor, type Bot, type ComputerMode, GROUP_MEMBER_MIN } from "@raka
 import { ACTIVE_RUN_STATUSES } from "@rakazo/core";
 import {
   cancelRunsInTransaction,
+  checkpointRunFields,
   computerScopeKey,
   createRepos,
   createThreadMessageInTransaction,
@@ -180,6 +181,7 @@ async function ensureSpawnRun(
       });
       return tx.run.create({
         data: {
+          ...(await checkpointRunFields(tx, input.threadId)),
           spaceId: input.spaceId,
           botId: input.botId,
           threadId: input.threadId,

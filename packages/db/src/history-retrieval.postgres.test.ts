@@ -23,11 +23,12 @@ postgres("history retrieval (PostgreSQL)", () => {
     prisma = new PrismaClient({ adapter: new PrismaPg(pool, { schema: "pg_temp" }) });
     await pool.query(`
       CREATE TEMP TABLE bots (id text PRIMARY KEY, "spaceId" text, "userId" text, "archivedAt" timestamptz);
-      CREATE TEMP TABLE threads (id text PRIMARY KEY, "spaceId" text, "userId" text, "botId" text, "groupId" text);
+      CREATE TEMP TABLE threads (id text PRIMARY KEY, "spaceId" text, "userId" text, "botId" text, "groupId" text, "activeBranchId" text);
+      CREATE TEMP TABLE conversation_branches (id text PRIMARY KEY, "threadId" text, "parentBranchId" text, "parentCutoffMessageSeq" integer);
       CREATE TEMP TABLE chat_groups (id text PRIMARY KEY, "spaceId" text, "userId" text, "archivedAt" timestamptz);
       CREATE TEMP TABLE chat_group_members ("groupId" text, "botId" text);
       CREATE TEMP TABLE messages (id text PRIMARY KEY, "threadId" text, seq integer, role text, "runId" text,
-        "replyToMessageId" text, "createdAt" timestamptz, blocks jsonb);
+        "replyToMessageId" text, "createdAt" timestamptz, blocks jsonb, "branchId" text);
       CREATE TEMP TABLE runs (id text PRIMARY KEY, "spaceId" text, "userId" text, "threadId" text, "botId" text,
         "sourceMessageId" text, status text, "createdAt" timestamptz, "completedAt" timestamptz);
       CREATE TEMP TABLE artifacts (id text PRIMARY KEY, "spaceId" text, "userId" text, "botId" text, "groupId" text,

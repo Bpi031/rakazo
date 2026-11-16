@@ -33,11 +33,32 @@ it('resumes unchanged owned history but not a cleared chat generation', async ()
   expect((await f.service.prepare('second', 'tools-v1')).previous?.threadId).toBe('native-owned');
   f.complete(); f.clear();
   expect((await f.service.prepare('after-clear', 'tools-v1')).previous).toBeNull();
-  expect(f.tx.thread.findFirstOrThrow).toHaveBeenLastCalledWith({ where: { id: 'private-thread', spaceId: 'space', botId: 'bot' }, select: { historyCompactionGeneration: true } });
+  expect(f.tx.thread.findFirstOrThrow).toHaveBeenLastCalledWith({ where: { id: 'private-thread', spaceId: 'space', botId: 'bot' }, select: { historyCompactionGeneration: true,
+      activeBranchId: true,
+      checkpointGeneration: true,
+      checkpointBlocked: true } });
 });
 
 it('does not borrow a completed native session from another product thread', async () => {
   const f = fixture();
   await f.service.prepare('first', 'tools-v1'); f.complete(); f.changeThread();
   expect((await f.service.prepare('different-thread', 'tools-v1')).previous).toBeNull();
+});
+
+it("reconstructs after rollback even when a stale fork preference remains", async () => {
+  const f = fixture();
+  await f.service.prepare('first', 'tools-v1');
+  f.complete();
+  f.tx.thread.findFirstOrThrow.mockResolvedValue({
+    historyCompactionGeneration: 1,
+    checkpointGeneration: 1,
+    activeBranchId: "restored",
+    checkpointBlocked: false,
+  } as any);
+  vi.mocked(f.service.view).mockResolvedValue({
+    preferences: { mode: "execute", persistence: true, action: "fork", revision: 1 },
+  } as any);
+  const next = await f.service.prepare("restored", "tools-v1");
+  expect(next.previous).toBeNull();
+  expect(next.action).toBe("none");
 });

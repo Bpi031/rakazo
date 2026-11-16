@@ -139,6 +139,8 @@ export * from "./team-workflows.js";
 export * from "./team-leadership.js";
 export * from "./agent-workbench.js";
 export * from "./native-control.js";
+export * from "./checkpoint-files.js";
+export * from "./checkpoint-service.js";
 export * from "./teaching-session.js";
 export * from "./team-chat-messaging.js";
 export * from "./third-party-connector-emulator.js";

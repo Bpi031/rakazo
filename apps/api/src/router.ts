@@ -167,6 +167,7 @@ import {
 import type { BoardEvents, Board as BoardRow, PrismaClient, ThreadEvents } from "@rakazo/db";
 import {
   appendEventInTransaction,
+  checkpointRunFields,
   BotSectionNameConflictError,
   CannotDeleteDefaultSpaceError,
   CannotDeleteLastSpaceError,
@@ -730,6 +731,7 @@ export async function enqueueBotIntroRun(deps: RouterDeps, actor: Actor, bot: Bo
     });
     return tx.run.create({
       data: {
+        ...(await checkpointRunFields(tx, threadId)),
         spaceId: actor.spaceId,
         botId: bot.id,
         threadId,
@@ -2357,6 +2359,7 @@ export function createRouter(deps: RouterDeps) {
             });
             run = await tx.run.create({
               data: {
+                ...(await checkpointRunFields(tx, target.threadId)),
                 spaceId: context.actor.spaceId,
                 botId,
                 threadId: target.threadId,
@@ -2452,6 +2455,7 @@ export function createRouter(deps: RouterDeps) {
             });
             const run = await tx.run.create({
               data: {
+                ...(await checkpointRunFields(tx, threadId)),
                 spaceId: context.actor.spaceId,
                 botId,
                 threadId,
@@ -3351,6 +3355,7 @@ export function createRouter(deps: RouterDeps) {
         }
         const row = await deps.prisma.routine.create({
           data: {
+            checkpointGeneration: jobWatch?.checkpointGeneration ?? bot.thread?.checkpointGeneration ?? 0,
             spaceId: context.actor.spaceId,
             botId: input.botId,
             userId: context.actor.userId,
@@ -3522,6 +3527,8 @@ export function createRouter(deps: RouterDeps) {
               githubEnabled: input.githubEnabled,
               messageProvider: input.messageProvider,
               ...(touchesModel ? { modelProvider, modelId, thinkingLevel } : {}),
+              ...(input.rostJobOut !== undefined || (!jobWatch && input.active === true)
+                ? { checkpointGeneration: bot.thread?.checkpointGeneration ?? 0 } : {}),
               ...(input.rostJobOut !== undefined ? { jobWatch: jobWatch ?? Prisma.DbNull } : {}),
               nextRunAt,
             },
@@ -3627,6 +3634,7 @@ export function createRouter(deps: RouterDeps) {
             if (!currentModel) throw new IsolationError();
             return tx.run.create({
               data: {
+                ...(await checkpointRunFields(tx, threadId)),
                 spaceId: context.actor.spaceId,
                 botId: bot.id,
                 threadId,

@@ -2148,14 +2148,17 @@ describe("bot intro run", () => {
   } satisfies Actor;
   const bot = { id: "bot-1", threadId: "thread-1" } as unknown as Bot;
 
-  function introDeps(options: { agentRuntime?: string; hasCredential?: boolean } = {}) {
+  function introDeps(options: { agentRuntime?: string; hasCredential?: boolean; generation?: number; blocked?: boolean } = {}) {
     let calls = 0;
     const create = vi.fn(({ data }: { data: object }) => {
       calls += 1;
       return Promise.resolve({ id: `record-${calls}`, ...data });
     });
     const enqueue = vi.fn().mockResolvedValue(undefined);
-    const tx = { task: { create }, run: { create } };
+    const tx = { task: { create }, run: { create }, thread: { update: vi.fn().mockResolvedValue({
+      activeBranchId: "current-branch", checkpointGeneration: options.generation ?? 0,
+      checkpointBlocked: options.blocked ?? false,
+    }) } };
     const preference =
       (options.hasCredential ?? true)
         ? { isDefault: true, modelId: "model-1", credential: { id: "cred-1", provider: "test" } }
@@ -2208,6 +2211,21 @@ describe("bot intro run", () => {
     await enqueueBotIntroRun(deps, actor, { id: "bot-1", threadId: null } as unknown as Bot);
 
     expect(create).not.toHaveBeenCalled();
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it("binds new turns after recovery to the current branch and generation", async () => {
+    const { create, deps } = introDeps({ generation: 3 });
+    await enqueueBotIntroRun(deps, actor, bot);
+    expect(create).toHaveBeenLastCalledWith(expect.objectContaining({ data: expect.objectContaining({
+      branchId: "current-branch", checkpointGeneration: 3,
+    }) }));
+  });
+
+  it("does not queue a new turn while checkpoint recovery is blocked", async () => {
+    const { create, enqueue, deps } = introDeps({ generation: 3, blocked: true });
+    await expect(enqueueBotIntroRun(deps, actor, bot)).rejects.toThrow("Workspace changed");
+    expect(create).toHaveBeenCalledTimes(1); // Only the task; the transaction rolls it back.
     expect(enqueue).not.toHaveBeenCalled();
   });
 
@@ -4051,6 +4069,7 @@ describe("export.bot", () => {
 
   async function exportFiles(scope: "team" | "dedicated", home: LocalAgentHomeStore) {
     const prisma = {
+      thread: { findUniqueOrThrow: vi.fn().mockResolvedValue({ activeBranchId: null }) },
       bot: {
         findFirst: vi.fn().mockResolvedValue({
           id: "bot-1",

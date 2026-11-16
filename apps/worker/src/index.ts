@@ -7,6 +7,7 @@ import { createWorkerSecretStore } from "./secret-store.js";
 loadRootEnv();
 
 import {
+  CheckpointService,
   ChatSdkMessagingSurface,
   CodexCatalogCache,
   createBackgroundJobHandlers,
@@ -186,6 +187,10 @@ async function main() {
     pushSessionExpiresAt(prisma, sessionId),
   );
   const executor = createRunExecutor({
+    checkpoints:
+      process.env.AGENT_RUNTIME === "codex"
+        ? new CheckpointService({ prisma, sandbox, dataDir })
+        : undefined,
     maxUploadSizeBytes: uploadSizeFromEnv(process.env),
     prisma,
     runtime,

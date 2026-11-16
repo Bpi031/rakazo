@@ -1,10 +1,13 @@
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { mkdtemp, rm, readFile, writeFile, readdir } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({ getBot: vi.fn() }));
-vi.mock("@rakazo/db", () => ({ createRepos: () => ({ getBot: mocks.getBot }) }));
-import { PriorityService, prioritySchemas, priorityTools, priorityAgentResult, MAX_PRIORITY_AGENT_BYTES } from "./policy-priorities.js";
+vi.mock("@rakazo/db", () => ({ createRepos: () => ({ getBot: mocks.getBot }),
+  checkpointThreadLock: vi.fn(async () => undefined) }));
+import {
+  MAX_PRIORITY_AGENT_BYTES, PriorityService,
+  priorityAgentResult, prioritySchemas, priorityTools } from "./policy-priorities.js";
 const actor = { userId: "u", spaceId: "s", email: "test@example.invalid", isDeploymentOwner: false };
 const inspection = { botId: "b", policy: "workspace/case/policy.rost", workingDirectory: "workspace/case" };
 let source = "a".repeat(64); let inputs: unknown[] = []; let directory: string; let service: PriorityService;
@@ -26,6 +29,13 @@ beforeEach(async () => {
     yield { type: "stdout", data: JSON.stringify(value) }; yield { type: "exit", code: 0 };
   });
   prisma = { run: { findUniqueOrThrow: vi.fn() }, user: { findUniqueOrThrow: vi.fn().mockResolvedValue({ email: actor.email }) } };
+  prisma.thread = {
+    findFirstOrThrow: vi.fn().mockResolvedValue({ id: "thread" }),
+    findUniqueOrThrow: vi
+      .fn()
+      .mockResolvedValue({ id: "thread", checkpointGeneration: 0, checkpointBlocked: false }),
+  };
+  prisma.$transaction = async (operation: (tx: unknown) => Promise<unknown>) => operation(prisma);
   service = new PriorityService({ prisma, sandbox: { execute } as any, dataDir: directory });
 });
 afterEach(async () => { await rm(directory, { recursive: true, force: true }); vi.resetAllMocks(); });
@@ -34,6 +44,61 @@ it("dynamically registers the agent's current source, not a TKO filename", async
   expect(await service.current(actor, "b")).toMatchObject({ status: "not_registered" });
   await service.inspect(actor, inspection); source = "f".repeat(64);
   expect(await service.current(actor, "b")).toMatchObject({ sourceSha256: source, selection: null });
+});
+it("restores checkpoint source binding and draft selection without granting approval", async () => {
+  const row = await review();
+  await service.apply(actor, row.id, row.digest);
+  const snapshot = await service.captureCheckpointBinding(actor, "b");
+  await service.inspect(actor, { ...inspection, policy: "workspace/changed.rost" });
+  await service.restoreCheckpointBinding(actor, "b", snapshot);
+  expect(await service.captureCheckpointBinding(actor, "b")).toEqual(snapshot);
+  expect((await service.current(actor, "b")).selection).toMatchObject({
+    policyApprovalGranted: false,
+    solveStarted: false,
+  });
+});
+it("restores a checkpoint with no registered policy and rejects a foreign binding", async () => {
+  expect(await service.captureCheckpointBinding(actor, "b")).toBeNull();
+  await service.inspect(actor, inspection);
+  const snapshot = await service.captureCheckpointBinding(actor, "b");
+  await expect(service.restoreCheckpointBinding(actor, "other", snapshot)).rejects.toThrow(
+    "Invalid checkpoint policy binding",
+  );
+  await service.restoreCheckpointBinding(actor, "b", null);
+  expect(await service.current(actor, "b")).toMatchObject({ status: "not_registered" });
+});
+it("rejects policy mutations while checkpoint recovery is blocked", async () => {
+  prisma.thread.findUniqueOrThrow.mockResolvedValue({
+    id: "thread",
+    checkpointGeneration: 1,
+    checkpointBlocked: true,
+  });
+  await expect(service.inspect(actor, inspection)).rejects.toThrow("Checkpoint branch changed");
+  expect(execute).not.toHaveBeenCalled();
+});
+it("rejects a late agent policy registration from an earlier generation", async () => {
+  prisma.run.findUniqueOrThrow.mockResolvedValue({
+    id: "run",
+    status: "running",
+    trigger: "user",
+    botId: "b",
+    userId: "u",
+    spaceId: "s",
+    checkpointGeneration: 0,
+  });
+  prisma.thread.findUniqueOrThrow.mockResolvedValue({
+    id: "thread",
+    checkpointGeneration: 1,
+    checkpointBlocked: false,
+  });
+  await expect(
+    service.agent("run", {
+      operation: "inspect",
+      policy: inspection.policy,
+      workingDirectory: inspection.workingDirectory,
+    }),
+  ).rejects.toThrow("Checkpoint branch changed");
+  expect(execute).not.toHaveBeenCalled();
 });
 it("records an exact separate draft once and marks selection stale after an agent edit", async () => {
   const row = await review();

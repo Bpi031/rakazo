@@ -670,15 +670,77 @@ model Thread {
   historyCompactedUpToSeq     Int?
   historyCompactionSummary    String?    @db.Text
   historyCompactionGeneration Int        @default(0)
+  activeBranchId              String?
+  checkpointGeneration        Int        @default(0)
+  checkpointBlocked           Boolean    @default(false)
   unread                      Boolean    @default(false)
   messages                    Message[]
   events                      Event[]
   tasks                       Task[]
   runs                        Run[]
   routines                    Routine[]
+  branches                    ConversationBranch[]
+  checkpoints                 Checkpoint[]
+  rollbackAuditLogs           RollbackAuditLog[]
 
   @@index([spaceId])
   @@map("threads")
+}
+
+model ConversationBranch {
+  id                     String   @id @default(cuid())
+  threadId               String
+  thread                 Thread   @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  parentBranchId         String?
+  parentCutoffMessageSeq Int?
+  parentCutoffEventSeq   Int?
+  createdAt              DateTime @default(now())
+
+  @@index([threadId])
+  @@map("conversation_branches")
+}
+
+model Checkpoint {
+  id               String   @id @default(cuid())
+  threadId         String
+  thread           Thread   @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  spaceId          String
+  botId            String
+  userId           String
+  branchId         String
+  kind             String
+  label            String?
+  cutoffMessageSeq Int
+  cutoffEventSeq   Int
+  generation       Int
+  fileManifest     Json
+  businessState    Json
+  taskState        Json
+  createdAt        DateTime @default(now())
+
+  @@index([threadId, createdAt])
+  @@index([spaceId, botId])
+  @@map("checkpoints")
+}
+
+model RollbackAuditLog {
+  id                 String   @id @default(cuid())
+  threadId           String
+  thread             Thread   @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  spaceId            String
+  botId              String
+  userId             String
+  fromCheckpointId   String?
+  toCheckpointId     String
+  rescueCheckpointId String?
+  branchId           String
+  generation         Int
+  status             String
+  details            Json
+  createdAt          DateTime @default(now())
+
+  @@index([threadId, createdAt])
+  @@map("rollback_audit_logs")
 }
 
 model Message {
@@ -686,6 +748,7 @@ model Message {
   threadId         String
   thread           Thread    @relation(fields: [threadId], references: [id], onDelete: Cascade)
   seq              Int
+  branchId         String?
   role             String
   blocks           Json
   botId            String?
@@ -715,6 +778,7 @@ model Event {
   thread    Thread   @relation(fields: [threadId], references: [id], onDelete: Cascade)
   botId     String
   seq       Int
+  branchId  String?
   type      String
   payload   Json
   runId     String?
@@ -753,6 +817,8 @@ model Run {
   botId                String
   bot                  Bot              @relation(fields: [botId], references: [id], onDelete: Cascade)
   threadId             String
+  branchId             String?
+  checkpointGeneration Int              @default(0)
   thread               Thread           @relation(fields: [threadId], references: [id], onDelete: Cascade)
   taskId               String
   task                 Task             @relation(fields: [taskId], references: [id], onDelete: Cascade)
@@ -923,6 +989,7 @@ model Routine {
   thinkingLevel  String?
   lastRunAt      DateTime?
   jobWatch       Json?
+  checkpointGeneration Int @default(0)
   nextRunAt      DateTime?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
@@ -1165,6 +1232,8 @@ model ComputerExecutionLease {
 }
 
 model Artifact {
+  branchId   String?
+  checkpointHidden Boolean @default(false)
   id         String     @id @default(cuid())
   spaceId    String
   space      Space      @relation(fields: [spaceId], references: [id], onDelete: Cascade)

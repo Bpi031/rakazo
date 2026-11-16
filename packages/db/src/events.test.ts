@@ -373,7 +373,10 @@ describe("followThreadEvents", () => {
       })
       .mockResolvedValueOnce([event(0)])
       .mockResolvedValue([]);
-    const prisma = { event: { findMany } } as unknown as PrismaClient;
+    const prisma = {
+      event: { findMany },
+      thread: { findUniqueOrThrow: vi.fn().mockResolvedValue({ activeBranchId: null }) },
+    } as unknown as PrismaClient;
     const abort = new AbortController();
     const stream = followThreadEvents(prisma, "thread-1", -1, fanout, abort.signal, 10_000);
 
@@ -389,7 +392,10 @@ describe("followThreadEvents", () => {
       .fn()
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([event(0)]);
-    const prisma = { event: { findMany } } as unknown as PrismaClient;
+    const prisma = {
+      event: { findMany },
+      thread: { findUniqueOrThrow: vi.fn().mockResolvedValue({ activeBranchId: null }) },
+    } as unknown as PrismaClient;
     const abort = new AbortController();
     const stream = followThreadEvents(prisma, "thread-1", -1, undefined, abort.signal, 1);
 
@@ -2194,6 +2200,7 @@ describe("sendUserMessage", () => {
         update: vi
           .fn()
           .mockResolvedValueOnce({ nextMessageSeq: 5 })
+          .mockResolvedValueOnce({ checkpointGeneration: 0 })
           .mockResolvedValueOnce({ nextEventSeq: 9 }),
       },
       message: {
@@ -2264,6 +2271,7 @@ describe("sendUserMessage", () => {
         update: vi
           .fn()
           .mockResolvedValueOnce({ nextMessageSeq: 5 })
+          .mockResolvedValueOnce({ checkpointGeneration: 0 })
           .mockResolvedValueOnce({ nextEventSeq: 9 }),
       },
       message: {
