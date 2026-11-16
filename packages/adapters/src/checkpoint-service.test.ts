@@ -125,7 +125,9 @@ function fixture() {
         copy(
           state.artifacts.filter(
             (row: any) =>
-              !row.checkpointHidden &&
+              (where.checkpointHidden === undefined ||
+                row.checkpointHidden === where.checkpointHidden) &&
+              (!where.id || where.id.in.includes(row.id)) &&
               (where.groupId !== null || row.groupId === null || row.groupId === undefined),
           ),
         ),
@@ -535,6 +537,41 @@ it("A13 exports rescue references, branch history, file changes and task observa
         row.id === audit.audits[0]!.rescueCheckpointId && row.kind === "auto_pre_rollback",
     ),
   ).toBe(true);
+});
+
+it("reads retained research snapshots and hidden artifact metadata without a live workspace", async () => {
+  const f = fixture();
+  const checkpoint = await f.save();
+  f.state.artifacts[0].checkpointHidden = true;
+  f.state.messages = [];
+  const owned = vi.mocked((f.service as any).owned).mockRejectedValue(new Error("Bot deleted"));
+  owned.mockClear();
+
+  const audit = await f.service.audit(actor, "bot");
+
+  expect(owned).not.toHaveBeenCalled();
+  expect(audit.checkpoints.map((row: any) => row.id)).toEqual([checkpoint.id]);
+  expect(audit.checkpoints[0]!.businessState).toMatchObject({
+    transcript: [{ blocks: [{ kind: "text", text: "clean inputs" }] }],
+  });
+  expect(audit.messages).toEqual([]);
+  expect(audit.artifacts).toMatchObject([{ id: "input", checkpointHidden: true }]);
+  expect(f.db.checkpoint.findMany).toHaveBeenLastCalledWith({
+    where: { botId: "bot", spaceId: actor.spaceId, userId: actor.userId },
+    orderBy: { createdAt: "asc" },
+  });
+  expect(f.db.artifact.findMany).toHaveBeenLastCalledWith({
+    where: { id: { in: ["input"] }, spaceId: actor.spaceId, userId: actor.userId, groupId: null },
+    orderBy: { createdAt: "asc" },
+  });
+});
+
+it("rejects an unknown research archive instead of reading unscoped records", async () => {
+  const f = fixture();
+  f.db.bot.findFirst = vi.fn().mockResolvedValue(null);
+  await expect(f.service.audit(actor, "unknown")).rejects.toThrow("Resource not found");
+  expect(f.db.rollbackAuditLog.findMany).not.toHaveBeenCalled();
+  expect(f.db.artifact.findMany).not.toHaveBeenCalled();
 });
 
 it("preserves the committed rescue and blocks further work when restore fails", async () => {

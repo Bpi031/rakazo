@@ -12,6 +12,7 @@ import { type Actor, type Bot, type ComputerMode, GROUP_MEMBER_MIN } from "@raka
 import { ACTIVE_RUN_STATUSES } from "@rakazo/core";
 import {
   cancelRunsInTransaction,
+  checkpointArtifactIds,
   checkpointRunFields,
   computerScopeKey,
   createRepos,
@@ -378,6 +379,12 @@ export async function destroyBot(
   await removePiBotSessions(deps.dataDir, bot.userId, bot.id);
   const deletion = await withTransactionRetry(() =>
     deps.prisma.$transaction(async (tx) => {
+      // Match snapshot/restore lock order so no snapshot can land after retention is decided.
+      await tx.$queryRaw`
+        SELECT id FROM threads
+        WHERE "botId" = ${bot.id} AND "spaceId" = ${bot.spaceId}
+        ORDER BY id FOR UPDATE
+      `;
       const locked = await tx.$queryRaw<Array<{ id: string; webhookSecretId: string | null }>>`
         SELECT id, "webhookSecretId"
         FROM bots
@@ -385,12 +392,40 @@ export async function destroyBot(
         FOR UPDATE
       `;
       const webhookSecretId = locked[0]?.webhookSecretId ?? bot.webhookSecretId ?? null;
-      const botArtifacts = await tx.artifact.findMany({
-        where: { botId: bot.id, groupId: null, spaceId: bot.spaceId },
-        select: { storageKey: true },
+      const artifactScope = {
+        botId: bot.id,
+        groupId: null,
+        spaceId: bot.spaceId,
+        userId: bot.userId ?? context.userId,
+      };
+      const checkpoints = await tx.checkpoint.findMany({
+        where: { botId: bot.id, spaceId: bot.spaceId, userId: artifactScope.userId },
+        select: { businessState: true },
       });
+      const referenced = new Set(checkpointArtifactIds(checkpoints));
+      const botArtifacts = await tx.artifact.findMany({
+        where: artifactScope,
+        select: { id: true, rootArtifactId: true, storageKey: true },
+      });
+      // Keep complete referenced families: deleting their root cascades to every version.
+      const retainedFamilies = new Set(
+        botArtifacts
+          .filter((artifact) => referenced.has(artifact.id))
+          .map((artifact) => artifact.rootArtifactId ?? artifact.id),
+      );
+      const retained = botArtifacts.filter((artifact) =>
+        retainedFamilies.has(artifact.rootArtifactId ?? artifact.id),
+      );
+      const retainedIds = retained.map((artifact) => artifact.id);
+      const retainedKeys = new Set(retained.map((artifact) => artifact.storageKey));
+      if (retainedIds.length) {
+        await tx.artifact.updateMany({
+          where: { ...artifactScope, id: { in: retainedIds } },
+          data: { checkpointHidden: true },
+        });
+      }
       await tx.artifact.deleteMany({
-        where: { botId: bot.id, groupId: null, spaceId: bot.spaceId },
+        where: { ...artifactScope, ...(retainedIds.length ? { id: { notIn: retainedIds } } : {}) },
       });
       const groupCleanup = await detachBotFromGroups(tx, bot.id);
       await tx.computerExecutionLease.deleteMany({ where: { botId: bot.id } });
@@ -430,9 +465,11 @@ export async function destroyBot(
       if (dedicated) await tx.computer.delete({ where: { id: dedicated.id } });
       return {
         artifactKeys: [
-          ...botArtifacts.map((artifact) => artifact.storageKey),
+          ...botArtifacts
+            .filter((artifact) => !retainedFamilies.has(artifact.rootArtifactId ?? artifact.id))
+            .map((artifact) => artifact.storageKey),
           ...groupCleanup.artifactKeys,
-        ],
+        ].filter((key) => !retainedKeys.has(key)),
         cancelledGroupRuns: groupCleanup.cancelledRuns,
       };
     }),

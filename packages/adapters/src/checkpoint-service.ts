@@ -5,6 +5,7 @@ import { ACTIVE_RUN_STATUSES, callIdFromClientNonce } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
 import {
   cancelRunsInTransaction,
+  checkpointArtifactIds,
   checkpointMessageWhere,
   checkpointThreadLock,
   createRepos,
@@ -647,20 +648,40 @@ export class CheckpointService {
   }
 
   async audit(actor: Actor, botId: string) {
-    const { thread } = await this.owned(actor, botId);
-    const [audits, checkpoints, branches, messages] = await Promise.all([
+    const scope = { spaceId: actor.spaceId, userId: actor.userId, botId };
+    // Research snapshots outlive the bot and its thread. Scope the archive itself;
+    // reading it must not require a live workspace or a replacement bot.
+    const checkpoints = await this.deps.prisma.checkpoint.findMany({
+      where: scope,
+      orderBy: { createdAt: "asc" },
+    });
+    const threadIds = [...new Set(checkpoints.map((checkpoint) => checkpoint.threadId))];
+    if (threadIds.length === 0) {
+      const bot = await createRepos(this.deps.prisma).getBot(actor, botId, {
+        includeArchived: true,
+      });
+      if (bot.thread) threadIds.push(bot.thread.id);
+    }
+    const [audits, branches, messages, artifacts] = await Promise.all([
       this.deps.prisma.rollbackAuditLog.findMany({
-        where: { threadId: thread.id },
+        where: scope,
         orderBy: { createdAt: "asc" },
       }),
-      this.deps.prisma.checkpoint.findMany({
-        where: { threadId: thread.id },
-        orderBy: { createdAt: "asc" },
+      this.deps.prisma.conversationBranch.findMany({
+        where: { threadId: { in: threadIds } },
       }),
-      this.deps.prisma.conversationBranch.findMany({ where: { threadId: thread.id } }),
       this.deps.prisma.message.findMany({
-        where: { threadId: thread.id },
+        where: { threadId: { in: threadIds } },
         orderBy: { seq: "asc" },
+      }),
+      this.deps.prisma.artifact.findMany({
+        where: {
+          id: { in: checkpointArtifactIds(checkpoints) },
+          spaceId: actor.spaceId,
+          userId: actor.userId,
+          groupId: null,
+        },
+        orderBy: { createdAt: "asc" },
       }),
     ]);
     return {
@@ -671,6 +692,7 @@ export class CheckpointService {
       checkpoints,
       branches,
       messages,
+      artifacts,
     };
   }
 }

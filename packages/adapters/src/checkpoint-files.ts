@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream, readFileSync } from "node:fs";
-import { link, lstat, mkdir, open, unlink } from "node:fs/promises";
+import { link, lstat, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -128,14 +128,80 @@ export class CheckpointFiles {
   }
 
   private async directory(actor: Actor, botId: string) {
+    for (const identity of [actor.userId, botId]) {
+      if (
+        !/^[A-Za-z0-9_-]{1,160}$/.test(identity) ||
+        /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(identity)
+      )
+        throw new Error("Invalid checkpoint storage identity");
+    }
     const base = path.resolve(this.deps.dataDir, "checkpoint-blobs");
     const scope = sha256(JSON.stringify([actor.spaceId, actor.userId, botId]));
-    for (const directory of [base, path.join(base, scope)]) {
-      await mkdir(directory, { recursive: true, mode: 0o700 });
-      if (!(await lstat(directory)).isDirectory() || (await lstat(directory)).isSymbolicLink())
-        throw new Error("Invalid checkpoint blob storage");
+    const user = path.join(base, actor.userId);
+    const directory = path.join(user, botId);
+    const legacy = path.join(base, scope);
+    const inspect = async (folder: string) => {
+      try {
+        const info = await lstat(folder);
+        if (!info.isDirectory() || info.isSymbolicLink())
+          throw new Error("Invalid checkpoint blob storage");
+        return true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        return false;
+      }
+    };
+    await mkdir(base, { recursive: true, mode: 0o700 });
+    await inspect(base);
+    await mkdir(user, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "EEXIST") throw error;
+    });
+    await inspect(user);
+    const oldExists = await inspect(legacy);
+    const exists = await inspect(directory);
+    if (oldExists && exists && (await inspect(legacy)))
+      throw new Error("Legacy and user-bot checkpoint pools both exist; merge them before use");
+
+    // The readable user/bot path still belongs to one Space. Keep its binding outside
+    // the blob pool so the helper only encounters content-addressed files.
+    const binding = path.join(user, `.${botId}.scope`);
+    try {
+      const handle = await open(binding, "wx", 0o600);
+      try {
+        await handle.writeFile(`${scope}\n`);
+      } finally {
+        await handle.close();
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
-    return path.join(base, scope);
+    for (let attempt = 0; ; attempt++) {
+      const info = await lstat(binding);
+      if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1)
+        throw new Error("Invalid checkpoint storage binding");
+      // A concurrent first writer may have opened the exclusive file but not written yet.
+      if (info.size === 0 && attempt < 20) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        continue;
+      }
+      if (info.size !== 65 || (await readFile(binding, "utf8")) !== `${scope}\n`)
+        throw new Error("Checkpoint storage belongs to a different Space");
+      break;
+    }
+    if (oldExists) {
+      try {
+        await rename(legacy, directory);
+      } catch (error) {
+        // Another operation for this same scope may have completed the rename.
+        if ((await inspect(legacy)) || !(await inspect(directory))) throw error;
+      }
+    } else if (!exists) {
+      await mkdir(directory, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "EEXIST") throw error;
+      });
+    }
+    if (!(await inspect(directory))) throw new Error("Checkpoint blob storage is missing");
+    return directory;
   }
 
   private async execute(
@@ -209,6 +275,7 @@ export class CheckpointFiles {
       const entries = z.array(entry).parse(direct.entries);
       return this.validate({ version: 1, entries, digest: sha256(JSON.stringify(entries)) });
     }
+    const directory = await this.directory(actor, botId);
     const inventory = await this.execute(actor, botId, computer, { operation: "inventory" });
     const entries = z.array(entry).parse(inventory.entries);
     const manifest = this.validate({
@@ -216,7 +283,6 @@ export class CheckpointFiles {
       entries,
       digest: sha256(JSON.stringify(entries)),
     });
-    const directory = await this.directory(actor, botId);
     const files = [
       ...new Map(
         entries.filter((item) => item.type === "file").map((item) => [item.sha256, item]),

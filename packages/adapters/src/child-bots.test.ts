@@ -61,6 +61,7 @@ const context = {
 
 function noGroupMemberships() {
   return {
+    checkpoint: { findMany: vi.fn().mockResolvedValue([]) },
     $queryRaw: vi.fn().mockResolvedValue([]),
     chatGroup: {
       findMany: vi.fn().mockResolvedValue([]),
@@ -248,10 +249,13 @@ describe("destroyBot", () => {
     const executeRaw = vi.fn().mockResolvedValue(1);
     const releaseComputers = vi.fn().mockResolvedValue({ count: 1 });
     const removeArtifact = vi.fn().mockResolvedValue(undefined);
-    const findArtifacts = vi.fn().mockResolvedValue([{ storageKey: "stored-artifact" }]);
+    const findArtifacts = vi.fn().mockResolvedValue([
+      { id: "artifact-1", rootArtifactId: null, storageKey: "stored-artifact" },
+    ]);
     const deleteArtifacts = vi.fn().mockResolvedValue({ count: 1 });
     const transaction = vi.fn(async (callback: (tx: unknown) => Promise<void>) =>
       callback({
+        checkpoint: { findMany: vi.fn().mockResolvedValue([]) },
         $queryRaw: vi.fn().mockResolvedValue([]),
         chatGroup: {
           findMany: vi.fn().mockResolvedValue([]),
@@ -318,11 +322,11 @@ describe("destroyBot", () => {
     });
     expect(deleteBot).toHaveBeenCalledWith({ where: { id: "bot-1" } });
     expect(findArtifacts).toHaveBeenCalledWith({
-      where: { botId: "bot-1", groupId: null, spaceId: "workspace-1" },
-      select: { storageKey: true },
+      where: { botId: "bot-1", groupId: null, spaceId: "workspace-1", userId: "user-1" },
+      select: { id: true, rootArtifactId: true, storageKey: true },
     });
     expect(deleteArtifacts).toHaveBeenCalledWith({
-      where: { botId: "bot-1", groupId: null, spaceId: "workspace-1" },
+      where: { botId: "bot-1", groupId: null, spaceId: "workspace-1", userId: "user-1" },
     });
     expect(deleteArtifacts.mock.invocationCallOrder[0]).toBeLessThan(
       deleteBot.mock.invocationCallOrder[0]!,
@@ -354,6 +358,7 @@ describe("destroyBot", () => {
     ]);
     const transaction = vi.fn(async (callback: (tx: unknown) => Promise<void>) =>
       callback({
+        checkpoint: { findMany: vi.fn().mockResolvedValue([]) },
         $queryRaw: queryRaw,
         chatGroup: {
           findMany: vi.fn().mockResolvedValue([
@@ -1874,6 +1879,7 @@ function runInWorkspace(cwd: string, argv: readonly string[]) {
 function deletionPrisma(team: { id: string }) {
   const transaction = vi.fn(async (callback: (tx: unknown) => Promise<unknown>) =>
     callback({
+      checkpoint: { findMany: vi.fn().mockResolvedValue([]) },
       $queryRaw: vi.fn().mockResolvedValue([]),
       chatGroup: {
         findMany: vi.fn().mockResolvedValue([]),

@@ -679,9 +679,6 @@ model Thread {
   tasks                       Task[]
   runs                        Run[]
   routines                    Routine[]
-  branches                    ConversationBranch[]
-  checkpoints                 Checkpoint[]
-  rollbackAuditLogs           RollbackAuditLog[]
 
   @@index([spaceId])
   @@map("threads")
@@ -689,8 +686,8 @@ model Thread {
 
 model ConversationBranch {
   id                     String   @id @default(cuid())
+  // Immutable source identity; research history survives live-thread deletion.
   threadId               String
-  thread                 Thread   @relation(fields: [threadId], references: [id], onDelete: Cascade)
   parentBranchId         String?
   parentCutoffMessageSeq Int?
   parentCutoffEventSeq   Int?
@@ -702,8 +699,8 @@ model ConversationBranch {
 
 model Checkpoint {
   id               String   @id @default(cuid())
+  // Immutable source identity; not a foreign key to the live conversation.
   threadId         String
-  thread           Thread   @relation(fields: [threadId], references: [id], onDelete: Cascade)
   spaceId          String
   botId            String
   userId           String
@@ -725,8 +722,8 @@ model Checkpoint {
 
 model RollbackAuditLog {
   id                 String   @id @default(cuid())
+  // Immutable source identity; not a foreign key to the live conversation.
   threadId           String
-  thread             Thread   @relation(fields: [threadId], references: [id], onDelete: Cascade)
   spaceId            String
   botId              String
   userId             String

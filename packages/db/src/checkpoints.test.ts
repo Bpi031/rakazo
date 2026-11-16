@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   assertCheckpointGeneration,
+  checkpointArtifactIds,
   checkpointMessageWhere,
   checkpointRunFields,
   resolveCheckpointSegments,
@@ -16,6 +17,18 @@ const branches = [
 ];
 
 describe("checkpoint branches", () => {
+  it("extracts unique artifact references without accepting malformed snapshot fields", () => {
+    expect(
+      checkpointArtifactIds([
+        { businessState: { artifacts: [{ id: "artifact-a" }, { id: "artifact-b" }, { id: "" }] } },
+        { businessState: { artifacts: [{ id: "artifact-a" }, { id: 42 }, null, "artifact-c"] } },
+        { businessState: null },
+        { businessState: { artifacts: "artifact-d" } },
+        { businessState: { artifacts: [{ id: "a".repeat(201) }] } },
+      ]),
+    ).toEqual(["artifact-a", "artifact-b"]);
+  });
+
   it("composes ancestry cutoffs without exposing abandoned siblings", () => {
     expect(resolveCheckpointSegments(branches, "D")).toEqual([
       { branchId: "D", messageSeq: null, eventSeq: null },

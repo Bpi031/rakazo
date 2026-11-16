@@ -1,5 +1,16 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  symlink,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -129,8 +140,159 @@ it("deduplicates unchanged bytes and keeps scope separate", async () => {
     (call) => JSON.parse(Buffer.from(call[1].argv.at(-1), "base64").toString()).operation,
   );
   expect(calls).toEqual(["inventory", "inventory"]);
-  await state.service.capture({ ...actor, spaceId: "other" }, "bot", computer);
-  expect(await readdir(path.join(state.directory, "checkpoint-blobs"))).toHaveLength(2);
+  await state.service.capture({ ...actor, userId: "other-owner" }, "bot", computer);
+  await state.service.capture(actor, "other-bot", computer);
+  expect(await readdir(path.join(state.directory, "checkpoint-blobs"))).toEqual([
+    "other-owner",
+    "owner",
+  ]);
+  expect(
+    await readdir(path.join(state.directory, "checkpoint-blobs", "owner", "bot")),
+  ).toHaveLength(2);
+  expect(
+    await readdir(path.join(state.directory, "checkpoint-blobs", "owner", "other-bot")),
+  ).toHaveLength(2);
+});
+
+it("keeps a user-bot pool bound to its original Space", async () => {
+  const state = await fixture();
+  await state.service.capture(actor, "bot", computer);
+  const binding = path.join(state.directory, "checkpoint-blobs", "owner", ".bot.scope");
+  const before = await readFile(binding);
+  state.execute.mockClear();
+  await expect(
+    state.service.capture({ ...actor, spaceId: "other" }, "bot", computer),
+  ).rejects.toThrow("different Space");
+  expect(await readFile(binding)).toEqual(before);
+  expect(state.execute).not.toHaveBeenCalled();
+});
+
+it("relocates legacy pools without copying blobs and restores their saved manifest", async () => {
+  const state = await fixture();
+  const snapshot = await state.service.capture(actor, "bot", computer);
+  const base = path.join(state.directory, "checkpoint-blobs");
+  const pool = path.join(base, "owner", "bot");
+  const legacy = path.join(base, hash(JSON.stringify([actor.spaceId, actor.userId, "bot"])));
+  const first = snapshot.entries.find((item) => item.type === "file")!;
+  if (first.type !== "file") throw new Error("Missing fixture file");
+  const before = await lstat(path.join(pool, first.sha256));
+  await rename(pool, legacy);
+  await unlink(path.join(base, "owner", ".bot.scope"));
+  state.files.clear();
+  await state.service.restore(actor, "bot", computer, snapshot);
+  expect(state.inventory()).toEqual(snapshot.entries);
+  await expect(lstat(legacy)).rejects.toMatchObject({ code: "ENOENT" });
+  const after = await lstat(path.join(pool, first.sha256));
+  expect(after.ino).toBe(before.ino);
+  expect(after.size).toBe(before.size);
+  expect(after.nlink).toBe(1);
+  expect(await readdir(pool)).toHaveLength(2);
+});
+
+it("refuses coexisting legacy and new pools without changing either", async () => {
+  const state = await fixture();
+  const snapshot = await state.service.capture(actor, "bot", computer);
+  const base = path.join(state.directory, "checkpoint-blobs");
+  const pool = path.join(base, "owner", "bot");
+  const legacy = path.join(base, hash(JSON.stringify([actor.spaceId, actor.userId, "bot"])));
+  await mkdir(legacy);
+  const sentinel = hash("legacy-only");
+  await writeFile(path.join(legacy, sentinel), "legacy-only");
+  const originals = await Promise.all(
+    (await readdir(pool)).map((name) => readFile(path.join(pool, name))),
+  );
+  state.execute.mockClear();
+  await expect(state.service.restore(actor, "bot", computer, snapshot)).rejects.toThrow(
+    "both exist",
+  );
+  expect(await readFile(path.join(legacy, sentinel), "utf8")).toBe("legacy-only");
+  expect(
+    await Promise.all((await readdir(pool)).map((name) => readFile(path.join(pool, name)))),
+  ).toEqual(originals);
+  expect(state.execute).not.toHaveBeenCalled();
+});
+
+it("shares exclusive Space binding safely across concurrent first captures", async () => {
+  const state = await fixture();
+  const snapshots = await Promise.all([
+    state.service.capture(actor, "bot", computer),
+    state.service.capture(actor, "bot", computer),
+  ]);
+  expect(snapshots[0]).toEqual(snapshots[1]);
+  expect(
+    await readdir(path.join(state.directory, "checkpoint-blobs", "owner", "bot")),
+  ).toHaveLength(2);
+});
+
+it("handles concurrent operations relocating the same legacy pool", async () => {
+  const state = await fixture();
+  const snapshot = await state.service.capture(actor, "bot", computer);
+  const base = path.join(state.directory, "checkpoint-blobs");
+  const pool = path.join(base, "owner", "bot");
+  const legacy = path.join(base, hash(JSON.stringify([actor.spaceId, actor.userId, "bot"])));
+  await rename(pool, legacy);
+  await unlink(path.join(base, "owner", ".bot.scope"));
+  const captures = await Promise.all([
+    state.service.capture(actor, "bot", computer),
+    state.service.capture(actor, "bot", computer),
+  ]);
+  expect(captures).toEqual([snapshot, snapshot]);
+  await expect(lstat(legacy)).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await readdir(pool)).toHaveLength(2);
+});
+
+it.each([
+  ["user", "../outside"],
+  ["user", "owner/child"],
+  ["user", "CON"],
+  ["bot", "..\\outside"],
+  ["bot", "/absolute"],
+  ["bot", ""],
+])("rejects an invalid %s storage identity: %s", async (field, value) => {
+  const state = await fixture();
+  await expect(
+    state.service.capture(
+      field === "user" ? { ...actor, userId: value } : actor,
+      field === "bot" ? value : "bot",
+      computer,
+    ),
+  ).rejects.toThrow("storage identity");
+  expect(state.execute).not.toHaveBeenCalled();
+});
+
+it.each(["base", "user", "bot", "legacy"])(
+  "rejects a symlink at the %s directory",
+  async (component) => {
+    const state = await fixture();
+    const base = path.join(state.directory, "checkpoint-blobs");
+    const user = path.join(base, "owner");
+    const outside = path.join(state.directory, "outside");
+    await mkdir(outside);
+    const target =
+      component === "base"
+        ? base
+        : component === "user"
+          ? user
+          : component === "bot"
+            ? path.join(user, "bot")
+            : path.join(base, hash(JSON.stringify([actor.spaceId, actor.userId, "bot"])));
+    await mkdir(path.dirname(target), { recursive: true });
+    await symlink(outside, target, process.platform === "win32" ? "junction" : "dir");
+    await expect(state.service.capture(actor, "bot", computer)).rejects.toThrow("blob storage");
+    expect(await readdir(outside)).toEqual([]);
+    expect(state.execute).not.toHaveBeenCalled();
+  },
+);
+
+it.skipIf(process.platform === "win32")("rejects a symlinked Space binding", async () => {
+  const state = await fixture();
+  const user = path.join(state.directory, "checkpoint-blobs", "owner");
+  await mkdir(user, { recursive: true });
+  const outside = path.join(state.directory, "outside");
+  await writeFile(outside, `${hash(JSON.stringify([actor.spaceId, actor.userId, "bot"]))}\n`);
+  await symlink(outside, path.join(user, ".bot.scope"));
+  await expect(state.service.capture(actor, "bot", computer)).rejects.toThrow("storage binding");
+  expect(state.execute).not.toHaveBeenCalled();
 });
 
 it("preserves newly created cache ancestors without treating them as restored business files", async () => {
@@ -198,10 +360,9 @@ it("captures identical files once and restores every path", async () => {
 it("verifies every blob before clearing the active workspace", async () => {
   const state = await fixture();
   const snapshot = await state.service.capture(actor, "bot", computer);
-  const [scope] = await readdir(path.join(state.directory, "checkpoint-blobs"));
   const file = snapshot.entries.find((item) => item.type === "file")!;
   if (file.type !== "file") throw new Error("Missing fixture file");
-  const blob = path.join(state.directory, "checkpoint-blobs", scope!, file.sha256);
+  const blob = path.join(state.directory, "checkpoint-blobs", "owner", "bot", file.sha256);
   await writeFile(blob, Buffer.alloc((await readFile(blob)).length, 42));
   state.execute.mockClear();
   const before = state.inventory();
@@ -264,8 +425,7 @@ it("compresses text and preserves already-compressed formats", async () => {
   state.files.set("model.json", text);
   state.files.set("spreadsheet.xlsm", Buffer.from("spreadsheet archive"));
   const snapshot = await state.service.capture(actor, "bot", computer);
-  const [scope] = await readdir(path.join(state.directory, "checkpoint-blobs"));
-  const folder = path.join(state.directory, "checkpoint-blobs", scope!);
+  const folder = path.join(state.directory, "checkpoint-blobs", "owner", "bot");
   const compressed = await readFile(path.join(folder, hash(text)));
   expect(compressed.subarray(0, 6).toString("binary")).toBe("RKCZ1\0");
   expect(compressed.length).toBeLessThan(text.length / 5);

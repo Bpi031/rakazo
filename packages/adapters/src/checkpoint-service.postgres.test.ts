@@ -1,20 +1,27 @@
 import { createHash, randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import type { SandboxProvider } from "@rakazo/adapter-kit";
+import type { AdapterContext, JobPublisher, SandboxProvider } from "@rakazo/adapter-kit";
 import type { Actor } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import {
   assertRunCanWriteHistory,
   checkpointMessageWhere,
   checkpointRunFields,
+  computerScopeKey,
   createDb,
   createThreadMessage,
   loadRunHistoryMessages,
   searchHistory,
 } from "@rakazo/db";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { LocalArtifactStore } from "./artifacts.js";
 import type { CheckpointFileManifest } from "./checkpoint-files.js";
 import { CheckpointService } from "./checkpoint-service.js";
+import { destroyBot } from "./child-bots.js";
+import { LocalAgentHomeStore } from "./home.js";
 
 // Opt in with a dedicated, fully migrated disposable database. Never use DATABASE_URL.
 const connection = process.env.CHECKPOINT_TEST_DATABASE_URL;
@@ -132,6 +139,9 @@ postgres("checkpoint recovery with migrated PostgreSQL", () => {
 
   afterAll(async () => {
     if (!prisma) return;
+    await prisma.rollbackAuditLog.deleteMany({ where: { threadId } });
+    await prisma.checkpoint.deleteMany({ where: { threadId } });
+    await prisma.conversationBranch.deleteMany({ where: { threadId } });
     await prisma.organization.delete({ where: { id: scope } });
     await prisma.user.delete({ where: { id: actor.userId } });
     await disconnect();
@@ -482,6 +492,158 @@ postgres("checkpoint recovery with migrated PostgreSQL", () => {
     } finally {
       releaseFence();
       await Promise.allSettled([fence, waiter]);
+    }
+  });
+
+  it("permanently deletes the bot while retaining research snapshots and referenced artifact bytes", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "checkpoint-retention-"));
+    try {
+      await prisma.run.updateMany({
+        where: { threadId },
+        data: { status: "cancelled", completedAt: new Date() },
+      });
+      const context: AdapterContext = {
+        ...actor,
+        operationId: "retention-test",
+        traceId: "retention-test",
+        signal: new AbortController().signal,
+      };
+      const artifacts = new LocalArtifactStore(directory);
+      const originalBytes = Buffer.from("original workbook bytes");
+      const original = await artifacts.put(
+        { name: "saved.xlsx", mimeType: "application/octet-stream", bytes: originalBytes },
+        context,
+      );
+      const rootArtifact = await prisma.artifact.create({
+        data: {
+          spaceId: actor.spaceId,
+          userId: actor.userId,
+          botId,
+          name: "saved.xlsx",
+          mimeType: "application/octet-stream",
+          size: originalBytes.length,
+          hash: hash(originalBytes.toString()),
+          storageKey: original.id,
+          checkpointHidden: true,
+        },
+      });
+      const retainedBytes = Buffer.from("saved workbook bytes");
+      const retained = await artifacts.put(
+        { name: "saved.xlsx", mimeType: "application/octet-stream", bytes: retainedBytes },
+        context,
+      );
+      const savedArtifact = await prisma.artifact.create({
+        data: {
+          spaceId: actor.spaceId,
+          userId: actor.userId,
+          botId,
+          name: "saved.xlsx",
+          mimeType: "application/octet-stream",
+          size: retainedBytes.length,
+          hash: hash(retainedBytes.toString()),
+          storageKey: retained.id,
+          rootArtifactId: rootArtifact.id,
+          version: 2,
+        },
+      });
+      files = { "research.txt": "preserved research input" };
+      const blob = path.join(
+        directory,
+        "checkpoint-blobs",
+        actor.userId,
+        botId,
+        hash(files["research.txt"]!),
+      );
+      await mkdir(path.dirname(blob), { recursive: true });
+      await writeFile(blob, files["research.txt"]!);
+      const thread = await prisma.thread.findUniqueOrThrow({ where: { id: threadId } });
+      await service.create(actor, { botId, expectedGeneration: thread.checkpointGeneration });
+      const before = await service.audit(actor, botId);
+      const unsaved = await artifacts.put(
+        {
+          name: "unsaved.xlsx",
+          mimeType: "application/octet-stream",
+          bytes: Buffer.from("unsaved"),
+        },
+        context,
+      );
+      const unsavedArtifact = await prisma.artifact.create({
+        data: {
+          spaceId: actor.spaceId,
+          userId: actor.userId,
+          botId,
+          name: "unsaved.xlsx",
+          mimeType: "application/octet-stream",
+          size: 7,
+          hash: hash("unsaved"),
+          storageKey: unsaved.id,
+        },
+      });
+      const bot = await prisma.bot.findUniqueOrThrow({ where: { id: botId } });
+      await prisma.computer.update({
+        where: { id: bot.computerId! },
+        data: {
+          scopeKey: computerScopeKey("dedicated", actor.spaceId, botId),
+        },
+      });
+      const enqueue = vi.fn();
+      await destroyBot(
+        {
+          prisma,
+          dataDir: directory,
+          home: new LocalAgentHomeStore(directory),
+          artifacts,
+          jobs: {
+            cancel: vi.fn().mockResolvedValue(undefined),
+            enqueue,
+          } as unknown as JobPublisher,
+          sandbox: { destroy: vi.fn().mockResolvedValue(undefined) } as unknown as SandboxProvider,
+        },
+        bot,
+        context,
+        { deleteMemories: true },
+      );
+
+      expect(await prisma.bot.findUnique({ where: { id: botId } })).toBeNull();
+      expect(await prisma.thread.findUnique({ where: { id: threadId } })).toBeNull();
+      expect(await prisma.artifact.findUnique({ where: { id: unsavedArtifact.id } })).toBeNull();
+      expect(
+        await prisma.artifact.findUniqueOrThrow({ where: { id: savedArtifact.id } }),
+      ).toMatchObject({
+        botId: null,
+        checkpointHidden: true,
+        storageKey: retained.id,
+      });
+      expect(Buffer.from(await artifacts.get(retained.id, context))).toEqual(retainedBytes);
+      expect(
+        await prisma.artifact.findUniqueOrThrow({ where: { id: rootArtifact.id } }),
+      ).toMatchObject({ botId: null, checkpointHidden: true });
+      expect(Buffer.from(await artifacts.get(original.id, context))).toEqual(originalBytes);
+      await expect(artifacts.get(unsaved.id, context)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await readFile(blob, "utf8")).toBe("preserved research input");
+      const archive = await service.audit(actor, botId);
+      expect(archive.checkpoints).toEqual(before.checkpoints);
+      expect(archive.branches).toEqual(before.branches);
+      expect(archive.audits).toEqual(before.audits);
+      expect(archive.messages).toEqual([]);
+      expect(archive.artifacts.some((item) => item.id === savedArtifact.id)).toBe(true);
+      expect(archive.checkpoints.at(-1)!.businessState).toHaveProperty("transcript");
+      await expect(service.audit({ ...actor, userId: "another-user" }, botId)).rejects.toThrow(
+        "Resource not found",
+      );
+      await expect(service.audit({ ...actor, spaceId: "another-space" }, botId)).rejects.toThrow(
+        "Resource not found",
+      );
+      await expect(
+        service.rollback(actor, {
+          botId,
+          checkpointId: archive.checkpoints[0]!.id,
+          expectedGeneration: 0,
+        }),
+      ).rejects.toThrow("Resource not found");
+      expect(enqueue).not.toHaveBeenCalled();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
     }
   });
 });

@@ -2,6 +2,31 @@ import type { Prisma, PrismaClient } from "./client.js";
 
 type CheckpointReader = Pick<PrismaClient, "thread" | "conversationBranch">;
 
+/** Historical snapshots keep artifact references after the originating bot is deleted. */
+export function checkpointArtifactIds(
+  checkpoints: ReadonlyArray<{ businessState: unknown }>,
+): string[] {
+  const ids = new Set<string>();
+  for (const { businessState } of checkpoints) {
+    if (!businessState || typeof businessState !== "object" || !("artifacts" in businessState))
+      continue;
+    const artifacts = businessState.artifacts;
+    if (!Array.isArray(artifacts)) continue;
+    for (const artifact of artifacts) {
+      if (
+        artifact &&
+        typeof artifact === "object" &&
+        "id" in artifact &&
+        typeof artifact.id === "string" &&
+        artifact.id.length > 0 &&
+        artifact.id.length <= 200
+      )
+        ids.add(artifact.id);
+    }
+  }
+  return [...ids];
+}
+
 export class CheckpointConflictError extends Error {
   constructor(message = "Workspace changed or is unavailable during checkpoint recovery") {
     super(message);
