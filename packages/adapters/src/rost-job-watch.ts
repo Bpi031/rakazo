@@ -6,6 +6,7 @@ import { assertCheckpointGeneration, CheckpointConflictError } from "@rakazo/db"
 import { z } from "zod";
 import { toComputerRef } from "./computer-support.js";
 import { memberScope } from "./team-storage.js";
+import { assertManagedTeamComputer, assertWorkspacePath, workspaceRelativeRoots } from "./managed-workspace.js";
 
 const observer = readFileSync(new URL("./rost-job-observer.py", import.meta.url), "utf8");
 export const RostJobOut = z.string().min(1).max(512).refine(
@@ -56,10 +57,21 @@ async function observe(deps: Deps, scope: Scope, out: string) {
     where: { id: scope.botId, userId: scope.userId, spaceId: scope.spaceId, archivedAt: null },
     include: { computer: true, thread: true },
   });
-  if (!bot.thread || !deps.sandbox || bot.computer?.scope !== "dedicated"
+  if (!bot.thread || !deps.sandbox || !bot.computer
       || bot.computer.userId !== scope.userId || bot.computer.spaceId !== scope.spaceId
       || !bot.computer.providerRef || bot.computer.state !== "running")
-    throw new Error("Existing owned private running computer required");
+    throw new Error("Existing owned running computer required");
+  await assertManagedTeamComputer(deps.prisma, bot.computer, scope);
+  const roots = workspaceRelativeRoots(bot.computer.scope, scope.botId);
+  let root = roots[0]!;
+  let relative = RostJobOut.parse(out);
+  if (bot.computer.scope === "team") {
+    const absoluteRelative = /^(bots|shared)\//.test(relative) ? relative : root + "/" + relative;
+    assertWorkspacePath(absoluteRelative, roots);
+    root = roots.find((candidate) => absoluteRelative.startsWith(candidate + "/"))!;
+    if (!root) throw new Error("Exact job output directory required");
+    relative = absoluteRelative.slice(root.length + 1);
+  }
   const checkpointGeneration = bot.thread.checkpointGeneration ?? 0;
   await assertCurrentWatch(deps, bot.thread.id, checkpointGeneration);
   const context: AdapterContext = {
@@ -68,7 +80,7 @@ async function observe(deps: Deps, scope: Scope, out: string) {
   };
   let stdout = "", code: number | undefined;
   for await (const event of deps.sandbox.execute(toComputerRef(bot.computer), {
-    argv: ["/opt/office-python/bin/python3", "-I", "-c", observer, RostJobOut.parse(out)],
+    argv: ["/opt/office-python/bin/python3", "-I", "-c", observer, relative, root],
     cwd: "/home/rakazo", timeoutMs: 15000,
     unsetEnv: ["PYTHONPATH", "PYTHONHOME", "LD_PRELOAD"],
   }, context)) {

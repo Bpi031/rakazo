@@ -8,15 +8,21 @@ import {
   checkpointArtifactIds,
   checkpointMessageWhere,
   checkpointThreadLock,
+  claimCheckpointWorkspace,
   createRepos,
   ensureCheckpointBranch,
   expireComputerExecutionLeases,
+  IsolationError,
   Prisma,
+  releaseCheckpointWorkspace,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
-import type { CheckpointFileManifest } from "./checkpoint-files.js";
+import type {
+  CheckpointFileManifest,
+  CheckpointFileScope,
+} from "./checkpoint-files.js";
 import { CheckpointFiles } from "./checkpoint-files.js";
-import { stopCheckpointWriters } from "./checkpoint-processes.js";
+import { assertCheckpointWritersIdle, stopCheckpointWriters } from "./checkpoint-processes.js";
 import { toComputerRef } from "./computer-lifecycle.js";
 import { PriorityService } from "./policy-priorities.js";
 
@@ -138,23 +144,54 @@ export class CheckpointService {
     this.priorities = new PriorityService(deps);
   }
 
-  private async owned(actor: Actor, botId: string) {
-    const bot = await createRepos(this.deps.prisma).getBot(actor, botId);
+  private async owned(
+    actor: Actor,
+    botId: string,
+    db: Pick<PrismaClient, "bot" | "thread"> = this.deps.prisma,
+  ) {
+    const bot = await db.bot.findFirst({
+      where: { id: botId, spaceId: actor.spaceId, userId: actor.userId, archivedAt: null },
+      include: { thread: true, computer: true },
+    });
+    if (!bot) throw new IsolationError();
     if (
-      bot.computer?.scope !== "dedicated" ||
+      !bot.computer ||
+      (bot.computer.scope !== "dedicated" && bot.computer.scope !== "team") ||
+      bot.computer.userId !== actor.userId ||
+      bot.computer.spaceId !== actor.spaceId ||
       bot.computer.state !== "running" ||
       !bot.computer.providerRef
     ) {
-      throw new Error("Checkpoints require a running dedicated workspace");
+      throw new Error("Checkpoints require a running owned workspace");
     }
-    const thread = await this.deps.prisma.thread.findFirstOrThrow({
+    const thread = await db.thread.findFirstOrThrow({
       where: { botId, spaceId: actor.spaceId, userId: actor.userId },
     });
-    return { bot, thread, computer: toComputerRef(bot.computer) };
+    const scope: CheckpointFileScope = bot.computer.scope === "team" ? "team" : "dedicated";
+    const workspaceKey = createHash("sha256")
+      .update(
+        JSON.stringify([
+          actor.spaceId,
+          actor.userId,
+          bot.computer.id,
+          bot.computer.homeKey,
+          scope === "team" ? `team/bots/${botId}` : "workspace",
+        ]),
+      )
+      .digest("hex");
+    return {
+      bot,
+      thread,
+      computer: toComputerRef(bot.computer),
+      computerId: bot.computer.id,
+      workspaceKey,
+      scope,
+      workspaceBlocked: bot.computer.maintenanceId?.startsWith("checkpoint-restore:") === true,
+    };
   }
 
   async status(actor: Actor, botId: string): Promise<CheckpointStatus> {
-    const { thread } = await this.owned(actor, botId);
+    const { thread, workspaceBlocked = false } = await this.owned(actor, botId);
     const latest = await this.deps.prisma.checkpoint.findFirst({
       where: { threadId: thread.id },
       select: { id: true },
@@ -162,13 +199,13 @@ export class CheckpointService {
     });
     return {
       generation: thread.checkpointGeneration,
-      blocked: thread.checkpointBlocked,
-      revision: `${thread.checkpointGeneration}:${thread.checkpointBlocked}:${latest?.id ?? ""}`,
+      blocked: thread.checkpointBlocked || workspaceBlocked,
+      revision: `${thread.checkpointGeneration}:${thread.checkpointBlocked || workspaceBlocked}:${latest?.id ?? ""}`,
     };
   }
 
   async list(actor: Actor, botId: string): Promise<CheckpointView> {
-    const { thread } = await this.owned(actor, botId);
+    const { thread, workspaceBlocked = false } = await this.owned(actor, botId);
     const [rows, audits, branches] = await Promise.all([
       this.deps.prisma.checkpoint.findMany({
         where: { threadId: thread.id },
@@ -243,8 +280,8 @@ export class CheckpointService {
     }
     return {
       generation: thread.checkpointGeneration,
-      blocked: thread.checkpointBlocked,
-      revision: `${thread.checkpointGeneration}:${thread.checkpointBlocked}:${rows[0]?.id ?? ""}`,
+      blocked: thread.checkpointBlocked || workspaceBlocked,
+      revision: `${thread.checkpointGeneration}:${thread.checkpointBlocked || workspaceBlocked}:${rows[0]?.id ?? ""}`,
       activeBranchId: thread.activeBranchId,
       currentCheckpointId: resolve(
         thread.activeBranchId
@@ -284,12 +321,15 @@ export class CheckpointService {
     label?: string,
     reason?: string,
     taskState?: unknown,
+    expectedWorkspaceKey?: string,
   ) {
-    const { computer } = await this.owned(actor, botId);
+    const { computer, workspaceKey, scope = "dedicated" } = await this.owned(actor, botId, tx);
+    if (expectedWorkspaceKey && workspaceKey !== expectedWorkspaceKey)
+      throw new Error("Workspace binding changed during checkpointing");
     const thread = await tx.thread.findUniqueOrThrow({ where: { id: threadId } });
     if (!thread.activeBranchId) throw new Error("Missing checkpoint branch");
-    const fileManifest = await this.files.capture(actor, botId, computer);
-    const binding = await this.priorities.captureCheckpointBinding(actor, botId);
+    const fileManifest = await this.files.capture(actor, botId, computer, scope);
+    const binding = await this.priorities.captureCheckpointBinding(actor, botId, tx);
     const artifacts = await tx.artifact.findMany({
       where: {
         botId,
@@ -343,6 +383,7 @@ export class CheckpointService {
         botId,
         spaceId: actor.spaceId,
         userId: actor.userId,
+        workspaceKey,
         branchId: thread.activeBranchId,
         kind,
         label,
@@ -355,6 +396,7 @@ export class CheckpointService {
           parentCheckpointId: anchor?.id ?? null,
           reason,
           restoreMode: "reconstructed",
+          workspaceScope: scope,
         }),
         taskState: json(
           taskState ??
@@ -368,27 +410,66 @@ export class CheckpointService {
   }
 
   async create(actor: Actor, input: { botId: string; label?: string; expectedGeneration: number }) {
-    const { thread } = await this.owned(actor, input.botId);
-    return this.deps.prisma.$transaction(async (tx) => {
-      await checkpointThreadLock(tx, thread.id);
-      await tx.$queryRaw`SELECT id FROM threads WHERE id = ${thread.id} FOR UPDATE`;
-      const current = await ensureCheckpointBranch(tx, thread.id);
-      if (current.checkpointBlocked || current.checkpointGeneration !== input.expectedGeneration)
-        throw new Error("Workspace changed; refresh checkpoints");
-      if (
-        await tx.run.count({
-          where: { threadId: thread.id, status: { in: [...ACTIVE_RUN_STATUSES] } },
-        })
-      )
-        throw new Error("Wait for the current turn to finish before saving");
-      if (
-        await tx.routine.count({
-          where: { botId: input.botId, active: true, jobWatch: { not: Prisma.JsonNull } },
-        })
-      )
-        throw new Error("Stop the watched job before saving");
-      return this.capture(tx, actor, input.botId, thread.id, "manual", input.label);
-    }, txOptions);
+    const {
+      thread,
+      computer,
+      computerId,
+      workspaceKey,
+      scope = "dedicated",
+    } = await this.owned(actor, input.botId);
+    const owner = `checkpoint-save:${randomUUID()}`;
+    await claimCheckpointWorkspace(this.deps.prisma, {
+      computerId,
+      ...actor,
+      botId: input.botId,
+      owner,
+    });
+    try {
+      await assertCheckpointWritersIdle(
+        this.deps.sandbox,
+        computer,
+        {
+          ...actor,
+          botId: input.botId,
+          operationId: owner,
+          traceId: "checkpoint-idle",
+          signal: AbortSignal.timeout(20_000),
+        },
+        scope,
+      );
+      return await this.deps.prisma.$transaction(async (tx) => {
+        await checkpointThreadLock(tx, thread.id);
+        await tx.$queryRaw`SELECT id FROM threads WHERE id = ${thread.id} FOR UPDATE`;
+        const current = await ensureCheckpointBranch(tx, thread.id);
+        if (current.checkpointBlocked || current.checkpointGeneration !== input.expectedGeneration)
+          throw new Error("Workspace changed; refresh checkpoints");
+        if (
+          await tx.run.count({
+            where: { threadId: thread.id, status: { in: [...ACTIVE_RUN_STATUSES] } },
+          })
+        )
+          throw new Error("Wait for the current turn to finish before saving");
+        if (
+          await tx.routine.count({
+            where: { botId: input.botId, active: true, jobWatch: { not: Prisma.JsonNull } },
+          })
+        )
+          throw new Error("Stop the watched job before saving");
+        return this.capture(
+          tx,
+          actor,
+          input.botId,
+          thread.id,
+          "manual",
+          input.label,
+          undefined,
+          undefined,
+          workspaceKey,
+        );
+      }, txOptions);
+    } finally {
+      await releaseCheckpointWorkspace(this.deps.prisma, computerId, owner);
+    }
   }
 
   async captureForRun(input: CaptureInput) {
@@ -400,15 +481,58 @@ export class CheckpointService {
         email: "",
         isDeploymentOwner: false,
       };
-      const { thread } = await this.owned(actor, run.botId);
-      await this.deps.prisma.$transaction(async (tx) => {
-        await checkpointThreadLock(tx, thread.id);
-        await tx.$queryRaw`SELECT id FROM threads WHERE id = ${thread.id} FOR UPDATE`;
-        const current = await ensureCheckpointBranch(tx, thread.id);
-        if (current.checkpointBlocked || current.checkpointGeneration !== run.checkpointGeneration)
-          throw new Error("Checkpoint generation changed");
-        await this.capture(tx, actor, run.botId, thread.id, input.kind, undefined, input.reason);
-      }, txOptions);
+      const {
+        thread,
+        computer,
+        computerId,
+        workspaceKey,
+        scope = "dedicated",
+      } = await this.owned(actor, run.botId);
+      const owner = `checkpoint-save:${randomUUID()}`;
+      await claimCheckpointWorkspace(this.deps.prisma, {
+        computerId,
+        ...actor,
+        botId: run.botId,
+        owner,
+        allowedRunId: run.id,
+      });
+      try {
+        await assertCheckpointWritersIdle(
+          this.deps.sandbox,
+          computer,
+          {
+            ...actor,
+            botId: run.botId,
+            operationId: owner,
+            traceId: "checkpoint-idle",
+            signal: AbortSignal.timeout(20_000),
+          },
+          scope,
+        );
+        await this.deps.prisma.$transaction(async (tx) => {
+          await checkpointThreadLock(tx, thread.id);
+          await tx.$queryRaw`SELECT id FROM threads WHERE id = ${thread.id} FOR UPDATE`;
+          const current = await ensureCheckpointBranch(tx, thread.id);
+          if (
+            current.checkpointBlocked ||
+            current.checkpointGeneration !== run.checkpointGeneration
+          )
+            throw new Error("Checkpoint generation changed");
+          await this.capture(
+            tx,
+            actor,
+            run.botId,
+            thread.id,
+            input.kind,
+            undefined,
+            input.reason,
+            undefined,
+            workspaceKey,
+          );
+        }, txOptions);
+      } finally {
+        await releaseCheckpointWorkspace(this.deps.prisma, computerId, owner);
+      }
     } catch (error) {
       // Automatic observations must not cancel an already-started job or its watch.
       // Incomplete/unstable captures never create a selectable checkpoint.
@@ -420,7 +544,80 @@ export class CheckpointService {
     actor: Actor,
     input: { botId: string; checkpointId: string; expectedGeneration: number },
   ) {
-    const { thread, computer } = await this.owned(actor, input.botId);
+    const { thread, computerId, workspaceKey } = await this.owned(actor, input.botId);
+    const target = await this.deps.prisma.checkpoint.findFirstOrThrow({
+      where: {
+        id: input.checkpointId,
+        threadId: thread.id,
+        botId: input.botId,
+        spaceId: actor.spaceId,
+        userId: actor.userId,
+      },
+    });
+    if (target.workspaceKey && target.workspaceKey !== workspaceKey)
+      throw new Error("Checkpoint belongs to a different workspace");
+    const owner = `checkpoint-restore:${randomUUID()}`;
+    await claimCheckpointWorkspace(this.deps.prisma, {
+      computerId,
+      ...actor,
+      botId: input.botId,
+      owner,
+      restore: true,
+      retry: { threadId: thread.id, expectedGeneration: input.expectedGeneration },
+    });
+    let release = false;
+    try {
+      const result = await this.rollbackClaimed(actor, input, workspaceKey, { owner, computerId });
+      release = result.ok;
+      return result;
+    } catch (error) {
+      const state = await this.deps.prisma.thread.findUnique({
+        where: { id: thread.id },
+        select: { checkpointBlocked: true, checkpointGeneration: true, activeBranchId: true },
+      });
+      release = state?.checkpointBlocked !== true;
+      if (!release && state) {
+        // Covers failures before rollbackClaimed's filesystem phase, including a
+        // rejected retry. Once this audit commits, this attempt performs no more I/O.
+        await this.deps.prisma.rollbackAuditLog.create({
+          data: {
+            threadId: thread.id,
+            botId: input.botId,
+            spaceId: actor.spaceId,
+            userId: actor.userId,
+            toCheckpointId: target.id,
+            branchId: state.activeBranchId ?? target.branchId,
+            generation: state.checkpointGeneration,
+            status: "failed",
+            details: json({
+              restoreMode: "reconstructed",
+              error: error instanceof Error ? error.message : "Recovery failed",
+              workspaceMaintenanceOwner: owner,
+              workspaceComputerId: computerId,
+            }),
+          },
+        });
+      }
+      throw error;
+    } finally {
+      if (release) await releaseCheckpointWorkspace(this.deps.prisma, computerId, owner);
+    }
+  }
+
+  private async rollbackClaimed(
+    actor: Actor,
+    input: { botId: string; checkpointId: string; expectedGeneration: number },
+    expectedWorkspaceKey: string,
+    maintenance: { owner: string; computerId: string },
+  ) {
+    const {
+      thread,
+      computer,
+      workspaceKey,
+      scope = "dedicated",
+    } = await this.owned(actor, input.botId);
+    if (workspaceKey !== expectedWorkspaceKey)
+      throw new Error("Workspace binding changed during checkpointing");
     const target = await this.deps.prisma.checkpoint.findFirstOrThrow({
       where: { id: input.checkpointId, threadId: thread.id, userId: actor.userId },
     });
@@ -448,14 +645,19 @@ export class CheckpointService {
     }, txOptions);
     let rescueId: string | undefined;
     try {
-      await stopCheckpointWriters(this.deps.sandbox, computer, {
-        spaceId: actor.spaceId,
-        userId: actor.userId,
-        botId: input.botId,
-        operationId: randomUUID(),
-        traceId: "checkpoint-stop",
-        signal: AbortSignal.timeout(20_000),
-      });
+      await stopCheckpointWriters(
+        this.deps.sandbox,
+        computer,
+        {
+          spaceId: actor.spaceId,
+          userId: actor.userId,
+          botId: input.botId,
+          operationId: randomUUID(),
+          traceId: "checkpoint-stop",
+          signal: AbortSignal.timeout(20_000),
+        },
+        scope,
+      );
       // Commit the rescue before changing files: a later SQL failure must not erase it.
       const rescue = await this.deps.prisma.$transaction(async (tx) => {
         await checkpointThreadLock(tx, thread.id);
@@ -479,6 +681,7 @@ export class CheckpointService {
           undefined,
           "rollback",
           preparation.tasks,
+          expectedWorkspaceKey,
         );
       }, txOptions);
       rescueId = rescue.id;
@@ -496,8 +699,9 @@ export class CheckpointService {
           input.botId,
           computer,
           target.fileManifest as unknown as CheckpointFileManifest,
+          scope,
         );
-        await this.priorities.restoreCheckpointBinding(actor, input.botId, business.binding);
+        await this.priorities.restoreCheckpointBinding(actor, input.botId, business.binding, tx);
         const artifactIds = business.artifacts.map((item) => item.id);
         await tx.artifact.updateMany({
           where: {
@@ -634,6 +838,8 @@ export class CheckpointService {
             details: json({
               restoreMode: "reconstructed",
               error: error instanceof Error ? error.message : "Recovery failed",
+              workspaceMaintenanceOwner: maintenance.owner,
+              workspaceComputerId: maintenance.computerId,
               cancelledTasks: preparation.tasks,
             }),
           },

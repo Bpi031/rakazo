@@ -27,7 +27,7 @@ function fixture(status = "running") {
     spaceMember: {findUnique: vi.fn(async () => ({organizationId: "org", member: {role: "owner"}}))},
     teamMemberControl: {findUnique: vi.fn(async () => null)},
     routine: {findUnique: vi.fn(async () => ({...routine})), updateMany: update},
-    bot: { findUnique: vi.fn(async () => bot), findFirstOrThrow: vi.fn(async () => bot) },
+    bot: { count: vi.fn(async () => 0), findUnique: vi.fn(async () => bot), findFirstOrThrow: vi.fn(async () => bot) },
     thread: {findFirst: vi.fn(async () => bot.thread),
       findUnique: vi.fn (async () => bot.thread),
       findUniqueOrThrow: vi.fn(async () => bot.thread)},
@@ -46,6 +46,19 @@ function fixture(status = "running") {
 }
 
 describe("token-free owned Rost watch", () => {
+  it("observes Team own outputs and shared outputs, rejects another Bot and account", async () => {
+    const f = fixture();
+    const bot = await f.db.bot.findFirstOrThrow();
+    bot.computer.scope = "team";
+    await createRostJobWatch(f.deps, scope, "case/job");
+    expect((f.execute.mock.calls[0] as any)[1].argv.slice(4)).toEqual(["case/job", "bots/bot"]);
+    await createRostJobWatch(f.deps, scope, "shared/case/job");
+    expect((f.execute.mock.calls[1] as any)[1].argv.slice(4)).toEqual(["case/job", "shared"]);
+    await expect(createRostJobWatch(f.deps, scope, "bots/other/job")).rejects.toThrow("outside");
+    f.db.bot.count.mockResolvedValue(1);
+    await expect(createRostJobWatch(f.deps, scope, "case/job")).rejects.toThrow("exclusively");
+    expect(f.execute).toHaveBeenCalledTimes(2);
+  });
   it("rejects absolute, traversal, control and ambiguous paths and non-timer triggers", () => {
     for (const path of ["/tmp/job", "../job", "a//b", "a/./b", "a/../b", "a\0b", "a\\b", ""]) expect(RostJobOut.safeParse(path).success).toBe(false);
     expect(RostJobOut.parse("case/job")).toBe("case/job");

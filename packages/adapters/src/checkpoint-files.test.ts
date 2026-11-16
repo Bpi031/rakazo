@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  link,
   lstat,
   mkdir,
   mkdtemp,
@@ -13,7 +14,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { CheckpointFiles } from "./checkpoint-files.js";
 
 const actor = {
@@ -30,9 +31,11 @@ const computer = {
 } as const;
 const hash = (value: Uint8Array | string) => createHash("sha256").update(value).digest("hex");
 const temporary: string[] = [];
+beforeEach(() => vi.stubEnv("CHECKPOINT_DIRECT_DOCKER", "0"));
 afterEach(async () => {
   await Promise.all(temporary.map((directory) => rm(directory, { recursive: true, force: true })));
   temporary.length = 0;
+  vi.unstubAllEnvs();
 });
 
 async function fixture() {
@@ -66,10 +69,15 @@ async function fixture() {
       .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   const execute = vi.fn(async function* (_computer, request) {
     const input = JSON.parse(Buffer.from(request.argv.at(-1), "base64").toString());
+    const managed = (name: string) =>
+      !input.roots ||
+      input.roots.some((root: string) => name === root || name.startsWith(`${root}/`));
+    const selectedInventory = () => inventory().filter((item) => managed(item.path));
+    if (input.path && !managed(input.path)) throw new Error("Unmanaged fixture path");
     let value: any = {};
     switch (input.operation) {
       case "inventory":
-        value = { entries: inventory() };
+        value = { entries: selectedInventory() };
         break;
       case "read":
         value = {
@@ -80,14 +88,16 @@ async function fixture() {
         };
         break;
       case "clear": {
-        const preserved = [...directories].filter((name) =>
-          [...caches.keys()].some((cache) => cache.startsWith(`${name}/`)),
+        const preserved = [...directories].filter(
+          (name) =>
+            managed(name) && [...caches.keys()].some((cache) => cache.startsWith(`${name}/`)),
         );
-        files.clear();
-        directories.clear();
-        for (const name of modes.keys()) if (!preserved.includes(name)) modes.delete(name);
+        for (const name of files.keys()) if (managed(name)) files.delete(name);
+        for (const name of directories) if (managed(name)) directories.delete(name);
+        for (const name of modes.keys())
+          if (managed(name) && !preserved.includes(name)) modes.delete(name);
         for (const name of preserved) directories.add(name);
-        value = { preservedDirectories: inventory() };
+        value = { preservedDirectories: selectedInventory() };
         break;
       }
       case "directory":
@@ -152,6 +162,136 @@ it("deduplicates unchanged bytes and keeps scope separate", async () => {
   expect(
     await readdir(path.join(state.directory, "checkpoint-blobs", "owner", "other-bot")),
   ).toHaveLength(2);
+});
+
+it("stores matching content independently for different Bots", async () => {
+  const state = await fixture();
+  await state.service.capture(actor, "first", computer);
+  const second = await state.service.capture(actor, "second", computer);
+  const digest = hash(state.files.get("input.xlsx")!);
+  const pools = path.join(state.directory, "checkpoint-blobs", "owner");
+  const firstBlob = await lstat(path.join(pools, "first", digest));
+  const secondBlob = await lstat(path.join(pools, "second", digest));
+  expect(secondBlob.ino).not.toBe(firstBlob.ino);
+  expect(secondBlob.nlink).toBe(1);
+  state.files.clear();
+  await state.service.restore(actor, "second", computer, second);
+  expect(state.inventory()).toEqual(second.entries);
+});
+
+it("rejects checkpoint blobs with hard links before restoring", async () => {
+  const state = await fixture();
+  const snapshot = await state.service.capture(actor, "bot", computer);
+  const digest = hash(state.files.get("input.xlsx")!);
+  const blob = path.join(state.directory, "checkpoint-blobs", "owner", "bot", digest);
+  await link(blob, path.join(state.directory, "legacy-reference"));
+  expect((await lstat(blob)).nlink).toBe(2);
+  state.files.clear();
+  await expect(state.service.restore(actor, "bot", computer, snapshot)).rejects.toThrow("Invalid checkpoint blob");
+});
+
+it("captures and restores only a Team bot's directory, preserving shared files", async () => {
+  const state = await fixture();
+  for (const name of ["bots", "bots/source", "bots/recipient", "shared"])
+    state.directories.add(name);
+  state.files.set("bots/source/private.json", Buffer.from("source secret"));
+  state.files.set("bots/recipient/private.json", Buffer.from("recipient secret"));
+  state.files.set("shared/stable.json", Buffer.from("stable shared model\n".repeat(1000)));
+  state.files.set("shared/changed.json", Buffer.from("old"));
+  state.files.set("shared/deleted.xlsx", Buffer.from("old spreadsheet"));
+  const source = await state.service.capture(actor, "source", computer, "team");
+  expect(source.version).toBe(2);
+  expect(source).toMatchObject({ roots: ["bots/source"] });
+  expect(source.entries.map((item) => item.path)).toEqual([
+    "bots/source",
+    "bots/source/private.json",
+  ]);
+  state.files.set("shared/changed.json", Buffer.from("current"));
+  state.files.delete("shared/deleted.xlsx");
+  state.files.set("shared/added.log", Buffer.from("diagnostic"));
+  state.execute.mockClear();
+  const current = await state.service.capture(actor, "recipient", computer, "team");
+  const reads = state.execute.mock.calls
+    .map((call) => JSON.parse(Buffer.from(call[1].argv.at(-1), "base64").toString()))
+    .filter((input) => input.operation === "read")
+    .map((input) => input.path)
+    .sort();
+  expect(reads).toEqual(["bots/recipient/private.json"]);
+  const pools = path.join(state.directory, "checkpoint-blobs", "owner");
+  expect(await readdir(path.join(pools, "recipient"))).toEqual([hash("recipient secret")]);
+  for (const file of await readdir(path.join(pools, "source")))
+    await unlink(path.join(pools, "source", file));
+  state.files.set("bots/source/private.json", Buffer.from("peer stays current"));
+  state.files.set("bots/recipient/failed.log", Buffer.from("failed"));
+  state.files.set("shared/stable.json", Buffer.from("failed shared model"));
+  await state.service.restore(actor, "recipient", computer, current, "team");
+  expect(state.files.get("bots/source/private.json")?.toString()).toBe("peer stays current");
+  expect(state.files.get("bots/recipient/private.json")?.toString()).toBe("recipient secret");
+  expect(state.files.has("bots/recipient/failed.log")).toBe(false);
+  expect(state.files.has("shared/deleted.xlsx")).toBe(false);
+  expect(state.files.get("shared/changed.json")?.toString()).toBe("current");
+  expect(state.files.get("shared/stable.json")?.toString()).toBe("failed shared model");
+  expect(state.files.get("case/policy.rost")?.toString()).toBe("rule A");
+});
+
+it("keeps Team bot blob pools independent", async () => {
+  const state = await fixture();
+  for (const name of ["bots/source", "bots/recipient", "shared"]) state.directories.add(name);
+  state.files.set("bots/source/private.json", Buffer.from("matching private bytes"));
+  state.files.set("shared/known.json", Buffer.from("shared only"));
+  await state.service.capture(actor, "source", computer, "team");
+  state.files.set("bots/recipient/private.json", Buffer.from("matching private bytes"));
+  state.files.delete("shared/known.json");
+  state.files.set("shared/renamed.json", Buffer.from("matching private bytes"));
+  state.execute.mockClear();
+  await state.service.capture(actor, "recipient", computer, "team");
+  const reads = state.execute.mock.calls
+    .map((call) => JSON.parse(Buffer.from(call[1].argv.at(-1), "base64").toString()))
+    .filter((input) => input.operation === "read")
+    .map((input) => input.path);
+  expect(reads).toContain("bots/recipient/private.json");
+  expect(reads).not.toContain("shared/renamed.json");
+  const pools = path.join(state.directory, "checkpoint-blobs", "owner");
+  expect((await lstat(path.join(pools, "recipient", hash("matching private bytes")))).ino).not.toBe(
+    (await lstat(path.join(pools, "source", hash("matching private bytes")))).ino,
+  );
+  await expect(lstat(path.join(pools, "recipient", hash("shared only")))).rejects.toMatchObject({
+    code: "ENOENT",
+  });
+});
+
+it("rejects foreign Team roots, unmanaged entries and legacy scope mismatch before restore", async () => {
+  const state = await fixture();
+  state.directories.add("bots");
+  state.directories.add("bots/source");
+  const source = await state.service.capture(actor, "source", computer, "team");
+  const legacy = await state.service.capture(actor, "source", computer);
+  state.execute.mockClear();
+  await expect(state.service.restore(actor, "recipient", computer, source, "team")).rejects.toThrow(
+    "different workspace scope",
+  );
+  await expect(state.service.restore(actor, "source", computer, source)).rejects.toThrow(
+    "different workspace scope",
+  );
+  await expect(state.service.restore(actor, "source", computer, legacy, "team")).rejects.toThrow(
+    "different workspace scope",
+  );
+  if (source.version !== 2) throw new Error("Expected Team manifest");
+  const roots = ["bots/source", "shared"];
+  await expect(state.service.restore(actor, "source", computer, {
+    ...source, roots, digest: hash(JSON.stringify({ roots, entries: source.entries })),
+  }, "team")).rejects.toThrow();
+  const entries = [{ path: "bots/recipient", type: "directory", mode: 0o700 }];
+  await expect(
+    state.service.restore(
+      actor,
+      "source",
+      computer,
+      { ...source, entries, digest: hash(JSON.stringify({ roots: source.roots, entries })) },
+      "team",
+    ),
+  ).rejects.toThrow("outside the Team workspace");
+  expect(state.execute).not.toHaveBeenCalled();
 });
 
 it("keeps a user-bot pool bound to its original Space", async () => {
@@ -511,5 +651,120 @@ it.skipIf(process.platform === "win32")(
       if (prior === undefined) delete process.env.CHECKPOINT_DIRECT_DOCKER;
       else process.env.CHECKPOINT_DIRECT_DOCKER = prior;
     }
+  },
+);
+
+it.skipIf(process.platform === "win32")(
+  "captures only own Team root directly and preserves shared files, peers and caches on restore",
+  async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "checkpoint-team-direct-"));
+    temporary.push(dataDir);
+    const home = path.join(dataDir, "homes", "bot");
+    for (const directory of ["bots/source", "bots/recipient", "shared", ".codex"])
+      await mkdir(path.join(home, directory), { recursive: true, mode: 0o750 });
+    await writeFile(path.join(home, "bots/source/private.json"), "source private");
+    await writeFile(path.join(home, "bots/recipient/private.json"), "recipient private");
+    await writeFile(path.join(home, "shared/model.json"), "stable shared model\n".repeat(10000));
+    await writeFile(path.join(home, ".codex/auth.json"), "home credential");
+    const service = new CheckpointFiles({ sandbox: { execute: vi.fn() } as any, dataDir });
+    vi.stubEnv("CHECKPOINT_DIRECT_DOCKER", "1");
+    await service.capture(actor, "source", computer, "team");
+    const recipient = await service.capture(actor, "recipient", computer, "team");
+    expect(recipient.entries.map((item) => item.path)).toEqual([
+      "bots/recipient",
+      "bots/recipient/private.json",
+    ]);
+    const blob = hash("stable shared model\n".repeat(10000));
+    const pools = path.join(dataDir, "checkpoint-blobs", "owner");
+    await expect(lstat(path.join(pools, "recipient", blob))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await expect(lstat(path.join(pools, "source", blob))).rejects.toMatchObject({ code: "ENOENT" });
+    const peerMode = (await lstat(path.join(home, "bots/source"))).mode;
+    const cache = path.join(home, "bots/recipient/new/node_modules/cache");
+    await mkdir(path.dirname(cache), { recursive: true });
+    await writeFile(cache, "preserved cache");
+    await writeFile(path.join(home, "bots/recipient/failed.log"), "failed output");
+    await writeFile(path.join(home, "shared/model.json"), "failed shared model");
+    await writeFile(path.join(home, "bots/source/private.json"), "current peer");
+    await service.restore(actor, "recipient", computer, recipient, "team");
+    expect(await readFile(cache, "utf8")).toBe("preserved cache");
+    expect(await readFile(path.join(home, "bots/source/private.json"), "utf8")).toBe(
+      "current peer",
+    );
+    expect((await lstat(path.join(home, "bots/source"))).mode).toBe(peerMode);
+    expect(await readFile(path.join(home, ".codex/auth.json"), "utf8")).toBe("home credential");
+    expect(await readFile(path.join(home, "shared/model.json"), "utf8")).toBe(
+      "failed shared model",
+    );
+    await expect(lstat(path.join(home, "bots/recipient/failed.log"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  },
+);
+
+it.skipIf(process.platform === "win32")(
+  "restores missing Team roots accurately and refuses managed root or container symlinks",
+  async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "checkpoint-team-missing-"));
+    temporary.push(dataDir);
+    const home = path.join(dataDir, "homes", "bot");
+    await mkdir(home, { recursive: true });
+    const service = new CheckpointFiles({ sandbox: { execute: vi.fn() } as any, dataDir });
+    vi.stubEnv("CHECKPOINT_DIRECT_DOCKER", "1");
+    const empty = await service.capture(actor, "recipient", computer, "team");
+    expect(empty.entries).toEqual([]);
+    await mkdir(path.join(home, "bots/recipient"), { recursive: true });
+    await mkdir(path.join(home, "shared"));
+    await writeFile(path.join(home, "bots/recipient/later.json"), "later");
+    await service.restore(actor, "recipient", computer, empty, "team");
+    await expect(lstat(path.join(home, "bots/recipient"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect((await lstat(path.join(home, "shared"))).isDirectory()).toBe(true);
+    await rm(path.join(home, "shared"), { recursive: true });
+    const outside = path.join(dataDir, "outside");
+    await mkdir(outside);
+    await symlink(outside, path.join(home, "shared"));
+    await expect(service.capture(actor, "recipient", computer, "team")).resolves.toMatchObject({
+      entries: [],
+    });
+    await service.restore(actor, "recipient", computer, empty, "team");
+    expect((await lstat(path.join(home, "shared"))).isSymbolicLink()).toBe(true);
+    await unlink(path.join(home, "shared"));
+    await rm(path.join(home, "bots"), { recursive: true });
+    await symlink(outside, path.join(home, "bots"));
+    await expect(service.capture(actor, "recipient", computer, "team")).rejects.toThrow();
+    await expect(service.restore(actor, "recipient", computer, empty, "team")).rejects.toThrow();
+  },
+);
+
+it.skipIf(process.platform === "win32")(
+  "deduplicates direct saves within a Bot and keeps workspace hardlinks forbidden",
+  async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "checkpoint-direct-dedup-"));
+    temporary.push(dataDir);
+    const workspace = path.join(dataDir, "homes", "bot", "workspace");
+    const pool = path.join(dataDir, "checkpoint-blobs", "owner", "bot");
+    await mkdir(workspace, { recursive: true });
+    await writeFile(path.join(workspace, "stable.json"), "stable model rows\n".repeat(100000));
+    await writeFile(path.join(workspace, "changed.json"), "old model");
+    const execute = vi.fn();
+    const service = new CheckpointFiles({ sandbox: { execute } as any, dataDir });
+    vi.stubEnv("CHECKPOINT_DIRECT_DOCKER", "1");
+    const initial = await service.capture(actor, "bot", computer);
+    const stable = hash("stable model rows\n".repeat(100000));
+    const original = await lstat(path.join(pool, stable));
+    await writeFile(path.join(workspace, "changed.json"), "current model");
+    const current = await service.capture(actor, "bot", computer);
+    expect((await lstat(path.join(pool, stable))).ino).toBe(original.ino);
+    expect(await readdir(pool)).toHaveLength(3);
+    await service.restore(actor, "bot", computer, initial);
+    expect(await readFile(path.join(workspace, "changed.json"), "utf8")).toBe("old model");
+    await service.restore(actor, "bot", computer, current);
+    expect(await readFile(path.join(workspace, "changed.json"), "utf8")).toBe("current model");
+    expect(execute).not.toHaveBeenCalled();
+    await link(path.join(workspace, "stable.json"), path.join(workspace, "workspace-alias.json"));
+    await expect(service.capture(actor, "bot", computer)).rejects.toThrow("without hard links");
   },
 );

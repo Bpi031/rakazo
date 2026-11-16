@@ -1,10 +1,11 @@
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import type * as DbModule from "@rakazo/db";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({ getBot: vi.fn() }));
-vi.mock("@rakazo/db", () => ({ createRepos: () => ({ getBot: mocks.getBot }),
-  checkpointThreadLock: vi.fn(async () => undefined) }));
+vi.mock("@rakazo/db", async (importOriginal) => ({ ...await importOriginal<typeof DbModule>(),
+  createRepos: () => ({ getBot: mocks.getBot }), checkpointThreadLock: vi.fn(async () => undefined) }));
 import {
   MAX_PRIORITY_AGENT_BYTES, PriorityService,
   priorityAgentResult, prioritySchemas, priorityTools } from "./policy-priorities.js";
@@ -18,7 +19,7 @@ beforeEach(async () => {
   directory = await mkdtemp(path.join(tmpdir(), "priority-service-")); source = "a".repeat(64); inputs = [];
   mocks.getBot.mockResolvedValue({ id: "b", computerId: "c", computer });
   execute = vi.fn(async function* (_ref, request) {
-    const args = JSON.parse(Buffer.from(request.argv.at(-1), "base64").toString());
+    const args = JSON.parse(Buffer.from(request.argv[4], "base64").toString());
     let value: any = { ...inspection, policy: args.policy ?? inspection.policy, workingDirectory: args.workingDirectory ?? inspection.workingDirectory,
       sourceSha256: source, inputs, compilerSha256: "b".repeat(64), rules: [] };
     if (args.operation === "review") value = { ...value, changes: args.changes, candidateSha256: "c".repeat(64), candidateCnlSha256: "d".repeat(64) };
@@ -36,10 +37,28 @@ beforeEach(async () => {
       .mockResolvedValue({ id: "thread", checkpointGeneration: 0, checkpointBlocked: false }),
   };
   prisma.$transaction = async (operation: (tx: unknown) => Promise<unknown>) => operation(prisma);
+  prisma.$queryRaw = vi.fn().mockResolvedValue([{ maintenanceId: null }]);
+  prisma.bot = { count: vi.fn().mockResolvedValue(0), findFirst: vi.fn((...args: unknown[]) => mocks.getBot(...args)) };
   service = new PriorityService({ prisma, sandbox: { execute } as any, dataDir: directory });
 });
 afterEach(async () => { await rm(directory, { recursive: true, force: true }); vi.resetAllMocks(); });
 async function review() { await service.inspect(actor, inspection); return service.review(actor, { ...inspection, sourceSha256: source, changes: change }); }
+it("scopes Team policy inspection and checkpoint bindings to the own directory and shared", async () => {
+  mocks.getBot.mockResolvedValue({ id: "b", computerId: "c", computer: { ...computer, scope: "team", userId: "u", spaceId: "s" } });
+  for (const policy of ["bots/b/case/policy.rost", "shared/case/policy.rost"]) {
+    await service.inspect(actor, { ...inspection, policy, workingDirectory: policy.slice(0, policy.lastIndexOf("/")) });
+    const saved = await service.captureCheckpointBinding(actor, "b");
+    await service.restoreCheckpointBinding(actor, "b", saved);
+    expect(saved?.policy).toBe(policy);
+  }
+  expect(execute.mock.calls[0]![1].argv[5]).toBe(JSON.stringify(["bots/b", "shared"]));
+  const count = execute.mock.calls.length;
+  await expect(service.inspect(actor, { ...inspection, policy: "bots/other/policy.rost", workingDirectory: "bots/other" })).rejects.toThrow("outside");
+  await expect(service.restoreCheckpointBinding(actor, "b", { botId: "b", policy: "bots/other/policy.rost", workingDirectory: "bots/other", sourceSha256: source })).rejects.toThrow("outside");
+  prisma.bot.count.mockResolvedValue(1);
+  await expect(service.inspect(actor, { ...inspection, policy: "shared/policy.rost", workingDirectory: "shared" })).rejects.toThrow("exclusively");
+  expect(execute).toHaveBeenCalledTimes(count);
+});
 it("dynamically registers the agent's current source, not a TKO filename", async () => {
   expect(await service.current(actor, "b")).toMatchObject({ status: "not_registered" });
   await service.inspect(actor, inspection); source = "f".repeat(64);
@@ -56,6 +75,20 @@ it("restores checkpoint source binding and draft selection without granting appr
     policyApprovalGranted: false,
     solveStarted: false,
   });
+});
+
+it("reuses the caller's database reader for checkpoint binding capture and restore", async () => {
+  const findFirst = vi.fn().mockResolvedValue({ id: "b", computerId: "c", computer });
+  const reader = { bot: { findFirst } } as unknown as Pick<DbModule.PrismaClient, "bot">;
+  mocks.getBot.mockRejectedValue(new Error("Unexpected outer-pool read"));
+  await expect(service.captureCheckpointBinding(actor, "b", reader)).resolves.toBeNull();
+  await expect(service.restoreCheckpointBinding(actor, "b", null, reader)).resolves.toBeUndefined();
+  expect(findFirst).toHaveBeenCalledTimes(2);
+  expect(findFirst).toHaveBeenCalledWith({
+    where: { id: "b", userId: "u", spaceId: "s", archivedAt: null },
+    include: { computer: true },
+  });
+  expect(mocks.getBot).not.toHaveBeenCalled();
 });
 it("restores a checkpoint with no registered policy and rejects a foreign binding", async () => {
   expect(await service.captureCheckpointBinding(actor, "b")).toBeNull();
@@ -74,6 +107,11 @@ it("rejects policy mutations while checkpoint recovery is blocked", async () => 
     checkpointBlocked: true,
   });
   await expect(service.inspect(actor, inspection)).rejects.toThrow("Checkpoint branch changed");
+  expect(execute).not.toHaveBeenCalled();
+});
+it("rejects policy filesystem operations while another Bot maintains the shared workspace", async () => {
+  prisma.$queryRaw.mockResolvedValue([{ maintenanceId: "checkpoint-restore:other-thread" }]);
+  await expect(service.inspect(actor, inspection)).rejects.toThrow("checkpoint maintenance");
   expect(execute).not.toHaveBeenCalled();
 });
 it("rejects a late agent policy registration from an earlier generation", async () => {
@@ -144,14 +182,15 @@ it("rejects another owner, an expired review, wrong digest, and a replaced compu
   const row = await review();
   await expect(service.get({ ...actor, userId: "other" }, row.id)).rejects.toThrow();
   await expect(service.apply(actor, row.id, "0".repeat(64))).rejects.toThrow("digest");
-  mocks.getBot.mockResolvedValueOnce({ computerId: "new", computer });
+  mocks.getBot.mockResolvedValue({ computerId: "new", computer: { ...computer, id: "new" } });
   await expect(service.apply(actor, row.id, row.digest)).rejects.toThrow("Computer changed");
+  mocks.getBot.mockResolvedValue({ id: "b", computerId: "c", computer });
   const now = vi.spyOn(Date, "now").mockReturnValue(Date.parse(row.expiresAt) + 1);
   await expect(service.apply(actor, row.id, row.digest)).rejects.toThrow("expired"); now.mockRestore();
 });
-it("requires a live private computer", async () => {
+it("rejects a Team computer outside the actor's account and Space", async () => {
   mocks.getBot.mockResolvedValue({ computer: { ...computer, scope: "team" } });
-  await expect(service.inspect(actor, inspection)).rejects.toThrow("private computer"); expect(execute).not.toHaveBeenCalled();
+  await expect(service.inspect(actor, inspection)).rejects.toThrow("exclusively to this account and Space"); expect(execute).not.toHaveBeenCalled();
 });
 it("rejects protected-record tampering", async () => {
   const row = await review(); const root = path.join(directory, "policy-priority-reviews"); const [owner] = await readdir(root);

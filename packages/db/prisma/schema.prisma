@@ -704,6 +704,7 @@ model Checkpoint {
   spaceId          String
   botId            String
   userId           String
+  workspaceKey     String?
   branchId         String
   kind             String
   label            String?

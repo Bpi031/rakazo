@@ -9,6 +9,7 @@ import tempfile
 import zlib
 
 ROOT = '/home/rakazo/workspace'
+SELECTED_ROOTS = None
 CHUNK = 48 * 1024
 READ_CHUNK = 512 * 1024
 EXCLUDED_DIRS = {'__pycache__', '.pytest_cache', 'node_modules', '.venv'}
@@ -27,6 +28,26 @@ def components(value):
     return parts
 
 
+def configure(value, direct=False):
+    global ROOT, SELECTED_ROOTS
+    selected = value.get('roots')
+    if selected is None:
+        SELECTED_ROOTS = None
+        return
+    if not isinstance(selected, list) or len(selected) != 1:
+        raise ValueError('Invalid Team checkpoint roots')
+    parts = components(selected[0])
+    if len(parts) != 2 or parts[0] != 'bots' or len(parts[1]) > 160 or not all(c in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-' for c in parts[1]):
+        raise ValueError('Invalid Team checkpoint roots')
+    SELECTED_ROOTS = selected
+    if not direct: ROOT = '/home/rakazo'
+
+
+def managed(value):
+    components(value)
+    return SELECTED_ROOTS is None or any(value == selected or value.startswith(selected + '/') for selected in SELECTED_ROOTS)
+
+
 def root():
     parent = os.open(os.path.dirname(ROOT), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
@@ -35,12 +56,20 @@ def root():
         os.close(parent)
 
 
-def parent_for(path):
+def parent_for(path, create_parents=False):
+    if not managed(path): raise ValueError('Path is outside the Team checkpoint roots')
     parts = components(path)
     fd = root()
     try:
-        for part in parts[:-1]:
-            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+        for index, part in enumerate(parts[:-1]):
+            try:
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            except FileNotFoundError:
+                prefix = '/'.join(parts[:index + 1])
+                if not create_parents or SELECTED_ROOTS is None or not any(selected.startswith(prefix + '/') for selected in SELECTED_ROOTS): raise
+                try: os.mkdir(part, 0o700, dir_fd=fd)
+                except FileExistsError: pass
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
             os.close(fd)
             fd = child
         return fd, parts[-1]
@@ -92,11 +121,23 @@ def inventory():
                     entries.append({'path': relative, 'type': 'file', 'mode': stat.S_IMODE(after.st_mode) & 0o777, 'size': size, 'sha256': sha.hexdigest()})
                 finally:
                     os.close(child)
-    fd = root()
-    try:
-        walk(fd, '', 0)
-    finally:
-        os.close(fd)
+    if SELECTED_ROOTS is None:
+        fd = root()
+        try: walk(fd, '', 0)
+        finally: os.close(fd)
+    else:
+        for selected in SELECTED_ROOTS:
+            try: parent, name = parent_for(selected)
+            except FileNotFoundError: continue
+            try:
+                try: info = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                except FileNotFoundError: continue
+                child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+                try:
+                    entries.append({'path': selected, 'type': 'directory', 'mode': stat.S_IMODE(info.st_mode) & 0o777})
+                    walk(child, selected + '/', 0)
+                finally: os.close(child)
+            finally: os.close(parent)
     return {'entries': entries}
 
 
@@ -124,11 +165,24 @@ def clear():
                 os.unlink(name, dir_fd=fd)
             else:
                 raise ValueError('Workspace contains unsupported entry')
-    fd = root()
-    try:
-        remove(fd)
-    finally:
-        os.close(fd)
+    if SELECTED_ROOTS is None:
+        fd = root()
+        try: remove(fd)
+        finally: os.close(fd)
+    else:
+        for selected in SELECTED_ROOTS:
+            try: parent, name = parent_for(selected)
+            except FileNotFoundError: continue
+            try:
+                try: child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+                except FileNotFoundError: continue
+                try: remove(child)
+                finally: os.close(child)
+                try: os.rmdir(name, dir_fd=parent)
+                except OSError as error:
+                    import errno
+                    if error.errno not in (errno.ENOTEMPTY, errno.EEXIST): raise
+            finally: os.close(parent)
     preserved = inventory()['entries']
     if any(item['type'] != 'directory' for item in preserved):
         raise ValueError('Workspace changed during checkpoint restore')
@@ -151,7 +205,7 @@ def execute(value):
         return inventory()
     if operation == 'clear':
         return clear()
-    parent, name = parent_for(value['path'])
+    parent, name = parent_for(value['path'], create_parents=operation == 'directory')
     try:
         if operation == 'directory':
             try:
@@ -269,6 +323,7 @@ def direct_capture(pool):
     return {'entries': entries}
 
 def direct_restore(pool, entries):
+    if any(not managed(item['path']) for item in entries): raise ValueError('Path is outside the Team checkpoint roots')
     verified = set()
     for item in entries:
         if item['type'] == 'file' and item['sha256'] not in verified:
@@ -299,13 +354,16 @@ if __name__ == '__main__':
         if len(sys.argv) == 4 and sys.argv[1] == '--direct':
             ROOT = sys.argv[2]
             request = json.load(sys.stdin)
+            configure(request, direct=True)
             result = direct_capture(sys.argv[3]) if request['operation'] == 'capture' else direct_restore(sys.argv[3], request['entries'])
             print(json.dumps(result, ensure_ascii=True))
             sys.exit(0)
         raw = base64.b64decode(sys.argv[1], validate=True)
         if len(raw) > 80000:
             raise ValueError('Checkpoint request limit')
-        print(json.dumps(execute(json.loads(raw)), ensure_ascii=True))
+        request = json.loads(raw)
+        configure(request)
+        print(json.dumps(execute(request), ensure_ascii=True))
     except Exception as error:
         print(json.dumps({'error': str(error)[:200]}))
         sys.exit(1)

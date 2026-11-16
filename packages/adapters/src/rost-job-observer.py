@@ -45,7 +45,12 @@ def observe(relative, *, workspace=Path("/home/rakazo/workspace")):
 
 if __name__ == "__main__":
     try:
-        print(json.dumps(observe(sys.argv[1]), allow_nan=False))
+        workspace = Path('/home/rakazo')
+        for part in (sys.argv[2] if len(sys.argv) > 2 else 'workspace').split('/'):
+            if part in ('', '.', '..'): raise ValueError('invalid observation root')
+            workspace = workspace / part
+            if workspace.is_symlink(): raise ValueError('invalid observation root')
+        print(json.dumps(observe(sys.argv[1], workspace=workspace), allow_nan=False))
     except Exception:
         # Never disclose paths, status contents or subprocess output on failure.
         print(json.dumps({"error": "owned_job_observation_unavailable"}))

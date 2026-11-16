@@ -1663,12 +1663,18 @@ describe("archiveBot", () => {
         task: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
         routine: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
         computerExecutionLease: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
-        computer: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+        computer: {
+          findUniqueOrThrow: vi.fn(async () => dedicated),
+          update: vi.fn().mockResolvedValue({}),
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        },
         bot: { update: vi.fn().mockResolvedValue({}) },
       }),
     );
     const dedicated = {
       id: "computer-1",
+      scope: "dedicated",
+      maintenanceId: null,
       homeKey: "bot-1",
       kind: "cloud",
       providerRef: "provider-1",
@@ -1715,6 +1721,8 @@ describe("archiveBot", () => {
     const updateMany = vi.fn().mockResolvedValue({ count: 1 });
     const booting = {
       id: "computer-1",
+      scope: "dedicated",
+      maintenanceId: null,
       homeKey: "bot-1",
       kind: "cloud",
       providerRef: null,
@@ -1728,7 +1736,11 @@ describe("archiveBot", () => {
         task: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
         routine: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
         computerExecutionLease: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
-        computer: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+        computer: {
+          findUniqueOrThrow: vi.fn(async () => booting),
+          update: vi.fn().mockResolvedValue({}),
+          updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+        },
         bot: { update: vi.fn().mockResolvedValue({}) },
       }),
     );
@@ -1761,7 +1773,7 @@ describe("archiveBot", () => {
     );
 
     expect(stop).toHaveBeenCalledOnce();
-    expect(updateMany).toHaveBeenLastCalledWith({
+    expect(updateMany).toHaveBeenCalledWith({
       where: { id: "computer-1", state: "running", providerRef: "provider-1" },
       data: { state: "stopped" },
     });
@@ -1790,8 +1802,15 @@ describe("archiveBot", () => {
           task: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
           routine: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
           computerExecutionLease: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
-          computer: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
-          bot: { update: vi.fn().mockResolvedValue({}) },
+          computer: {
+            findUniqueOrThrow: vi.fn().mockResolvedValue(team),
+            update: vi.fn().mockResolvedValue(team),
+            updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+          },
+          bot: {
+            findUnique: vi.fn().mockResolvedValue({ computerId: team.id }),
+            update: vi.fn().mockResolvedValue({}),
+          },
         }),
       );
       const prisma = {
@@ -1799,6 +1818,7 @@ describe("archiveBot", () => {
           findUnique: vi.fn(async (query: { where: { id?: string } }) =>
             query.where.id === team.id ? team : null,
           ),
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
         },
         run: { findMany: vi.fn().mockResolvedValue([]) },
         routine: { findMany: vi.fn().mockResolvedValue([]) },
@@ -1890,9 +1910,16 @@ function deletionPrisma(team: { id: string }) {
         deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
       },
       computerExecutionLease: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
-      computer: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      computer: {
+        findUniqueOrThrow: vi.fn().mockResolvedValue(team),
+        update: vi.fn().mockResolvedValue(team),
+        updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
       botDeletion: { create: vi.fn().mockResolvedValue({}) },
-      bot: { delete: vi.fn().mockResolvedValue({}) },
+      bot: {
+        findUnique: vi.fn().mockResolvedValue({ computerId: team.id }),
+        delete: vi.fn().mockResolvedValue({}),
+      },
     }),
   );
   return {
@@ -1900,6 +1927,7 @@ function deletionPrisma(team: { id: string }) {
       findUnique: vi.fn(async (query: { where: { id?: string; scopeKey?: string } }) =>
         query.where.id === team.id || query.where.scopeKey === "team:workspace-1" ? team : null,
       ),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
     run: {
       findMany: vi.fn().mockResolvedValue([]),

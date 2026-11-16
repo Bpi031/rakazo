@@ -4,7 +4,15 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { CheckpointService } from "./checkpoint-service.js";
 
 const stopped = vi.hoisted(() => vi.fn(async () => undefined));
-vi.mock("./checkpoint-processes.js", () => ({ stopCheckpointWriters: stopped }));
+vi.mock("./checkpoint-processes.js", () => ({
+  stopCheckpointWriters: stopped,
+  assertCheckpointWritersIdle: vi.fn(async () => undefined),
+}));
+vi.mock("@rakazo/db", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  claimCheckpointWorkspace: vi.fn(async () => undefined),
+  releaseCheckpointWorkspace: vi.fn(async () => undefined),
+}));
 const actor = {
   userId: "user",
   spaceId: "space",
@@ -75,6 +83,7 @@ function fixture() {
     $executeRaw: vi.fn(async () => 1),
     $queryRaw: vi.fn(async () => [{ id: "thread" }]),
     thread: {
+      findUnique: vi.fn(async () => copy(state.thread)),
       findUniqueOrThrow: vi.fn(async () => copy(state.thread)),
       findFirstOrThrow: vi.fn(async () => copy(state.thread)),
       update: vi.fn(async ({ data }) => assign(state.thread, data)),
@@ -96,6 +105,8 @@ function fixture() {
             .find(
               (row: any) =>
                 (!where.id || row.id === where.id) &&
+                (!where.botId || row.botId === where.botId) &&
+                (!where.threadId || row.threadId === where.threadId) &&
                 (!where.branchId || row.branchId === where.branchId),
             ) ?? null,
         ),
@@ -228,6 +239,9 @@ function fixture() {
   vi.spyOn(service as any, "owned").mockImplementation(async () => ({
     thread: copy(state.thread),
     computer: { id: "computer" },
+    computerId: "computer",
+    workspaceKey: "a".repeat(64),
+    scope: "dedicated",
   }));
   const fileStore = {
     capture: vi.fn(async () => copy(files)),
@@ -320,6 +334,18 @@ it("A1 restores files, rule binding and artifact visibility together", async () 
     f.state.artifacts.filter((row: any) => !row.checkpointHidden).map((row: any) => row.id),
   ).toEqual(["input"]);
   expect(f.visible()).toEqual(["clean inputs"]);
+});
+
+it("captures its own files without borrowing another Bot's checkpoint", async () => {
+  const f = fixture();
+  await f.save();
+  Object.assign(f.state.checkpoints[0], {
+    botId: "other-bot", threadId: "other-thread", branchId: "other-branch",
+  });
+  const saved = await f.save();
+  expect(f.fileStore.capture).toHaveBeenLastCalledWith(actor, "bot", { id: "computer" }, "dedicated");
+  expect(saved.businessState).not.toHaveProperty("fileReuseSourceCheckpointId");
+  expect(saved.businessState).toMatchObject({ parentCheckpointId: null });
 });
 
 it("A2 repeated forks retain history without exposing sibling branches", async () => {
@@ -467,6 +493,7 @@ it("polls status using checkpoint identity only and changes revision after savin
   const f = fixture();
   const before = await f.service.status(actor, "bot");
   await f.save();
+  f.db.checkpoint.findMany.mockClear();
   const after = await f.service.status(actor, "bot");
   expect(after.revision).not.toBe(before.revision);
   expect(f.db.checkpoint.findMany).not.toHaveBeenCalled();

@@ -83,7 +83,7 @@ export function validateQuestionAnswer(form: QuestionForm, raw: string) {
 
 export const WorkspacePath = safeText(500).refine(
   (s) =>
-    s.startsWith("workspace/") &&
+    /^(?:workspace\/|shared\/|bots\/[A-Za-z0-9_-]+\/)/.test(s) &&
     !/[\\\x00-\x1f]/.test(s) &&
     s.split("/").every((p) => p && p !== "." && p !== ".." && !p.startsWith(".")),
   "Exact workspace-relative path required",

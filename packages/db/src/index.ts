@@ -5,6 +5,7 @@ export * from "./board-live.js";
 export * from "./bootstrap-user.js";
 export * from "./bot-instructions.js";
 export * from "./cancel-runs.js";
+export * from "./checkpoint-workspaces.js";
 export * from "./checkpoints.js";
 export * from "./client.js";
 export * from "./computers.js";

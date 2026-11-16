@@ -254,7 +254,6 @@ import {
   displayBotWorkspacePath,
   resolveBotWorkspaceCwd,
   resolveBotWorkspacePath,
-  teamBotWorkspaceDirectory,
 } from "./computer-support.js";
 import type { UnchangedVisualStreak } from "./computer-tools.js";
 import {
@@ -418,6 +417,8 @@ import {
 } from "./user-progress.js";
 import { createWebProvider } from "./web-provider-factory.js";
 import { webFetchFromTool, webSearchFromTool } from "./web-tools.js";
+
+import { assertManagedTeamComputer, managedWorkspace, managedWorkspaceInstruction } from "./managed-workspace.js";
 
 const READ_ONLY_AGENT_TOOLS = new Set([
   "computer_observe",
@@ -4319,10 +4320,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const computerInstruction = dockerToolInstruction
           ? `${baseComputerInstruction} ${dockerToolInstruction}`
           : baseComputerInstruction;
-        const workspaceInstruction =
-          computerMode === "team"
-            ? `Your Team Computer home is ${teamBotWorkspaceDirectory(bot.id)}. Relative file paths and shell working directories start there. Put intentionally shared work under shared/. Other bots' folders are visible under bots/; treat them as their working areas.`
-            : "This entire computer workspace is your private home. Relative file paths and shell working directories start at its root.";
+        const workspaceInstruction = managedWorkspaceInstruction(computerMode, bot.id);
 
         let assembled = "";
         let currentTextSegment = "";
@@ -7149,6 +7147,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
         );
 
         try {
+          if (deps.runtime.describe().id === "codex")
+            await assertManagedTeamComputer(deps.prisma, storedComputer, context);
           const workbench =
             deps.runtime.describe().id === "codex" && workbenchEnabled()
               ? new AgentWorkbench({ prisma: deps.prisma, sandbox: deps.sandbox })
@@ -7168,6 +7168,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               botId: bot.id,
               threadId: thread.id,
               runId,
+              workspace: managedWorkspace(computerMode, bot.id),
               routineId: run.routineId,
               selectedSkill: workspaceState?.selectedSkill,
               runHelper:
@@ -7194,10 +7195,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     tool: (name, args) => native.tool(runId, name, args),
                   }
                 : undefined,
-              openRuntimeSession:
-                computerMode !== "team" && deps.sandbox.openRuntimeSession
-                  ? (request) => deps.sandbox.openRuntimeSession!(computer, request, context)
-                  : undefined,
+              openRuntimeSession: deps.sandbox.openRuntimeSession
+                ? (request) => deps.sandbox.openRuntimeSession!(computer, request, context)
+                : undefined,
               sourceMessageId: run.sourceMessageId,
               onUsage: async (event) => {
                 await recordUsage(deps.prisma, event, {

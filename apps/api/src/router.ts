@@ -168,6 +168,7 @@ import type { BoardEvents, Board as BoardRow, PrismaClient, ThreadEvents } from 
 import {
   appendEventInTransaction,
   checkpointRunFields,
+  CheckpointConflictError,
   BotSectionNameConflictError,
   CannotDeleteDefaultSpaceError,
   CannotDeleteLastSpaceError,
@@ -178,6 +179,7 @@ import {
   createExternalConversationRepos,
   createGroupRepos,
   createRepos,
+  computerScopeKey,
   createSpaceForMember,
   createThreadMessageInTransaction,
   defaultModelCredentialCandidates,
@@ -219,6 +221,8 @@ import {
   toTicketCommentDto,
   toTicketDto,
   touchGroupUpdatedAt,
+  withCheckpointWorkspaceWrite,
+  withCheckpointWorkspaceWriteInTransaction,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { deleteAgentSecret, listAgentSecrets, putAgentSecret } from "./agent-secrets.js";
@@ -634,7 +638,7 @@ function spaceTeardownTimeoutMs(): number {
 
 /** Surface a Space deletion race as a retryable conflict instead of a generic failure. */
 function mapSpaceLifecycleError(error: unknown): unknown {
-  if (error instanceof SpaceDeletionInProgressError) {
+  if (error instanceof SpaceDeletionInProgressError || error instanceof CheckpointConflictError) {
     return new ORPCError("CONFLICT", { message: error.message });
   }
   if (error instanceof ComputerLimitError) {
@@ -1824,20 +1828,47 @@ export function createRouter(deps: RouterDeps) {
       setComputer: authed.bots.setComputer.handler(async ({ context, input }) => {
         const bot = await repos.getBot(context.actor, input.botId);
         if (!bot.computer) throw new IsolationError();
-        const currentMode = bot.computer.scope === "dedicated" ? "dedicated" : "team";
-        if (currentMode === input.mode) {
-          try {
-            return await repos.setBotComputer(context.actor, bot.id, input.mode);
-          } catch (error) {
-            throw mapSpaceLifecycleError(error);
-          }
-        }
+        const destination = await deps.prisma.computer.findUnique({
+          where: { scopeKey: computerScopeKey(input.mode, context.actor.spaceId, bot.id) },
+        });
+        const maintenanceId = `computer-switch:${randomUUID()}`;
+        const computerIds = [
+          ...new Set([bot.computer.id, ...(destination ? [destination.id] : [])]),
+        ].sort();
         const claimed = await deps.prisma.$transaction(async (tx) => {
-          await tx.$queryRaw`SELECT id FROM computers WHERE id = ${bot.computerId} FOR UPDATE`;
-          return tx.bot.updateMany({
+          await tx.$queryRaw(
+            Prisma.sql`SELECT id FROM computers WHERE id IN (${Prisma.join(computerIds)}) ORDER BY id FOR UPDATE`,
+          );
+          const computers = await tx.computer.findMany({
+            where: { id: { in: computerIds }, maintenanceId: null, spaceId: context.actor.spaceId },
+          });
+          if (computers.length !== computerIds.length || computers.some((computer) => computer.scope !== "team" && computer.userId !== context.actor.userId))
+            throw new ORPCError("CONFLICT");
+          if (
+            await tx.run.findFirst({
+              where: {
+                status: { in: [...ACTIVE_RUN_STATUSES] },
+                OR: [
+                  { botId: bot.id },
+                  ...(destination ? [{ bot: { computerId: destination.id } }] : []),
+                ],
+              },
+              select: { id: true },
+            })
+          )
+            throw new ORPCError("BAD_REQUEST", { message: "Stop workspace tasks first" });
+          if (computers.some((computer) => hasActiveComputerControl(computer)))
+            throw new ORPCError("BAD_REQUEST", { message: "Release the computer first" });
+          const claimed = await tx.bot.updateMany({
             where: { id: bot.id, computerSwitching: false, computer: { maintenanceId: null } },
             data: { computerSwitching: true },
           });
+          if (claimed.count === 1)
+            await tx.computer.updateMany({
+              where: { id: { in: computerIds } },
+              data: { maintenanceId },
+            });
+          return claimed;
         });
         if (claimed.count !== 1) throw new ORPCError("CONFLICT");
         try {
@@ -1851,7 +1882,11 @@ export function createRouter(deps: RouterDeps) {
           if (bot.computer.controlBotId === bot.id && hasActiveComputerControl(bot.computer)) {
             throw new ORPCError("BAD_REQUEST", { message: "Release the computer first" });
           }
-          if (bot.computer.scope === "dedicated" && bot.computer.providerRef) {
+          if (
+            bot.computer.scope === "dedicated" &&
+            bot.computer.providerRef &&
+            bot.computer.id !== destination?.id
+          ) {
             const ctx = computerContext(context.actor, bot.id, "computer.switch");
             const ref = toComputerRef(bot.computer);
             if (bot.computer.state === "running") {
@@ -1876,10 +1911,19 @@ export function createRouter(deps: RouterDeps) {
               },
             });
           }
-          return await repos.setBotComputer(context.actor, bot.id, input.mode);
+          return await repos.setBotComputer(
+            context.actor,
+            bot.id,
+            input.mode,
+            maintenanceId,
+          );
         } catch (error) {
           throw mapSpaceLifecycleError(error);
         } finally {
+          await deps.prisma.computer.updateMany({
+            where: { id: { in: computerIds }, maintenanceId },
+            data: { maintenanceId: null },
+          });
           await deps.prisma.bot.updateMany({
             where: { id: bot.id },
             data: { computerSwitching: false },
@@ -3098,11 +3142,40 @@ export function createRouter(deps: RouterDeps) {
           }
           throw error;
         }
-        await deps.sandbox.writeFile(
-          toComputerRef(computer),
-          { path: storedPath, content },
-          computerContext(context.actor, bot.id, "upload"),
-        );
+        await deps.prisma.$transaction(
+          (tx) => withCheckpointWorkspaceWriteInTransaction(tx, computer.id, async () => {
+            const assigned = await tx.$queryRaw<Array<{ id: string }>>`
+              SELECT id FROM bots WHERE id = ${bot.id}
+                AND "computerId" = ${computer.id} AND "userId" = ${context.actor.userId}
+                AND "spaceId" = ${context.actor.spaceId}
+                AND "archivedAt" IS NULL AND "computerSwitching" = false
+              FOR SHARE
+            `;
+            const current = await tx.computer.findUniqueOrThrow({ where: { id: computer.id } });
+            if (
+              assigned.length !== 1 ||
+              current.state !== "running" ||
+              current.spaceId !== context.actor.spaceId ||
+              (current.scope === "dedicated" && current.userId !== context.actor.userId) ||
+              current.providerRef !== computer.providerRef ||
+              current.homeKey !== computer.homeKey ||
+              current.scope !== computer.scope ||
+              current.kind !== computer.kind ||
+              !hasActiveComputerControl(current) ||
+              current.controlBotId !== bot.id ||
+              current.controlLeaseId !== computer.controlLeaseId
+            )
+              throw new CheckpointConflictError("Workspace assignment or control changed; retry the upload");
+            await deps.sandbox.writeFile(
+              toComputerRef(current),
+              { path: storedPath, content },
+              computerContext(context.actor, bot.id, "upload"),
+            );
+          }),
+          { maxWait: 10_000, timeout: 120_000 },
+        ).catch((error) => {
+          throw mapSpaceLifecycleError(error);
+        });
         return { ok: true as const };
       }),
       commands: authed.computer.commands.handler(async ({ context, input }) => {
@@ -3144,22 +3217,28 @@ export function createRouter(deps: RouterDeps) {
         ) {
           throw new ORPCError("FORBIDDEN", { message: "Take control first." });
         }
-        const session = await deps.sandbox
-          .connectTerminal(
+        const connectTerminal = deps.sandbox.connectTerminal;
+        const controlToken = computer.controlLeaseId;
+        const terminalContext = await computerScreenContext(
+          deps.prisma,
+          context.actor,
+          computer.id,
+          bot.id,
+          "terminal",
+        );
+        const session = await withCheckpointWorkspaceWrite(deps.prisma, computer.id, () =>
+          connectTerminal.call(
+            deps.sandbox,
             toComputerRef(computer),
             {
-              controlToken: computer.controlLeaseId,
+              controlToken,
               cwd: resolveBotWorkspaceCwd(parseComputerMode(computer.scope), bot.id, undefined),
             },
-            await computerScreenContext(
-              deps.prisma,
-              context.actor,
-              computer.id,
-              bot.id,
-              "terminal",
-            ),
-          )
-          .catch((error: unknown) => clearGoneSandbox(deps, computer, error));
+            terminalContext,
+          ),
+        ).catch((error: unknown) => clearGoneSandbox(deps, computer, error)).catch((error) => {
+          throw mapSpaceLifecycleError(error);
+        });
         if (!session) return { url: null };
         await keepComputerAwake(deps, computer.id);
         return {

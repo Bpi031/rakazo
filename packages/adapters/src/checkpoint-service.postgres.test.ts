@@ -104,7 +104,7 @@ postgres("checkpoint recovery with migrated PostgreSQL", () => {
     });
     const sandbox = {
       execute: async function* () {
-        yield { type: "stdout", data: "checkpoint-writers-stopped" };
+        yield { type: "stdout", data: "checkpoint-writers-stopped checkpoint-writers-idle" };
         yield { type: "exit", code: 0 };
       },
     } as unknown as SandboxProvider;

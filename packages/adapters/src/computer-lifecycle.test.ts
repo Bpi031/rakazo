@@ -1511,6 +1511,19 @@ describe("Team Computer wake", () => {
 });
 
 describe("computer execution leases", () => {
+  it("does not publish a Team lease while a checkpoint owns the Computer row", async () => {
+    const f = leasePrisma({ scope: "team" });
+    vi.mocked(f.client.$queryRaw).mockResolvedValue([]);
+    await expect(
+      acquireComputerExecutionLease(f.client, {
+        computerId: "computer-1",
+        botId: "bot-1",
+        runId: "run-1",
+      }),
+    ).rejects.toBeInstanceOf(ComputerBusyError);
+    expect(f.create).not.toHaveBeenCalled();
+    expect(f.updateManyAndReturn).not.toHaveBeenCalled();
+  });
   it("does not serialize dedicated computers", async () => {
     const prisma = leasePrisma({ scope: "dedicated" });
 
@@ -1594,6 +1607,10 @@ describe("computer execution leases", () => {
         findUniqueOrThrow: vi.fn().mockResolvedValue({ scope: "team", state: "running" }),
       },
       computerExecutionLease: { create, updateMany, updateManyAndReturn },
+      $queryRaw: vi.fn().mockResolvedValue([{ id: "computer-1" }]),
+      $transaction: async function (work: any) {
+        return work(this);
+      },
     } as unknown as PrismaClient;
     const lease = {
       computerId: "computer-1",
@@ -1698,6 +1715,7 @@ describe("computer execution leases", () => {
     };
     const create = vi.fn().mockRejectedValue(Object.assign(new Error("unique"), { code: "P2002" }));
     const client = {
+      $queryRaw: vi.fn().mockResolvedValue([{ id: "computer-1" }]),
       thread: {
         update: vi
           .fn()
@@ -1898,6 +1916,29 @@ describe("computer execution leases", () => {
     expect(updateManyAndReturn).toHaveBeenCalledTimes(2);
   });
 
+  it("does not start a dedicated runtime while the shared workspace is maintained", async () => {
+    const queryRaw = vi
+      .fn()
+      .mockResolvedValueOnce([{ id: "bot-1" }])
+      .mockResolvedValueOnce([]);
+    const updateManyAndReturn = vi.fn();
+    const tx = { $queryRaw: queryRaw, computerExecutionLease: { updateManyAndReturn } };
+    const prisma = {
+      $transaction: async (work: (client: typeof tx) => unknown) => work(tx),
+    } as unknown as PrismaClient;
+    await expect(
+      acquireDedicatedScreenLeaseFence(prisma, {
+        computerId: "computer-1",
+        botId: "bot-1",
+        runId: "run-1",
+        workerId: "worker",
+        runFence: 1,
+      }),
+    ).rejects.toBeInstanceOf(ComputerBusyError);
+    expect(queryRaw.mock.calls[1]![0].join("")).toContain('"maintenanceId" IS NULL');
+    expect(updateManyAndReturn).not.toHaveBeenCalled();
+  });
+
   it("acquires a team lease on a stale suspending computer", async () => {
     const prisma = leasePrisma({ scope: "team" });
     prisma.findUniqueOrThrow.mockResolvedValue({
@@ -1941,6 +1982,7 @@ describe("computer execution leases", () => {
   it("rolls back a lease that races with computer suspension", async () => {
     const prisma = leasePrisma({ scope: "team" });
     prisma.findUniqueOrThrow
+      .mockResolvedValueOnce({ scope: "team", state: "running" })
       .mockResolvedValueOnce({ scope: "team", state: "running" })
       .mockResolvedValue({ scope: "team", state: "suspending" });
 
@@ -1986,6 +2028,10 @@ function leasePrisma(options: {
   });
   return {
     client: {
+      $queryRaw: vi.fn().mockResolvedValue([{ id: "computer-1" }]),
+      $transaction: async function (work: any) {
+        return work(this);
+      },
       computer: {
         findUniqueOrThrow,
       },

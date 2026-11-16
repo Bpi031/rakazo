@@ -1,7 +1,8 @@
 import type { Actor, Bot, BotSection, MessageBlock, SpaceBot } from "@rakazo/contracts";
 import { BOT_COLORS, InstructionVersionSchema } from "@rakazo/contracts";
-import { BACKGROUND_RUN_TRIGGERS, isBackgroundRunTrigger, userVisibleMessages } from "@rakazo/core";
+import { ACTIVE_RUN_STATUSES, BACKGROUND_RUN_TRIGGERS, isBackgroundRunTrigger, userVisibleMessages } from "@rakazo/core";
 import { checkpointMessageWhere } from "./checkpoints.js";
+import { Prisma } from "./client.js";
 import type { PrismaClient } from "./client.js";
 import type { ComputerMode } from "./computers.js";
 import { ensureComputerRecord, parseComputerMode } from "./computers.js";
@@ -16,6 +17,10 @@ const SIDEBAR_PREVIEW_MESSAGE_WINDOW = 16;
 
 function isUniqueViolation(error: unknown): boolean {
   return Boolean(error && typeof error === "object" && "code" in error && error.code === "P2002");
+}
+
+function usesManagedComputers() {
+  return process.env.TEAM_MANAGEMENT_ENABLED === "1" || process.env.AGENT_RUNTIME === "codex";
 }
 
 function isSpawnKeyConflict(error: unknown): boolean {
@@ -446,7 +451,7 @@ export function createRepos(prisma: PrismaClient) {
         };
       },
     ): Promise<Bot> {
-      if (process.env.TEAM_MANAGEMENT_ENABLED === "1")
+      if (process.env.TEAM_MANAGEMENT_ENABLED === "1" && input.computerMode === undefined)
         input = { ...input, computerMode: "dedicated" };
       let color = input.color;
       if (color === undefined) {
@@ -497,6 +502,20 @@ export function createRepos(prisma: PrismaClient) {
             userId: actor.userId,
             kind,
           });
+          if (input.computerMode !== "dedicated" && usesManagedComputers()) {
+            if (teamComputer.userId !== actor.userId || teamComputer.spaceId !== actor.spaceId)
+              throw new IsolationError("Managed Team Computer belongs to another account");
+            if (
+              await tx.bot.findFirst({
+                where: {
+                  computerId: teamComputer.id,
+                  OR: [{ userId: { not: actor.userId } }, { spaceId: { not: actor.spaceId } }],
+                },
+                select: { id: true },
+              })
+            )
+              throw new IsolationError("Managed Team Computer contains another account's bots");
+          }
           const created = await tx.bot.create({
             data: {
               spaceId: actor.spaceId,
@@ -626,29 +645,106 @@ export function createRepos(prisma: PrismaClient) {
       });
     },
 
-    async setBotComputer(actor: Actor, botId: string, mode: ComputerMode): Promise<Bot> {
-      if (process.env.TEAM_MANAGEMENT_ENABLED === "1" && mode !== "dedicated")
-        throw new IsolationError("Team bots require private computers");
+    async setBotComputer(
+      actor: Actor,
+      botId: string,
+      mode: ComputerMode,
+      ownMaintenanceId?: string,
+    ): Promise<Bot> {
       const bot = await prisma.bot.findFirst({
-        where: { id: botId, spaceId: actor.spaceId, userId: actor.userId },
+        where: { id: botId, spaceId: actor.spaceId, userId: actor.userId, archivedAt: null },
         include: { computer: true },
       });
       if (!bot?.computer) throw new IsolationError();
-      const kind = bot.computer.kind;
-      // Keep ensure + bot link in one transaction so a capped quota lock covers
-      // both steps (a computer row alone does not count until a live bot refs it).
+      const previousComputer = bot.computer;
       const updated = await withTransactionRetry(() =>
         prisma.$transaction(async (tx) => {
-          const computer = await ensureComputerRecord(tx, {
+          const destination = await ensureComputerRecord(tx, {
             mode,
             spaceId: actor.spaceId,
             userId: actor.userId,
             botId,
-            kind,
+            kind: previousComputer.kind,
           });
+          const ids = [...new Set([previousComputer.id, destination.id])].sort();
+          await tx.$queryRaw(
+            Prisma.sql`SELECT id FROM computers WHERE id IN (${Prisma.join(ids)}) ORDER BY id FOR UPDATE`,
+          );
+          const lockedComputers = await tx.computer.findMany({ where: { id: { in: ids } } });
+          if (
+            lockedComputers.length !== ids.length ||
+            lockedComputers.some(
+              (computer) =>
+                ((computer.scope !== "team" ||
+                  (usesManagedComputers() && computer.id === destination.id)) &&
+                  computer.userId !== actor.userId) ||
+                computer.spaceId !== actor.spaceId ||
+                (computer.maintenanceId && computer.maintenanceId !== ownMaintenanceId),
+            )
+          )
+            throw new IsolationError("Workspace is busy");
+          const currentDestination = lockedComputers.find(
+            (computer) => computer.id === destination.id,
+          )!;
+          if (currentDestination.scope !== mode)
+            throw new IsolationError("Workspace assignment changed");
+          if (
+            usesManagedComputers() &&
+            mode === "team" &&
+            (await tx.bot.findFirst({
+              where: {
+                computerId: currentDestination.id,
+                OR: [{ userId: { not: actor.userId } }, { spaceId: { not: actor.spaceId } }],
+              },
+              select: { id: true },
+            }))
+          )
+            throw new IsolationError("Managed Team Computer contains another account's bots");
+          await tx.$queryRaw(
+            Prisma.sql`SELECT id FROM bots WHERE id = ${botId} FOR UPDATE`,
+          );
+          const current = await tx.bot.findFirst({
+            where: { id: botId, userId: actor.userId, spaceId: actor.spaceId, archivedAt: null },
+            include: { computer: true },
+          });
+          if (
+            !current?.computer ||
+            current.computerId !== previousComputer.id ||
+            (current.computerSwitching &&
+              (!ownMaintenanceId || current.computer.maintenanceId !== ownMaintenanceId))
+          )
+            throw new IsolationError("Workspace assignment changed");
+          if (
+            (await tx.run.findFirst({
+              where: {
+                status: { in: [...ACTIVE_RUN_STATUSES] },
+                OR: [{ botId }, { bot: { computerId: destination.id } }],
+              },
+              select: { id: true },
+            })) ||
+            (await tx.routine.findFirst({
+              where: {
+                active: true,
+                jobWatch: { not: Prisma.JsonNull },
+                OR: [{ botId }, { bot: { computerId: destination.id } }],
+              },
+              select: { id: true },
+            }))
+          )
+            throw new IsolationError("Stop workspace tasks before switching");
+          const now = new Date();
+          if (
+            lockedComputers.some(
+              (computer) =>
+                computer.controlHolder === "user" &&
+                computer.controlLeaseExpiresAt &&
+                computer.controlLeaseExpiresAt > now,
+            )
+          )
+            throw new IsolationError("Release the computer before switching");
           return tx.bot.update({
             where: { id: botId },
-            data: { computerId: computer.id },
+            data: { computerId: destination.id },
             include: { thread: true, computer: true },
           });
         }),

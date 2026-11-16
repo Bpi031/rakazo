@@ -16,7 +16,7 @@ function fixture() {
     },
   };
   const service = new NativeControl({ $transaction: async (fn: any) => fn(tx) } as any);
-  vi.spyOn(service, 'actor').mockImplementation(async () => ({ actor, run: { id: 'next', botId: 'bot', threadId, leaseFence: 1 } }) as any);
+  vi.spyOn(service, 'actor').mockImplementation(async () => ({ actor, bot: { computer: { scope: 'dedicated' } }, run: { id: 'next', botId: 'bot', threadId, leaseFence: 1 } }) as any);
   vi.spyOn(service, 'view').mockResolvedValue({ preferences: { mode: 'execute', persistence: true, action: 'none', revision: 0 } } as any);
   return {
     service, tx,
@@ -61,4 +61,35 @@ it("reconstructs after rollback even when a stale fork preference remains", asyn
   const next = await f.service.prepare("restored", "tools-v1");
   expect(next.previous).toBeNull();
   expect(next.action).toBe("none");
+});
+
+it("keeps native session identities separate for two bots on the same Computer", async () => {
+  const rows = new Map<string, any>();
+  const tx = {
+    $executeRaw: vi.fn(async () => 1),
+    thread: { findFirstOrThrow: vi.fn(async () => ({ historyCompactionGeneration: 0, checkpointGeneration: 0, checkpointBlocked: false })) },
+    run: { findUniqueOrThrow: vi.fn(async () => ({ status: "completed" })) },
+    agentWorkbenchRecord: {
+      findUnique: vi.fn(async ({ where }) => rows.get(where.id) ?? null),
+      upsert: vi.fn(async ({ where, create, update }) => {
+        const row = rows.has(where.id) ? { ...rows.get(where.id), ...update } : create;
+        rows.set(where.id, row); return row;
+      }),
+    },
+  };
+  const service = new NativeControl({ $transaction: async (operation: any) => operation(tx) } as any);
+  vi.spyOn(service, "actor").mockImplementation(async (runId) => {
+    const botId = runId.startsWith("a-") ? "bot-a" : "bot-b";
+    return { actor: { userId: "owner", spaceId: "space" }, bot: { computer: { scope: 'team' } }, run: { id: runId, botId, threadId: `thread:${botId}`, computerId: "shared-computer", leaseFence: 1, checkpointGeneration: 0 } } as any;
+  });
+  vi.spyOn(service, "view").mockResolvedValue({ preferences: { persistence: true, mode: "execute", action: "none", revision: 0 } } as any);
+  const first = await service.prepare("a-first", "same-tools");
+  const row = rows.get(first.sessionKey);
+  rows.set(first.sessionKey, { ...row, status: "completed", payload: { fingerprint: first.fingerprint, threadId: "native-a", turnId: "turn-a" } });
+  const other = await service.prepare("b-first", "same-tools");
+  expect(first.workspace).toEqual({ cwd: '/home/rakazo/bots/bot-a', roots: ['/home/rakazo/bots/bot-a', '/home/rakazo/shared'] });
+  expect(other.workspace.roots).not.toContain('/home/rakazo/bots/bot-a');
+  expect(other.sessionKey).not.toBe(first.sessionKey);
+  expect(other.previous).toBeNull();
+  expect((await service.prepare("a-next", "same-tools")).previous?.threadId).toBe("native-a");
 });

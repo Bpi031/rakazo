@@ -60,14 +60,66 @@ const entry = z.discriminatedUnion("type", [
     })
     .strict(),
 ]);
-const manifestSchema = z
+const legacyManifestSchema = z
   .object({
     version: z.literal(1),
     entries: z.array(entry),
     digest: z.string().regex(/^[a-f0-9]{64}$/),
   })
   .strict();
+const teamRootSchema = z.string().regex(/^bots\/[A-Za-z0-9_-]{1,160}$/);
+const teamRootsSchema = z.tuple([teamRootSchema]);
+const teamManifestSchema = z
+  .object({
+    version: z.literal(2),
+    roots: teamRootsSchema,
+    entries: z.array(entry),
+    digest: z.string().regex(/^[a-f0-9]{64}$/),
+  })
+  .strict();
+const manifestSchema = z.discriminatedUnion("version", [legacyManifestSchema, teamManifestSchema]);
 export type CheckpointFileManifest = z.infer<typeof manifestSchema>;
+export type CheckpointFileScope = "dedicated" | "team";
+
+export function parseCheckpointFileManifest(raw: unknown): CheckpointFileManifest {
+  const manifest = manifestSchema.parse(raw);
+  const names = new Map(manifest.entries.map((item) => [item.path, item.type]));
+  if (
+    names.size !== manifest.entries.length ||
+    manifest.digest !==
+      sha256(
+        JSON.stringify(
+          manifest.version === 1
+            ? manifest.entries
+            : { roots: manifest.roots, entries: manifest.entries },
+        ),
+      )
+  )
+    throw new Error("Invalid checkpoint manifest");
+  for (const item of manifest.entries) {
+    if (
+      manifest.version === 2 &&
+      !manifest.roots.some((root) => item.path === root || item.path.startsWith(`${root}/`))
+    )
+      throw new Error("Checkpoint entry is outside the Team workspace");
+    if (
+      manifest.version === 2 &&
+      manifest.roots.includes(item.path as (typeof manifest.roots)[number]) &&
+      item.type !== "directory"
+    )
+      throw new Error("Checkpoint roots must be directories");
+    const parts = item.path.split("/");
+    for (let length = 1; length < parts.length; length++) {
+      const parent = parts.slice(0, length).join("/");
+      if (
+        names.get(parent) !== "directory" &&
+        !(manifest.version === 2 && manifest.roots.some((root) => root.startsWith(`${parent}/`)))
+      )
+        throw new Error("Invalid checkpoint parent directory");
+    }
+  }
+  return manifest;
+}
 
 /** The API owns this pool; its dataDir must not be mounted into the Agent sandbox. */
 export class CheckpointFiles {
@@ -78,11 +130,12 @@ export class CheckpointFiles {
     botId: string,
     computer: ComputerRef,
     input: Record<string, unknown>,
+    scope: CheckpointFileScope,
   ) {
     if (process.env.CHECKPOINT_DIRECT_DOCKER !== "1" || computer.kind !== "docker") return null;
     if (!/^[A-Za-z0-9_-]{1,160}$/.test(computer.botId)) throw new Error("Invalid home identity");
     const home = mappedHome(path.resolve(this.deps.dataDir), computer.botId);
-    const workspace = path.join(home, "workspace");
+    const workspace = scope === "team" ? home : path.join(home, "workspace");
     for (const component of [home, workspace]) {
       const info = await lstat(component);
       if (!info.isDirectory() || info.isSymbolicLink())
@@ -204,13 +257,30 @@ export class CheckpointFiles {
     return directory;
   }
 
+  private roots(botId: string, scope: CheckpointFileScope): [string] | undefined {
+    if (scope !== "team") return undefined;
+    if (!/^[A-Za-z0-9_-]{1,160}$/.test(botId)) throw new Error("Invalid Team bot identity");
+    return [`bots/${botId}`];
+  }
+
+  private manifest(entries: z.infer<typeof entry>[], roots?: [string]): CheckpointFileManifest {
+    return parseCheckpointFileManifest(
+      roots
+        ? { version: 2, roots, entries, digest: sha256(JSON.stringify({ roots, entries })) }
+        : { version: 1, entries, digest: sha256(JSON.stringify(entries)) },
+    );
+  }
+
   private async execute(
     actor: Actor,
     botId: string,
     computer: ComputerRef,
     input: Record<string, unknown>,
+    scope: CheckpointFileScope = "dedicated",
   ) {
-    const encoded = Buffer.from(JSON.stringify(input)).toString("base64");
+    const encoded = Buffer.from(
+      JSON.stringify({ ...input, roots: this.roots(botId, scope) }),
+    ).toString("base64");
     if (encoded.length > 110000) throw new Error("Checkpoint request exceeds transfer limit");
     let stdout = "";
     let code: number | undefined;
@@ -247,42 +317,31 @@ export class CheckpointFiles {
     return value;
   }
 
-  private validate(raw: unknown): CheckpointFileManifest {
-    const manifest = manifestSchema.parse(raw);
-    const names = new Map(manifest.entries.map((item) => [item.path, item.type]));
-    if (
-      names.size !== manifest.entries.length ||
-      manifest.digest !== sha256(JSON.stringify(manifest.entries))
-    )
-      throw new Error("Invalid checkpoint manifest");
-    for (const item of manifest.entries) {
-      const parts = item.path.split("/");
-      for (let length = 1; length < parts.length; length++) {
-        if (names.get(parts.slice(0, length).join("/")) !== "directory")
-          throw new Error("Invalid checkpoint parent directory");
-      }
-    }
-    return manifest;
-  }
-
   async capture(
     actor: Actor,
     botId: string,
     computer: ComputerRef,
+    scope: CheckpointFileScope = "dedicated",
   ): Promise<CheckpointFileManifest> {
-    const direct = await this.direct(actor, botId, computer, { operation: "capture" });
+    const roots = this.roots(botId, scope);
+    const direct = await this.direct(
+      actor,
+      botId,
+      computer,
+      {
+        operation: "capture",
+        roots,
+      },
+      scope,
+    );
     if (direct) {
       const entries = z.array(entry).parse(direct.entries);
-      return this.validate({ version: 1, entries, digest: sha256(JSON.stringify(entries)) });
+      return this.manifest(entries, roots);
     }
     const directory = await this.directory(actor, botId);
-    const inventory = await this.execute(actor, botId, computer, { operation: "inventory" });
+    const inventory = await this.execute(actor, botId, computer, { operation: "inventory" }, scope);
     const entries = z.array(entry).parse(inventory.entries);
-    const manifest = this.validate({
-      version: 1,
-      entries,
-      digest: sha256(JSON.stringify(entries)),
-    });
+    const manifest = this.manifest(entries, roots);
     const files = [
       ...new Map(
         entries.filter((item) => item.type === "file").map((item) => [item.sha256, item]),
@@ -304,11 +363,17 @@ export class CheckpointFiles {
       async function* source() {
         const hash = createHash("sha256");
         for (let offset = 0; offset < current.size; offset += READ_CHUNK) {
-          const result = await self.execute(actor, botId, computer, {
-            operation: "read",
-            path: current.path,
-            offset,
-          });
+          const result = await self.execute(
+            actor,
+            botId,
+            computer,
+            {
+              operation: "read",
+              path: current.path,
+              offset,
+            },
+            scope,
+          );
           const chunk = self.decode(result.data);
           if (chunk.length !== Math.min(READ_CHUNK, current.size - offset))
             throw new Error("Workspace changed during checkpoint");
@@ -353,7 +418,7 @@ export class CheckpointFiles {
       }),
     );
     if (failure) throw failure;
-    const after = await this.execute(actor, botId, computer, { operation: "inventory" });
+    const after = await this.execute(actor, botId, computer, { operation: "inventory" }, scope);
     if (JSON.stringify(after.entries) !== JSON.stringify(entries))
       throw new Error("Workspace changed during checkpoint");
     return manifest;
@@ -416,12 +481,32 @@ export class CheckpointFiles {
   }
 
   /** Caller must first persist a rescue checkpoint and stop/fence all workspace writers. */
-  async restore(actor: Actor, botId: string, computer: ComputerRef, raw: unknown): Promise<void> {
-    const manifest = this.validate(raw);
-    const direct = await this.direct(actor, botId, computer, {
-      operation: "restore",
-      entries: manifest.entries,
-    });
+  async restore(
+    actor: Actor,
+    botId: string,
+    computer: ComputerRef,
+    raw: unknown,
+    scope: CheckpointFileScope = "dedicated",
+  ): Promise<void> {
+    const manifest = parseCheckpointFileManifest(raw);
+    const roots = this.roots(botId, scope);
+    if (
+      scope === "team"
+        ? manifest.version !== 2 || manifest.roots[0] !== roots![0]
+        : manifest.version !== 1
+    )
+      throw new Error("Checkpoint belongs to a different workspace scope");
+    const direct = await this.direct(
+      actor,
+      botId,
+      computer,
+      {
+        operation: "restore",
+        entries: manifest.entries,
+        roots,
+      },
+      scope,
+    );
     if (direct) return;
     const directory = await this.directory(actor, botId);
     // Verify all blobs before clearing; verify again while restoring without buffering files.
@@ -432,7 +517,7 @@ export class CheckpointFiles {
         blobs.add(item.sha256);
       }
     }
-    const cleared = await this.execute(actor, botId, computer, { operation: "clear" });
+    const cleared = await this.execute(actor, botId, computer, { operation: "clear" }, scope);
     const preservedDirectories = z.array(entry).parse(cleared.preservedDirectories);
     if (preservedDirectories.some((item) => item.type !== "directory"))
       throw new Error("Workspace changed during checkpoint restore");
@@ -440,10 +525,16 @@ export class CheckpointFiles {
       .filter((item) => item.type === "directory")
       .sort((a, b) => a.path.split("/").length - b.path.split("/").length);
     for (const item of directories)
-      await this.execute(actor, botId, computer, { operation: "directory", path: item.path });
+      await this.execute(
+        actor,
+        botId,
+        computer,
+        { operation: "directory", path: item.path },
+        scope,
+      );
     const restoreFiles = manifest.entries.filter((item) => item.type === "file");
     const restoreFile = async (item: (typeof restoreFiles)[number]) => {
-      await this.execute(actor, botId, computer, { operation: "begin", path: item.path });
+      await this.execute(actor, botId, computer, { operation: "begin", path: item.path }, scope);
       let offset = 0;
       for await (const bytes of this.blob(
         path.join(directory, item.sha256),
@@ -452,20 +543,32 @@ export class CheckpointFiles {
       )) {
         for (let start = 0; start < bytes.length; start += CHUNK) {
           const chunk = bytes.subarray(start, start + CHUNK);
-          await this.execute(actor, botId, computer, {
-            operation: "write",
-            path: item.path,
-            offset,
-            data: chunk.toString("base64"),
-          });
+          await this.execute(
+            actor,
+            botId,
+            computer,
+            {
+              operation: "write",
+              path: item.path,
+              offset,
+              data: chunk.toString("base64"),
+            },
+            scope,
+          );
           offset += chunk.length;
         }
       }
-      await this.execute(actor, botId, computer, {
-        operation: "mode",
-        path: item.path,
-        mode: item.mode,
-      });
+      await this.execute(
+        actor,
+        botId,
+        computer,
+        {
+          operation: "mode",
+          path: item.path,
+          mode: item.mode,
+        },
+        scope,
+      );
     };
     let nextRestore = 0;
     let restoreFailure: unknown;
@@ -484,12 +587,18 @@ export class CheckpointFiles {
     if (restoreFailure) throw restoreFailure;
     // Keep directories writable until their children have been restored.
     for (const item of directories.reverse())
-      await this.execute(actor, botId, computer, {
-        operation: "mode",
-        path: item.path,
-        mode: item.mode,
-      });
-    const after = await this.execute(actor, botId, computer, { operation: "inventory" });
+      await this.execute(
+        actor,
+        botId,
+        computer,
+        {
+          operation: "mode",
+          path: item.path,
+          mode: item.mode,
+        },
+        scope,
+      );
+    const after = await this.execute(actor, botId, computer, { operation: "inventory" }, scope);
     const targetPaths = new Set(manifest.entries.map((item) => item.path));
     const preserved = new Map(
       preservedDirectories

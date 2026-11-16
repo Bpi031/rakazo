@@ -3769,7 +3769,7 @@ export function ShellPage() {
             {!inGroup && active && bootstrapMe?.developerMode === true ? <button type="button" aria-label="Agent workbench" title="Agent workbench" className="inline-flex size-8 items-center justify-center rounded-md hover:bg-accent" onClick={() => setSearchParams((previous) => { const next = new URLSearchParams(previous); next.set("workbench", "goals"); return next; })}><Wrench className="size-4" /></button> : null}
             {!inGroup && active && bootstrapMe?.managedServices === true ? <ManagedModelPicker
               key={active.id} bot={active} defaultModel={bootstrapMe.defaultModel} onChange={(updated) => setBots((rows) => rows.map((row) => row.id === updated.id ? updated : row))} /> : null}
-            {!inGroup && active?.computerMode === "dedicated" && bootstrapMe?.managedServices === true ? (
+            {!inGroup && active && bootstrapMe?.managedServices === true ? (
               <Button
                 variant="ghost"
                 size="sm"
@@ -3810,7 +3810,7 @@ export function ShellPage() {
           </div>
         ) : (
           <>
-          {!inGroup && active?.computerMode === "dedicated" && bootstrapMe?.managedServices === true ? (
+          {!inGroup && active && bootstrapMe?.managedServices === true ? (
             <CheckpointGenerationMonitor
               key={active.id}
               botId={active.id}
@@ -4013,7 +4013,7 @@ export function ShellPage() {
                 </div>
               </div>
             ) : null}
-            {panel === "checkpoints" && active && !inGroup && active.computerMode === "dedicated" && bootstrapMe?.managedServices === true ? (
+            {panel === "checkpoints" && active && !inGroup && bootstrapMe?.managedServices === true ? (
               <CheckpointsPanel
                 key={active.id}
                 botId={active.id}

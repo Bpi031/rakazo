@@ -8,6 +8,7 @@ import { assertCheckpointGeneration } from "@rakazo/db";
 import { toComputerRef } from "./computer-support.js";
 import { teamDigest } from "./team-policy.js";
 import { memberScope } from "./team-storage.js";
+import { assertManagedTeamComputer, managedWorkspace, workspaceRelativeRoots } from "./managed-workspace.js";
 
 const files = readFileSync(new URL('./native-files.py', import.meta.url), 'utf8');
 const json = (v: unknown) => JSON.parse(JSON.stringify(v)) as Prisma.InputJsonValue;
@@ -17,7 +18,7 @@ export class NativeControl {
   private async owned(actor: Actor, botId: string) {
     await memberScope(this.db, actor.userId, actor.spaceId);
     const bot = await this.db.bot.findFirstOrThrow({ where: { id: botId, userId: actor.userId, spaceId: actor.spaceId, archivedAt: null }, include: { computer: true } });
-    if (bot.computer?.scope === 'team') throw new Error('Private native workspace required');
+    if (bot.computer) await assertManagedTeamComputer(this.db, bot.computer, actor);
     return bot;
   }
   private where(actor: Actor, botId: string) { return { userId: actor.userId, spaceId: actor.spaceId, botId }; }
@@ -47,8 +48,8 @@ export class NativeControl {
     if (typeof run.checkpointGeneration === "number")
       await assertCheckpointGeneration(this.db, run.threadId, run.checkpointGeneration);
     const actor = {userId:run.userId,spaceId:run.spaceId,email:'',isDeploymentOwner:false};
-    await this.owned(actor,run.botId);
-    return { actor, run };
+    const bot = await this.owned(actor,run.botId);
+    return { actor, run, bot };
   }
   async observe(runId: string, kind: string, payload: unknown) {
     const { actor, run } = await this.actor(runId);
@@ -57,7 +58,8 @@ export class NativeControl {
     return this.db.agentWorkbenchRecord.upsert({ where: { id }, create: { id, ...this.where(actor,run.botId), runId, kind: 'native_' + kind, status: 'observed', digest: teamDigest(payload), payload: json(payload) }, update: { digest: teamDigest(payload), payload: json(payload) } });
   }
   async prepare(runId: string, fingerprint: string) {
-    const {actor,run}=await this.actor(runId);
+    const {actor,run,bot}=await this.actor(runId);
+    const workspace = managedWorkspace(bot.computer?.scope ?? "dedicated", run.botId);
     const view = await this.view(actor, run.botId);
     const p = view.preferences as any;
     const id=this.key(actor,run.botId,'native_session');
@@ -85,6 +87,7 @@ export class NativeControl {
         historyGeneration: thread.historyCompactionGeneration,
         branchId: thread.activeBranchId ?? null,
         checkpointGeneration: thread.checkpointGeneration ?? 0,
+        workspace,
       });
       const row = await tx.agentWorkbenchRecord.findUnique({ where: { id } });
       const priorRun=row?.runId?await tx.run.findUniqueOrThrow({where:{id:row.runId}}):null;
@@ -100,7 +103,7 @@ export class NativeControl {
       await tx.agentWorkbenchRecord.upsert({ where: { id }, create: { id, ...this.where(actor,run.botId), runId, kind: 'native_session', status: 'running', digest: teamDigest(payload), payload: json(payload) }, update: { runId, status:'running', digest:teamDigest(payload), payload:json(payload) } });
       const prefId = this.key(actor, run.botId, 'native_preferences');
       if (action !== 'none') await tx.agentWorkbenchRecord.updateMany({ where: { id: prefId, digest: teamDigest(p) }, data: { payload: json({ ...p, action:'none', revision:p.revision+1 }), digest:teamDigest({ ...p, action:'none', revision:p.revision+1 }) } });
-      return { ...payload, previous: p.persistence && action !== 'review' ? previous : null, persistent: p.persistence === true };
+      return { ...payload, workspace, previous: p.persistence && action !== 'review' ? previous : null, persistent: p.persistence === true };
     });
   }
   async finish(runId: string, value: any) {
@@ -120,9 +123,9 @@ export class NativeControl {
   }
   async files(actor: Actor, botId: string, input: Record<string,unknown>) {
     const bot=await this.owned(actor,botId);
-    if(!this.sandbox||!bot.computer?.providerRef||bot.computer.state!=='running')throw new Error('Existing private computer required');
+    if(!this.sandbox||!bot.computer?.providerRef||bot.computer.state!=='running')throw new Error('Existing owned running computer required');
     let stdout='',code:number|undefined;
-    for await(const e of this.sandbox.execute(toComputerRef(bot.computer),{argv:['/opt/office-python/bin/python3','-I','-c',files,Buffer.from(JSON.stringify(input)).toString('base64')],cwd:'/home/rakazo',timeoutMs:15000,unsetEnv:['PYTHONPATH','PYTHONHOME','LD_PRELOAD']},{...this.where(actor,botId),operationId:randomUUID(),traceId:'native-observation',signal:AbortSignal.timeout(20000)})){
+    for await(const e of this.sandbox.execute(toComputerRef(bot.computer),{argv:['/opt/office-python/bin/python3','-I','-c',files,Buffer.from(JSON.stringify(input)).toString('base64'), JSON.stringify(workspaceRelativeRoots(bot.computer.scope, botId))],cwd:'/home/rakazo',timeoutMs:15000,unsetEnv:['PYTHONPATH','PYTHONHOME','LD_PRELOAD']},{...this.where(actor,botId),operationId:randomUUID(),traceId:'native-observation',signal:AbortSignal.timeout(20000)})){
       if(e.type==='stdout'){stdout+=e.data;if(Buffer.byteLength(stdout)>400000)throw new Error('Observation cap');}if(e.type==='exit')code=e.code;
     }
     const result=JSON.parse(stdout);if(code!==0||result.error)throw new Error('Private workspace observation rejected');await this.owned(actor,botId);return result;
