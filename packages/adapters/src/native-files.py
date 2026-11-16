@@ -8,12 +8,13 @@ import stat
 import sys
 
 HOME = Path('/home/rakazo')
+ROOTS = ['workspace']
 TEXT = {'.rost', '.cnl', '.py', '.md', '.txt', '.csv', '.json', '.yaml', '.toml'}
 PUBLIC = TEXT | {'.xlsx', '.xlsm', '.xls', '.docx', '.pptx', '.pdf', '.png', '.jpg', '.jpeg', '.webp'}
 
 def parts(path):
     p = path.split('/')
-    if len(path) > 500 or len(p) < 2 or p[0] != 'workspace' or any(not s or s in ('.', '..') or s.startswith('.') or '\\' in s or any(ord(c) < 32 for c in s) for s in p):
+    if len(path) > 500 or not any(path.startswith(root + '/') for root in ROOTS) or any(not s or s in ('.', '..') or s.startswith('.') or '\\' in s or any(ord(c) < 32 for c in s) for s in p):
         raise ValueError('Private workspace path required')
     if Path(p[-1]).suffix.lower() not in PUBLIC or any(x in p[-1].lower() for x in ('license', 'credential', 'secret', 'gurobi.lic', 'api_key')):
         raise ValueError('Unapproved observation')
@@ -75,11 +76,15 @@ def inventory():
             if stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
                 result.append({'path': relative, 'bytes': info.st_size, 'modifiedAtMs': info.st_mtime_ns // 1000000})
         return False
-    parent = os.open(HOME, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    try: root = os.open('workspace', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
-    finally: os.close(parent)
-    try: truncated = walk(root, 'workspace', 0)
-    finally: os.close(root)
+    truncated = False
+    for prefix in ROOTS:
+        root = os.open(HOME, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            for component in prefix.split('/'):
+                child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root)
+                os.close(root); root = child
+            truncated = walk(root, prefix, 0) or truncated
+        finally: os.close(root)
     return {'files': result, 'truncated': truncated}
 
 def execute(value):
@@ -94,6 +99,7 @@ def execute(value):
 
 if __name__ == '__main__':
     try:
+        if len(sys.argv) > 2: ROOTS = json.loads(sys.argv[2])
         raw = base64.b64decode(sys.argv[1], validate=True)
         if len(raw) > 30000: raise ValueError('Input cap')
         print(json.dumps(execute(json.loads(raw)), ensure_ascii=True))

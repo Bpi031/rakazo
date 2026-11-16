@@ -214,6 +214,7 @@ describe("schedule tool persistence", () => {
       events: { append },
       jobs: { enqueue, cancel: vi.fn(async () => undefined) },
     } as unknown as Parameters<typeof createScheduleFromTool>[0];
+    addCheckpointTransaction(deps.prisma);
 
     const result = await createScheduleFromTool(deps, {
       spaceId: "ws-1",
@@ -222,6 +223,7 @@ describe("schedule tool persistence", () => {
       threadId: "thread-1",
       name: "Morning joke",
       prompt: "Tell a joke",
+      runId: "run-1",
       schedule: { every: 1, unit: "minutes" },
     });
 
@@ -238,7 +240,8 @@ describe("schedule tool persistence", () => {
       }),
     );
     expect(append).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "routine.created", payload: { name: "Morning joke" } }),
+      expect.objectContaining({ type: "routine.created",
+        runId: "run-1", payload: { name: "Morning joke" } }),
     );
     expect(enqueue).toHaveBeenCalledOnce();
   });
@@ -265,6 +268,7 @@ describe("schedule tool persistence", () => {
       },
       jobs: { enqueue: vi.fn(async () => undefined), cancel },
     } as unknown as Parameters<typeof createScheduleFromTool>[0];
+    addCheckpointTransaction(deps.prisma);
 
     const result = await createScheduleFromTool(deps, {
       spaceId: "ws-1",
@@ -303,6 +307,7 @@ describe("schedule tool persistence", () => {
         cancel: vi.fn(async () => undefined),
       },
     } as unknown as Parameters<typeof createScheduleFromTool>[0];
+    addCheckpointTransaction(deps.prisma);
 
     const result = await createScheduleFromTool(deps, {
       spaceId: "ws-1",
@@ -343,6 +348,7 @@ describe("schedule tool persistence", () => {
         cancel: vi.fn(async () => undefined),
       },
     } as unknown as Parameters<typeof createScheduleFromTool>[0];
+    addCheckpointTransaction(deps.prisma);
 
     const result = await createScheduleFromTool(deps, {
       spaceId: "ws-1",
@@ -387,6 +393,7 @@ describe("schedule tool persistence", () => {
         cancel: vi.fn(async () => undefined),
       },
     } as unknown as Parameters<typeof createScheduleFromTool>[0];
+    addCheckpointTransaction(deps.prisma);
 
     await expect(
       createScheduleFromTool(deps, {
@@ -471,3 +478,12 @@ describe("schedule tool persistence", () => {
     );
   });
 });
+
+function addCheckpointTransaction(prisma: unknown) {
+  const db = prisma as any;
+  db.$executeRaw = vi.fn(async () => 1);
+  db.thread = {
+    findUniqueOrThrow: vi.fn(async () => ({ checkpointGeneration: 0, checkpointBlocked: false })),
+  };
+  db.$transaction = async (callback: (tx: unknown) => unknown) => callback(db);
+}

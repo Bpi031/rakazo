@@ -99,6 +99,7 @@ import {
   FolderOpen,
   Gauge,
   LayoutGrid,
+  ListChecks,
   Lock,
   LogOut,
   Maximize2,
@@ -288,6 +289,8 @@ import { AgentStatusPanel } from "../components/AgentStatusPanel";
 import { PolicyReviewCard } from "../components/PolicyReviewCard";
 import { TeamWorkflowsPanel } from "../components/TeamWorkflowsPanel";
 import { AgentWorkbenchPanel } from "../components/AgentWorkbenchPanel";
+import { CheckpointGenerationMonitor, CheckpointsPanel } from "../components/CheckpointsPanel";
+import { useCheckpointI18n } from "../lib/checkpoint-i18n";
 import { NativeAgentPanel } from "../components/NativeAgentPanel";
 import { SpaceSearchResults } from "./SpaceSearch";
 import { BotSettings, CreateBotForm } from "./shell/bot-panel";
@@ -429,6 +432,7 @@ function readCollapsedRosterParents(userId: string | null | undefined): Set<stri
 
 export function ShellPage() {
   const { t } = useLingui();
+  const { copy: checkpointText } = useCheckpointI18n();
   const { botId, groupId } = useParams();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -497,6 +501,11 @@ export function ShellPage() {
   const [attachmentNotice, setAttachmentNotice] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [panel, setPanelState] = useState<Panel>(null);
+  const [checkpointBlocked, setCheckpointBlocked] = useState<{
+    botId: string;
+    blocked: boolean;
+  } | null>(null);
+  const [checkpointBusy, setCheckpointBusy] = useState<Record<string, boolean>>({});
   const [restoredPanelKey, setRestoredPanelKey] = useState<string | null>(null);
   const panelStorageKeyRef = useRef<string | null>(null);
   const observedPanelKey = useRef<string | null>(null);
@@ -3548,6 +3557,23 @@ export function ShellPage() {
             </div>
           ) : null}
         </div>
+        {bootstrapMe?.canManageCallRequests === true ? (
+          <button
+            type="button"
+            onClick={() => {
+              setMobileSidebarOpen(false);
+              navigate("/app/call-requests");
+            }}
+            className="mx-3 mb-1 flex items-center gap-3 rounded-xl px-2.5 py-2 hover:bg-sidebar-accent"
+          >
+            <span className="grid h-[30px] w-[30px] place-items-center rounded-lg bg-accent text-foreground/80">
+              <ListChecks size={15} strokeWidth={1.8} aria-hidden="true" />
+            </span>
+            <span className="text-[14px] font-medium text-foreground/90">
+              <Trans>Call requests</Trans>
+            </span>
+          </button>
+        ) : null}
         <button
           type="button"
           onClick={() => setPluginsOpen(true)}
@@ -3761,6 +3787,16 @@ export function ShellPage() {
             {!inGroup && active && bootstrapMe?.developerMode === true ? <button type="button" aria-label="Agent workbench" title="Agent workbench" className="inline-flex size-8 items-center justify-center rounded-md hover:bg-accent" onClick={() => setSearchParams((previous) => { const next = new URLSearchParams(previous); next.set("workbench", "goals"); return next; })}><Wrench className="size-4" /></button> : null}
             {!inGroup && active && bootstrapMe?.managedServices === true ? <ManagedModelPicker
               key={active.id} bot={active} defaultModel={bootstrapMe.defaultModel} onChange={(updated) => setBots((rows) => rows.map((row) => row.id === updated.id ? updated : row))} /> : null}
+            {!inGroup && active && bootstrapMe?.managedServices === true ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                aria-pressed={panel === "checkpoints"}
+                onClick={() => setPanel(panel === "checkpoints" ? null : "checkpoints")}
+              >
+                {checkpointText.title}
+              </Button>
+            ) : null}
             {!inGroup && active ? (
               <button
                 type="button"
@@ -3792,6 +3828,19 @@ export function ShellPage() {
           </div>
         ) : (
           <>
+          {!inGroup && active && bootstrapMe?.managedServices === true ? (
+            <CheckpointGenerationMonitor
+              key={active.id}
+              botId={active.id}
+              onBlockedChange={(blocked) =>
+                setCheckpointBlocked((current) =>
+                  current?.botId === active.id && current.blocked === blocked
+                    ? current
+                    : { botId: active.id, blocked },
+                )
+              }
+            />
+          ) : null}
           {!inGroup && active && bootstrapMe?.developerMode === true && searchParams.has("workbench") ? <AgentWorkbenchPanel
             key={`${active.id}:${searchParams.get("workbench")}:${searchParams.get("review")}`} botId={active.id} initialTab={searchParams.get("workbench") ?? "goals"} initialReview={searchParams.get("review") ?? undefined}
             onClose={() => setSearchParams((previous) => { const next = new URLSearchParams(previous); next.delete("workbench"); next.delete("review"); return next; })} /> : null}
@@ -3847,6 +3896,14 @@ export function ShellPage() {
             <Trans>Teaching in progress. Stop teaching before sending a new message.</Trans>
           </div>
         ) : null}
+        {!inGroup && checkpointBlocked?.botId === active?.id && checkpointBlocked?.blocked ? (
+          <div role="alert" className="flex items-center justify-between gap-3 px-6 py-2 text-sm text-destructive">
+            <span>{checkpointText.messagingBlocked}</span>
+            <Button variant="outline" size="sm" onClick={() => setPanel("checkpoints")}>
+              {checkpointText.view}
+            </Button>
+          </div>
+        ) : null}
         {active || activeGroup ? (
           <Composer
             key={inGroup ? `group:${groupId}` : `bot:${active?.id}`}
@@ -3854,7 +3911,11 @@ export function ShellPage() {
             enterToSend={enterToSend}
             activeName={inGroup ? (activeGroup?.name ?? activeSnapshot?.groupName) : active?.name}
             running={composerRunning}
-            disabled={Boolean(recordingSkill)}
+            disabled={
+              Boolean(recordingSkill) ||
+              (!inGroup && Boolean(active && checkpointBusy[active.id])) ||
+              (!inGroup && checkpointBlocked?.botId === active?.id && checkpointBlocked?.blocked === true)
+            }
             pendingAttachments={activePendingAttachments}
             attachmentNotice={attachmentNotice}
             sendError={sendError}
@@ -3927,6 +3988,8 @@ export function ShellPage() {
                 <span className="text-[13.5px] text-muted-foreground">
                   {panel === "settings" ? (
                     <Trans>Settings</Trans>
+                  ) : panel === "checkpoints" ? (
+                    checkpointText.title
                   ) : active ? (
                     (computer?.state ?? active.status)
                   ) : (
@@ -3946,7 +4009,7 @@ export function ShellPage() {
                       }}
                     />
                   ) : null}
-                  {active ? (
+                  {active && panel !== "checkpoints" ? (
                     <Button
                       variant="ghost"
                       size="icon-sm"
@@ -3967,6 +4030,21 @@ export function ShellPage() {
                   </Button>
                 </div>
               </div>
+            ) : null}
+            {panel === "checkpoints" && active && !inGroup && bootstrapMe?.managedServices === true ? (
+              <CheckpointsPanel
+                key={active.id}
+                botId={active.id}
+                workspaceBusy={checkpointBusy[active.id]}
+                onBusyChange={(busy) =>
+                  setCheckpointBusy((current) => {
+                    const next = { ...current };
+                    if (busy) next[active.id] = true;
+                    else delete next[active.id];
+                    return next;
+                  })
+                }
+              />
             ) : null}
             {panel === "computer" && active ? (
               <div>

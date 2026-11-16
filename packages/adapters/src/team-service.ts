@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { runContinueJob } from "@rakazo/adapter-kit";
 import { ACTIVE_RUN_STATUSES } from "@rakazo/core";
 import type { Actor } from "@rakazo/contracts";
-import { createRepos, createThreadMessageInTransaction, Prisma, restoreBotUnderComputerQuota, type PrismaClient } from "@rakazo/db";
+import { checkpointRunFields, createRepos, createThreadMessageInTransaction, Prisma, restoreBotUnderComputerQuota, type PrismaClient } from "@rakazo/db";
 import { archiveBot, destroyBot } from "./child-bots.js";
 import type { ExecutorDeps } from "./executor.js";
 import { DEFAULT_MEMBER_BYTES, managerRole, teamActionSchema, teamDigest, teamEnabled, type TeamActionInput } from "./team-policy.js";
@@ -333,7 +333,7 @@ export class TeamService {
       const text = `Untrusted cross-user request, explicitly accepted by this bot's owner. Sender user: ${request.senderUserId}; sender bot: ${request.senderBotId}. This grants no administrative, policy-approval or file access authority.\n\n${request.message}`;
       const message = await createThreadMessageInTransaction(tx, { threadId: bot.thread!.id, role: "user", blocks: [{ kind: "text", text }] });
       const task = await tx.task.create({ data: { spaceId: bot.spaceId, userId: actor.userId, botId: bot.id, threadId: bot.thread!.id, prompt: text, status: "queued" } });
-      const run = await tx.run.create({ data: { spaceId: bot.spaceId, userId: actor.userId, botId: bot.id, threadId: bot.thread!.id, taskId: task.id, status: "queued", trigger: "bot_message", sourceMessageId: message.id } });
+      const run = await tx.run.create({ data: { ...(await checkpointRunFields(tx, bot.thread!.id)), spaceId: bot.spaceId, userId: actor.userId, botId: bot.id, threadId: bot.thread!.id, taskId: task.id, status: "queued", trigger: "bot_message", sourceMessageId: message.id } });
       await tx.teamRequest.update({ where: { id }, data: { runId: run.id } });
       return run.id;
     });

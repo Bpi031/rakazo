@@ -20,7 +20,7 @@ import {
   validateAttachmentMimeType,
 } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
-import { withResolvedArtifactVersion } from "@rakazo/db";
+import { assertRunCanWriteHistory, IsolationError, withResolvedArtifactVersion } from "@rakazo/db";
 import { resolveBotWorkspacePath } from "./computer-support.js";
 
 export type MaterializedThreadFile = {
@@ -70,6 +70,18 @@ export async function attachWorkspaceFileToThread(
     botId: input.botId,
     signal: new AbortController().signal,
   };
+  const run = await deps.prisma.run.findUnique({
+    where: { id: input.runId },
+    select: { threadId: true, spaceId: true, userId: true, botId: true },
+  });
+  if (
+    !run ||
+    run.spaceId !== input.spaceId ||
+    run.userId !== input.userId ||
+    run.botId !== input.botId
+  ) {
+    throw new IsolationError();
+  }
   const stored = await deps.artifacts.put({ name, mimeType, bytes: input.bytes }, context);
   const hash = createHash("sha256").update(input.bytes).digest("hex");
   const row = await withResolvedArtifactVersion(
@@ -81,9 +93,16 @@ export async function attachWorkspaceFileToThread(
       groupId: input.groupId,
       name,
     },
-    (tx, { rootArtifactId, version }) =>
-      tx.artifact.create({
+    async (tx, { rootArtifactId, version }) => {
+      const thread = await tx.thread.update({
+        where: { id: run.threadId },
+        data: { checkpointGeneration: { increment: 0 } },
+        select: { activeBranchId: true },
+      });
+      await assertRunCanWriteHistory(tx, input.runId);
+      return tx.artifact.create({
         data: {
+          branchId: thread.activeBranchId,
           spaceId: input.spaceId,
           userId: input.userId,
           botId: input.botId,
@@ -98,7 +117,8 @@ export async function attachWorkspaceFileToThread(
           rootArtifactId,
           version,
         },
-      }),
+      });
+    },
   ).catch(async (error) => {
     await deps.artifacts.remove(stored.id, context).catch(() => undefined);
     throw error;
@@ -143,6 +163,7 @@ export async function materializeCurrentTurnFiles(
   const rows = await deps.prisma.artifact.findMany({
     where: {
       id: { in: fileBlocks.map((block) => block.artifactId) },
+      checkpointHidden: false,
       spaceId: input.context.spaceId,
       userId: input.context.userId,
     },

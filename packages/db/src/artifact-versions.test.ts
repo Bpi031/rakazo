@@ -18,6 +18,20 @@ const params = {
 };
 
 describe("resolveNextArtifactVersion", () => {
+  it("allocates above archived versions while continuing the visible family", async () => {
+    const findFirst = vi
+      .fn()
+      .mockResolvedValueOnce({ id: "root", rootArtifactId: null, version: 1 })
+      .mockResolvedValueOnce({ version: 4 });
+    expect(
+      await resolveNextArtifactVersion(
+        { artifact: { findFirst } } as unknown as PrismaClient,
+        params,
+      ),
+    ).toEqual({ rootArtifactId: "root", version: 5 });
+    expect(findFirst.mock.calls[0]![0].where.checkpointHidden).toBe(false);
+    expect(findFirst.mock.calls[1]![0].where.checkpointHidden).toBeUndefined();
+  });
   it("starts a new family at version 1 when nothing matches", async () => {
     const findFirst = vi.fn().mockResolvedValue(null);
     const prisma = { artifact: { findFirst } } as unknown as Pick<PrismaClient, "artifact">;
@@ -134,7 +148,7 @@ describe("withResolvedArtifactVersion", () => {
     const result = await withResolvedArtifactVersion(client.prisma, params, attempt);
 
     expect(result).toBe("row-v2");
-    expect(findFirst).toHaveBeenCalledTimes(2);
+    expect(findFirst).toHaveBeenCalledTimes(3);
     expect(client.transaction).toHaveBeenCalledTimes(2);
     expect(attempt).toHaveBeenNthCalledWith(1, client.tx, { rootArtifactId: null, version: 1 });
     expect(attempt).toHaveBeenNthCalledWith(2, client.tx, {

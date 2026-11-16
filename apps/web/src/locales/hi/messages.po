@@ -13,38 +13,6 @@ msgstr ""
 "Language-Team: \n"
 "Plural-Forms: \n"
 
-#: src/components/QuestionCard.tsx
-msgid "Question"
-msgstr "Question"
-
-#: src/components/QuestionCard.tsx
-msgid "Answer later"
-msgstr "Answer later"
-
-#: src/components/QuestionCard.tsx
-msgid "Answer question"
-msgstr "Answer question"
-
-#: src/components/QuestionCard.tsx
-msgid "Choose an answer"
-msgstr "Choose an answer"
-
-#: src/components/QuestionCard.tsx
-msgid "Your own response"
-msgstr "Your own response"
-
-#: src/components/QuestionCard.tsx
-msgid "Or write your own response"
-msgstr "Or write your own response"
-
-#: src/components/QuestionCard.tsx
-msgid "Sending..."
-msgstr "Sending..."
-
-#: src/components/QuestionCard.tsx
-msgid "Recommended"
-msgstr "Recommended"
-
 #: src/pages/Shell.tsx
 msgid " (unread)"
 msgstr " (अपठित)"
@@ -368,6 +336,10 @@ msgstr ""
 msgid "Action confirmations"
 msgstr "कार्रवाई की पुष्टि"
 
+#: src/pages/CallRequests.tsx
+msgid "Actions"
+msgstr "Actions"
+
 #. placeholder {0}: bot.name
 #. placeholder {0}: group.spaceName
 #. placeholder {0}: sectionMenu.section.name
@@ -444,6 +416,10 @@ msgstr "बैकअप के रूप में उपयोग करने 
 msgid "Add credential"
 msgstr ""
 
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Add doctor"
+msgstr "Add doctor"
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Add Executor"
 msgstr "Executor जोड़ें"
@@ -472,6 +448,10 @@ msgstr "OpenAPI जोड़ें"
 #: src/pages/PluginsOverlay.tsx
 msgid "Add remote MCP server"
 msgstr "रिमोट MCP सर्वर जोड़ें"
+
+#: src/pages/CallRequests.tsx
+msgid "Add request"
+msgstr "Add request"
 
 #: src/pages/McpServersOverlay.tsx
 msgid "Add server"
@@ -604,7 +584,16 @@ msgstr "इस प्रोवाइडर के लिए API कुंजी 
 msgid "Answer"
 msgstr "उत्तर"
 
+#: src/components/QuestionCard.tsx
+msgid "Answer later"
+msgstr "Answer later"
+
+#: src/components/QuestionCard.tsx
+msgid "Answer question"
+msgstr "Answer question"
+
 #: src/components/AskCard.tsx
+#: src/components/QuestionCard.tsx
 msgid "Answered"
 msgstr "उत्तर दिया गया"
 
@@ -793,6 +782,14 @@ msgstr ""
 msgid "Back"
 msgstr ""
 
+#: src/pages/CallRequests.tsx
+msgid "Back to Agents"
+msgstr "Back to Agents"
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Back to doctors"
+msgstr "Back to doctors"
+
 #: src/pages/Auth.tsx
 msgid "Back to sign in"
 msgstr "साइन इन पर वापस जाएँ"
@@ -908,6 +905,11 @@ msgstr ""
 msgid "Built-in"
 msgstr "अंतर्निहित"
 
+#: src/pages/CallRequests.tsx
+#: src/pages/Shell.tsx
+msgid "Call requests"
+msgstr "Call requests"
+
 #: src/App.tsx
 msgid "Can't reach the server."
 msgstr "सर्वर तक नहीं पहुंचा जा सका।"
@@ -918,6 +920,8 @@ msgstr "सर्वर तक नहीं पहुंचा जा सका�
 #: src/components/markdown-link-prompt.tsx
 #: src/components/teach/TeachComputerOverlay.tsx
 #: src/pages/Artifacts.tsx
+#: src/pages/CallDoctorDirectory.tsx
+#: src/pages/CallRequests.tsx
 #: src/pages/KnowledgeSection.tsx
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
@@ -926,6 +930,11 @@ msgstr "सर्वर तक नहीं पहुंचा जा सका�
 #: src/pages/shell/dialogs.tsx
 msgid "Cancel"
 msgstr "रद्द करें"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.cancel"
+msgstr "Cancel"
 
 #: src/pages/shell/bot-panel.tsx
 msgid "Cancel new bot"
@@ -1006,6 +1015,15 @@ msgstr "जांच करें।"
 msgid "Check the API key or sign-in, then test again."
 msgstr "API कुंजी या साइन-इन जाँचें, फिर फिर से परीक्षण करें।"
 
+#. placeholder {0}: reason.row
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Check the doctor details on row {0}."
+msgstr "Check the doctor details on row {0}."
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Check the name, email and Staff ID."
+msgstr "Check the name, email and Staff ID."
+
 #: src/lib/model-connection-preflight.ts
 msgid "Check the server URL and network, then test again."
 msgstr "सर्वर URL और नेटवर्क जाँचें, फिर फिर से परीक्षण करें।"
@@ -1029,6 +1047,21 @@ msgstr ""
 msgid "Checkout has local changes. Clean it before updating."
 msgstr ""
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.name"
+msgstr "Checkpoint name"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.tree"
+msgstr "Checkpoint tree, drag to pan"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.title"
+msgstr "Checkpoints"
+
 #: src/pages/shell/avatar-studio-popover.tsx
 msgid "Choose a bot shape, color, or upload an image"
 msgstr "बॉट का आकार और रंग चुनें, या छवि अपलोड करें"
@@ -1037,9 +1070,17 @@ msgstr "बॉट का आकार और रंग चुनें, या �
 msgid "Choose a bot…"
 msgstr ""
 
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Choose a CSV with up to 1,000 doctors, under 512 KB."
+msgstr "Choose a CSV with up to 1,000 doctors, under 512 KB."
+
 #: src/pages/Auth.tsx
 msgid "Choose a new password"
 msgstr "नया पासवर्ड चुनें"
+
+#: src/components/QuestionCard.tsx
+msgid "Choose an answer"
+msgstr "Choose an answer"
 
 #: src/pages/shell/avatar-studio-popover.tsx
 msgid "Choose file"
@@ -1352,6 +1393,7 @@ msgid "Context limit"
 msgstr "कॉन्टेक्स्ट सीमा"
 
 #: src/components/integrations/IntegrationSetup.tsx
+#: src/components/QuestionCard.tsx
 #: src/pages/Onboarding.tsx
 msgid "Continue"
 msgstr "जारी रखें"
@@ -1370,10 +1412,11 @@ msgid "Continue with email"
 msgstr "ईमेल से जारी रखें"
 
 #: src/components/ComputersUnavailableHint.tsx
+#: src/pages/CallRequests.tsx
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
 msgid "Copied"
-msgstr ""
+msgstr "Copied"
 
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
@@ -1384,6 +1427,14 @@ msgstr "कॉपी करें"
 #: src/components/ComputersUnavailableHint.tsx
 msgid "Copy .env example"
 msgstr ""
+
+#: src/pages/CallRequests.tsx
+msgid "Copy doctor link"
+msgstr "Copy doctor link"
+
+#: src/pages/CallRequests.tsx
+msgid "Copy month table"
+msgstr "Copy month table"
 
 #: src/pages/ScratchpadSection.tsx
 msgid "Could not add"
@@ -1586,6 +1637,11 @@ msgstr ""
 msgid "Could not load bots. Reload to try again."
 msgstr ""
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.loadError"
+msgstr "Could not load checkpoints."
+
 #: src/components/computer/TerminalApp.tsx
 msgid "Could not load commands"
 msgstr ""
@@ -1672,6 +1728,10 @@ msgstr "मॉडल सर्वर तक नहीं पहुँच सक�
 msgid "Could not reach the server"
 msgstr "सर्वर से संपर्क नहीं हो सका"
 
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Could not read this file. Choose a CSV."
+msgstr "Could not read this file. Choose a CSV."
+
 #: src/pages/ScratchpadSection.tsx
 msgid "Could not remove"
 msgstr "हटाया नहीं जा सका"
@@ -1730,6 +1790,10 @@ msgstr ""
 #: src/pages/ModelBackupsSettings.tsx
 msgid "Could not save backup models"
 msgstr "बैकअप मॉडल सहेजे नहीं जा सके।"
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Could not save doctors. Try again."
+msgstr "Could not save doctors. Try again."
 
 #: src/pages/GroupPanel.tsx
 msgid "Could not save group"
@@ -1792,6 +1856,7 @@ msgid "Could not start teaching"
 msgstr ""
 
 #: src/components/AskCard.tsx
+#: src/components/QuestionCard.tsx
 msgid "Could not submit this answer"
 msgstr "यह उत्तर सबमिट नहीं किया जा सका"
 
@@ -1941,6 +2006,10 @@ msgstr "बॉट अवतार अनुकूलित करें"
 msgid "Dark"
 msgstr "डार्क"
 
+#: src/pages/CallRequests.tsx
+msgid "Date"
+msgstr "Date"
+
 #: src/lib/billing.ts
 #: src/pages/RoutineSchedule.tsx
 msgid "day"
@@ -2023,6 +2092,17 @@ msgstr "समूह डिलीट करें"
 msgid "Delete memories too"
 msgstr "मेमोरी भी डिलीट करें"
 
+#. placeholder {0}: row.date
+#: src/pages/CallRequests.tsx
+msgid "Delete request for {0}"
+msgstr "Delete request for {0}"
+
+#. placeholder {0}: row.doctorName
+#. placeholder {1}: row.date
+#: src/pages/CallRequests.tsx
+msgid "Delete request from {0} for {1}"
+msgstr "Delete request from {0} for {1}"
+
 #: src/pages/Shell.tsx
 msgid "Delete space"
 msgstr ""
@@ -2076,6 +2156,10 @@ msgstr "विवरण"
 #: src/components/integrations/IntegrationSetup.tsx
 msgid "Direct MCP"
 msgstr ""
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Disabled"
+msgstr "Disabled"
 
 #: src/pages/shell/bot-panel.tsx
 msgid "Disabled tools"
@@ -2138,6 +2222,18 @@ msgstr ""
 msgid "Docker limits access to your computer for added security. Using {hostLabel} lets bots work with your local files and tools."
 msgstr "Docker अतिरिक्त सुरक्षा के लिए आपके कंप्यूटर तक पहुँच सीमित करता है। {hostLabel} चुनने पर बॉट्स आपकी स्थानीय फ़ाइलों और टूल्स के साथ काम कर सकते हैं।"
 
+#: src/pages/CallRequests.tsx
+msgid "Doctor"
+msgstr "Doctor"
+
+#: src/pages/CallRequests.tsx
+msgid "Doctor sign-in is unavailable. Contact your administrator."
+msgstr "Doctor sign-in is unavailable. Contact your administrator."
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Doctors"
+msgstr "Doctors"
+
 #: src/pages/Auth.tsx
 msgid "Don’t have an account?"
 msgstr "खाता नहीं है?"
@@ -2192,9 +2288,22 @@ msgstr "डुप्लिकेट"
 msgid "e.g. Hivenet Agent, Presales, Timesheets bot"
 msgstr "उदा. Hivenet Agent, Presales, टाइमशीट बॉट"
 
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Each doctor needs a unique Staff ID and email."
+msgstr "Each doctor needs a unique Staff ID and email."
+
 #: src/components/AskCard.tsx
 msgid "Edit"
 msgstr "संपादित करें"
+
+#. placeholder {0}: doctor.name
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Edit {0}"
+msgstr "Edit {0}"
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Edit doctor"
+msgstr "Edit doctor"
 
 #: src/components/AskCard.tsx
 msgid "Edit first"
@@ -2204,7 +2313,17 @@ msgstr "पहले संपादित करें"
 msgid "Edit Profile"
 msgstr "प्रोफ़ाइल संपादित करें"
 
+#: src/pages/CallRequests.tsx
+msgid "Edit request"
+msgstr "Edit request"
+
+#. placeholder {0}: row.date
+#: src/pages/CallRequests.tsx
+msgid "Edit request for {0}"
+msgstr "Edit request for {0}"
+
 #: src/pages/Auth.tsx
+#: src/pages/CallDoctorDirectory.tsx
 msgid "Email"
 msgstr "ईमेल"
 
@@ -2215,6 +2334,10 @@ msgstr "इस ईमेल को पंजीकरण की अनुमत�
 #: src/lib/user-error.ts
 msgid "Email verification required"
 msgstr "ईमेल सत्यापन आवश्यक है"
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Enabled"
+msgstr "Enabled"
 
 #: src/pages/BillingSettingsPanel.tsx
 msgid "Ends {day}"
@@ -2558,6 +2681,10 @@ msgstr "मेरा काम हो गया"
 msgid "If you heard that, voice is ready."
 msgstr "अगर आपने वह सुना, तो आवाज़ तैयार है।"
 
+#: src/pages/CallRequests.tsx
+msgid "If your email is registered, a verification code has been sent."
+msgstr "If your email is registered, a verification code has been sent."
+
 #: src/pages/ExternalConversationSettings.tsx
 msgid "Ignore"
 msgstr ""
@@ -2565,6 +2692,18 @@ msgstr ""
 #: src/pages/shell/avatar-studio-popover.tsx
 msgid "Image upload area"
 msgstr "छवि अपलोड क्षेत्र"
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Import CSV"
+msgstr "Import CSV"
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Import doctor CSV"
+msgstr "Import doctor CSV"
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Import doctors"
+msgstr "Import doctors"
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Import OpenAPI JSON"
@@ -2743,6 +2882,11 @@ msgstr "वेब छवियाँ अपने-आप लोड करें"
 msgid "Loading activity…"
 msgstr "गतिविधि लोड हो रही है…"
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.loading"
+msgstr "Loading checkpoints…"
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Loading integrations…"
 msgstr "इंटीग्रेशन लोड हो रहे हैं…"
@@ -2774,6 +2918,7 @@ msgstr "आवाज़ प्रोवाइडर्स लोड हो र�
 #: src/App.tsx
 #: src/pages/Artifacts.tsx
 #: src/pages/Auth.tsx
+#: src/pages/CallRequests.tsx
 #: src/pages/IntegrationSetup.tsx
 #: src/pages/ModelBackupsSettings.tsx
 #: src/pages/Onboarding.tsx
@@ -2827,6 +2972,10 @@ msgstr ""
 msgid "Manage billing"
 msgstr ""
 
+#: src/pages/CallRequests.tsx
+msgid "Manage doctors"
+msgstr "Manage doctors"
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Manage MCP servers"
 msgstr "MCP सर्वर प्रबंधित करें"
@@ -2842,6 +2991,11 @@ msgstr "वर्कस्पेस के सिमेंटिक मेमो
 #: src/pages/PluginsOverlay.tsx
 msgid "Manual"
 msgstr ""
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.manual"
+msgstr "Manual checkpoint"
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Manual setup required"
@@ -3050,9 +3204,17 @@ msgstr ""
 msgid "Monthly"
 msgstr "मासिक"
 
+#: src/pages/CallRequests.tsx
+msgid "Monthly limit reached."
+msgstr "Monthly limit reached."
+
 #: src/pages/Shell.tsx
 msgid "More"
 msgstr ""
+
+#: src/pages/CallRequests.tsx
+msgid "More actions"
+msgstr "More actions"
 
 #: src/components/ComputerMaintenanceActions.tsx
 msgid "More computer actions"
@@ -3080,6 +3242,7 @@ msgstr "म्यूट करें"
 
 #: src/components/teach/SkillDraftCard.tsx
 #: src/pages/Auth.tsx
+#: src/pages/CallDoctorDirectory.tsx
 #: src/pages/GroupPanel.tsx
 #: src/pages/RoutineEditor.tsx
 #: src/pages/shell/bot-credentials.tsx
@@ -3087,6 +3250,11 @@ msgstr "म्यूट करें"
 #: src/pages/shell/dialogs.tsx
 msgid "Name"
 msgstr "नाम"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.namePlaceholder"
+msgstr "Name (optional)"
 
 #: src/pages/shell/bot-panel.tsx
 msgid "Name this bot"
@@ -3133,6 +3301,10 @@ msgstr "नया खुला-कार्य आइटम"
 #: src/pages/Auth.tsx
 msgid "New password"
 msgstr "नया पासवर्ड"
+
+#: src/pages/CallRequests.tsx
+msgid "New request"
+msgstr "New request"
 
 #: src/pages/BotContextMenu.tsx
 #: src/pages/shell/dialogs.tsx
@@ -3183,13 +3355,26 @@ msgstr ""
 msgid "No bots match"
 msgstr ""
 
+#: src/pages/CallRequests.tsx
+msgid "No call"
+msgstr "No call"
+
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "No chat apps linked yet."
 msgstr ""
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.empty"
+msgstr "No checkpoints yet."
+
 #: src/pages/shell/bot-credentials.tsx
 msgid "No credentials saved for this bot."
 msgstr ""
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "No doctors added."
+msgstr "No doctors added."
 
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "No group chats yet."
@@ -3239,6 +3424,10 @@ msgstr "कोई प्रोवाइडर नहीं मिला।"
 msgid "No remote MCP servers found"
 msgstr ""
 
+#: src/pages/CallRequests.tsx
+msgid "No requests this month."
+msgstr "No requests this month."
+
 #: src/pages/PluginsOverlay.tsx
 #: src/pages/SpaceSearch.tsx
 msgid "No results"
@@ -3271,6 +3460,11 @@ msgstr ""
 #: src/pages/RoutineEditor.tsx
 msgid "No trigger"
 msgstr ""
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.noPrompt"
+msgstr "No user message at this checkpoint."
 
 #: src/pages/ScratchpadSection.tsx
 msgid "None yet"
@@ -3433,6 +3627,10 @@ msgstr "या एक API कुंजी कनेक्ट करें"
 msgid "Or paste an API key"
 msgstr "या एक API कुंजी पेस्ट करें"
 
+#: src/components/QuestionCard.tsx
+msgid "Or write your own response"
+msgstr "Or write your own response"
+
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "Organic"
 msgstr ""
@@ -3449,6 +3647,10 @@ msgstr "मूल संदेश उपलब्ध नहीं है"
 #: src/pages/Onboarding.tsx
 msgid "Other model…"
 msgstr "अन्य मॉडल…"
+
+#: src/pages/CallRequests.tsx
+msgid "Others"
+msgstr "Others"
 
 #: src/pages/Board.tsx
 msgid "Owner"
@@ -3537,6 +3739,20 @@ msgstr "प्लगइन"
 msgid "POST to"
 msgstr ""
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.preRollback"
+msgstr "Pre-rollback checkpoint"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.preSolve"
+msgstr "Pre-solve checkpoint"
+
+#: src/pages/CallRequests.tsx
+msgid "Prefer call"
+msgstr "Prefer call"
+
 #. placeholder {0}: props.name
 #: src/components/ArtifactFileCard.tsx
 msgid "Preview {0}"
@@ -3580,6 +3796,10 @@ msgstr "प्रोवाइडर्स"
 msgid "Pull request"
 msgstr "पुल अनुरोध"
 
+#: src/components/QuestionCard.tsx
+msgid "Question"
+msgstr "Question"
+
 #: src/pages/ActivityList.tsx
 msgid "Queued"
 msgstr "कतार में"
@@ -3616,6 +3836,10 @@ msgstr ""
 #: src/pages/ActivityList.tsx
 msgid "Recent"
 msgstr "हाल के"
+
+#: src/components/QuestionCard.tsx
+msgid "Recommended"
+msgstr "Recommended"
 
 #: src/pages/McpServersOverlay.tsx
 msgid "Reconnect OAuth"
@@ -3695,6 +3919,10 @@ msgstr ""
 #: src/components/teach/TeachComputerOverlay.tsx
 msgid "Refreshing…"
 msgstr ""
+
+#: src/pages/CallRequests.tsx
+msgid "Registered email"
+msgstr "Registered email"
 
 #: src/lib/user-error.ts
 msgid "Registration is closed"
@@ -3819,6 +4047,14 @@ msgstr ""
 msgid "Replying to {0}"
 msgstr ""
 
+#: src/pages/CallRequests.tsx
+msgid "Request"
+msgstr "Request"
+
+#: src/pages/CallRequests.tsx
+msgid "Request month"
+msgstr "Request month"
+
 #: src/pages/shell/message-cards.tsx
 msgid "Research & writing"
 msgstr ""
@@ -3865,6 +4101,21 @@ msgstr ""
 msgid "Restore"
 msgstr "बहाल करें"
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.restore"
+msgstr "Restore"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.restoreNode"
+msgstr "Restore checkpoint"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.restoreError"
+msgstr "Restore did not complete. Please try again."
+
 #: src/components/ComputerMaintenanceActions.tsx
 msgid "Restore the last saved workspace."
 msgstr "अंतिम सहेजे गए कार्यक्षेत्र को पुनर्स्थापित करें।"
@@ -3872,6 +4123,11 @@ msgstr "अंतिम सहेजे गए कार्यक्षेत्
 #: src/components/ComputerMaintenanceActions.tsx
 msgid "Restore the last saved workspace. Unsaved work on the computer is lost."
 msgstr "अंतिम सहेजे गए वर्कस्पेस को बहाल करें। कंप्यूटर पर बिना सहेजा काम खो जाएगा।"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.confirm"
+msgstr "Restore this checkpoint?"
 
 #: src/components/AskCard.tsx
 msgid "Restored"
@@ -3962,6 +4218,11 @@ msgstr "चल रहा है"
 msgid "Running · Stop"
 msgstr "चल रहा है · रोकें"
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.description"
+msgstr "Running tasks will stop. Any changes will be saved as a pre-rollback checkpoint."
+
 #: src/pages/RoutineEditor.tsx
 msgid "Running…"
 msgstr "चल रहा है…"
@@ -3973,6 +4234,8 @@ msgstr ""
 #: src/components/AskCard.tsx
 #: src/components/teach/SkillDraftCard.tsx
 #: src/pages/Board.tsx
+#: src/pages/CallDoctorDirectory.tsx
+#: src/pages/CallRequests.tsx
 #: src/pages/ExternalConversationSettings.tsx
 #: src/pages/GroupPanel.tsx
 #: src/pages/KnowledgeSection.tsx
@@ -4119,6 +4382,10 @@ msgstr ""
 msgid "Send answer"
 msgstr "उत्तर भेजें"
 
+#: src/pages/CallRequests.tsx
+msgid "Send code"
+msgstr "Send code"
+
 #: src/components/AccountAccess.tsx
 msgid "Send deletion code"
 msgstr "हटाने का कोड भेजें"
@@ -4134,6 +4401,10 @@ msgstr "रीसेट लिंक भेजें"
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "Send with Enter"
 msgstr "Enter से भेजें"
+
+#: src/components/QuestionCard.tsx
+msgid "Sending..."
+msgstr "Sending..."
 
 #: src/components/AskCard.tsx
 msgid "Sending…"
@@ -4163,6 +4434,11 @@ msgstr "सर्वर का नाम"
 #: src/pages/Onboarding.tsx
 msgid "Server URL"
 msgstr "सर्वर URL"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.set"
+msgstr "Set a checkpoint"
 
 #: src/components/call/CallCard.tsx
 #: src/pages/MessagingSettingsOverlay.tsx
@@ -4208,6 +4484,10 @@ msgstr "साझा स्किल्स"
 #: src/components/computer/TerminalApp.tsx
 msgid "Shell"
 msgstr "शेल"
+
+#: src/pages/CallRequests.tsx
+msgid "Shift (optional)"
+msgstr "Shift (optional)"
 
 #: src/pages/Shell.tsx
 msgid "Show bots"
@@ -4263,6 +4543,11 @@ msgstr ""
 msgid "Sign in to Rakazo"
 msgstr "Rakazo में साइन इन करें"
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.signIn"
+msgstr "Sign in to use checkpoints."
+
 #: src/lib/user-error.ts
 msgid "Sign in to your existing account to link SSO"
 msgstr "SSO लिंक करने के लिए अपने मौजूदा खाते में साइन इन करें"
@@ -4270,6 +4555,10 @@ msgstr "SSO लिंक करने के लिए अपने मौजू
 #: src/lib/model-connection-preflight.ts
 msgid "Sign in with the subscription, or test the API key instead."
 msgstr "सब्सक्रिप्शन से साइन इन करें, या इसके बजाय API कुंजी का परीक्षण करें।"
+
+#: src/pages/CallRequests.tsx
+msgid "Sign out"
+msgstr "Sign out"
 
 #: src/pages/Auth.tsx
 #: src/pages/Welcome.tsx
@@ -4355,6 +4644,10 @@ msgstr "वाक् मॉडल"
 #: src/lib/user-error.ts
 msgid "SSO is temporarily unavailable. Try again."
 msgstr "SSO अस्थायी रूप से उपलब्ध नहीं है। फिर कोशिश करें।"
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Staff ID"
+msgstr "Staff ID"
 
 #: src/pages/Paywall.tsx
 msgid "Start {trialDays}-day free trial"
@@ -4464,6 +4757,7 @@ msgstr "कोई कार्य सिखाएं"
 msgid "Teaching in progress. Stop teaching before sending a new message."
 msgstr "सिखाना जारी है। नया संदेश भेजने से पहले सिखाना रोकें।"
 
+#: src/pages/SettingsOverlay.tsx
 #: src/pages/shell/bot-panel.tsx
 msgid "Team"
 msgstr "टीम"
@@ -4483,6 +4777,10 @@ msgstr ""
 #: src/pages/RoutineEditor.tsx
 msgid "Teams not enabled"
 msgstr ""
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Template"
+msgstr "Template"
 
 #: src/components/computer/ComputerWorkspace.tsx
 msgid "Terminal"
@@ -4511,6 +4809,11 @@ msgstr "परीक्षण हो रहा है…"
 #: src/components/SoftwareUpdateSection.tsx
 msgid "The API did not come back. Refresh this page."
 msgstr ""
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.operationError"
+msgstr "The checkpoint operation could not be completed. Please try again."
 
 #: src/lib/model-connection-preflight.ts
 msgid "The connection timed out."
@@ -4568,6 +4871,10 @@ msgstr "यह कंप्यूटर"
 #: src/pages/Artifacts.tsx
 msgid "This deletes all {0} versions of this artifact. This can't be undone."
 msgstr ""
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "This file has no doctors."
+msgstr "This file has no doctors."
 
 #: src/components/ArtifactFileCard.tsx
 msgid "This file is not valid UTF-8 text."
@@ -4693,9 +5000,15 @@ msgstr "फिर से कोशिश करें"
 msgid "Try the test again."
 msgstr "परीक्षण फिर से आज़माएँ।"
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.turn"
+msgstr "Turn checkpoint"
+
+#: src/pages/CallRequests.tsx
 #: src/pages/shell/bot-credentials.tsx
 msgid "Type"
-msgstr ""
+msgstr "Type"
 
 #: src/components/teach/TeachRecordingChrome.tsx
 msgid "Type without recording"
@@ -4748,8 +5061,9 @@ msgid "Up to date"
 msgstr ""
 
 #: src/components/SoftwareUpdateSection.tsx
+#: src/pages/CallDoctorDirectory.tsx
 msgid "Update"
-msgstr ""
+msgstr "Update"
 
 #: src/components/SoftwareUpdateSection.tsx
 msgid "Update available"
@@ -4821,6 +5135,10 @@ msgstr "उपयोग"
 msgid "Use {hostLabel}"
 msgstr "{hostLabel} का उपयोग करें"
 
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Use a CSV with Staff ID, Name and Email columns."
+msgstr "Use a CSV with Staff ID, Name and Email columns."
+
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
 msgid "Use a found model"
@@ -4863,6 +5181,14 @@ msgstr ""
 msgid "Values are encrypted and never shown again."
 msgstr "मान एन्क्रिप्ट किए जाते हैं और दोबारा नहीं दिखाए जाते।"
 
+#: src/pages/CallRequests.tsx
+msgid "Verification code"
+msgstr "Verification code"
+
+#: src/pages/CallRequests.tsx
+msgid "Verify"
+msgstr "Verify"
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Verify and add"
 msgstr "पुष्टि करके जोड़ें"
@@ -4878,6 +5204,11 @@ msgstr ""
 #: src/pages/RoutineRunHistory.tsx
 msgid "View chat"
 msgstr "चैट देखें"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.view"
+msgstr "View checkpoints"
 
 #: src/pages/SettingsOverlay.tsx
 #: src/pages/Shell.tsx
@@ -4976,6 +5307,26 @@ msgstr ""
 msgid "Working…"
 msgstr "काम चल रहा है…"
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.working"
+msgstr "Working…"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.stale"
+msgstr "Workspace changed. Please try again."
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.blocked"
+msgstr "Workspace recovery is incomplete. Choose a checkpoint to retry."
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.messagingBlocked"
+msgstr "Workspace recovery is incomplete. Messaging is paused."
+
 #: src/components/computer/TerminalApp.tsx
 msgid "Wrote {path}"
 msgstr ""
@@ -5032,6 +5383,10 @@ msgstr "आपका OpenAI"
 #: src/lib/run-error.ts
 msgid "Your OpenRouter"
 msgstr "आपका OpenRouter"
+
+#: src/components/QuestionCard.tsx
+msgid "Your own response"
+msgstr "Your own response"
 
 #: src/pages/Welcome.tsx
 msgid "Your team of always-on agents<0/>that you can give real work to."

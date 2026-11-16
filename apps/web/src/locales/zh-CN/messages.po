@@ -13,38 +13,6 @@ msgstr ""
 "Language-Team: \n"
 "Plural-Forms: \n"
 
-#: src/components/QuestionCard.tsx
-msgid "Question"
-msgstr "Question"
-
-#: src/components/QuestionCard.tsx
-msgid "Answer later"
-msgstr "Answer later"
-
-#: src/components/QuestionCard.tsx
-msgid "Answer question"
-msgstr "Answer question"
-
-#: src/components/QuestionCard.tsx
-msgid "Choose an answer"
-msgstr "Choose an answer"
-
-#: src/components/QuestionCard.tsx
-msgid "Your own response"
-msgstr "Your own response"
-
-#: src/components/QuestionCard.tsx
-msgid "Or write your own response"
-msgstr "Or write your own response"
-
-#: src/components/QuestionCard.tsx
-msgid "Sending..."
-msgstr "Sending..."
-
-#: src/components/QuestionCard.tsx
-msgid "Recommended"
-msgstr "Recommended"
-
 #: src/pages/Shell.tsx
 msgid " (unread)"
 msgstr "（未读）"
@@ -368,6 +336,10 @@ msgstr ""
 msgid "Action confirmations"
 msgstr "操作确认"
 
+#: src/pages/CallRequests.tsx
+msgid "Actions"
+msgstr "操作"
+
 #. placeholder {0}: bot.name
 #. placeholder {0}: group.spaceName
 #. placeholder {0}: sectionMenu.section.name
@@ -444,6 +416,10 @@ msgstr "添加已连接模型作为备用模型。"
 msgid "Add credential"
 msgstr ""
 
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Add doctor"
+msgstr "添加医生"
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Add Executor"
 msgstr "添加 Executor"
@@ -472,6 +448,10 @@ msgstr "添加 OpenAPI"
 #: src/pages/PluginsOverlay.tsx
 msgid "Add remote MCP server"
 msgstr "添加远程 MCP 服务器"
+
+#: src/pages/CallRequests.tsx
+msgid "Add request"
+msgstr "添加请求"
 
 #: src/pages/McpServersOverlay.tsx
 msgid "Add server"
@@ -604,7 +584,16 @@ msgstr "此提供方存储的是 API 密钥，不是订阅登录。"
 msgid "Answer"
 msgstr "回答"
 
+#: src/components/QuestionCard.tsx
+msgid "Answer later"
+msgstr "Answer later"
+
+#: src/components/QuestionCard.tsx
+msgid "Answer question"
+msgstr "Answer question"
+
 #: src/components/AskCard.tsx
+#: src/components/QuestionCard.tsx
 msgid "Answered"
 msgstr "已回答"
 
@@ -793,6 +782,14 @@ msgstr "头像"
 msgid "Back"
 msgstr "返回"
 
+#: src/pages/CallRequests.tsx
+msgid "Back to Agents"
+msgstr "返回 Agents"
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Back to doctors"
+msgstr "返回医生名单"
+
 #: src/pages/Auth.tsx
 msgid "Back to sign in"
 msgstr "返回登录"
@@ -908,6 +905,11 @@ msgstr ""
 msgid "Built-in"
 msgstr "内置"
 
+#: src/pages/CallRequests.tsx
+#: src/pages/Shell.tsx
+msgid "Call requests"
+msgstr "值班请求"
+
 #: src/App.tsx
 msgid "Can't reach the server."
 msgstr "无法连接服务器。"
@@ -918,6 +920,8 @@ msgstr "无法连接服务器。"
 #: src/components/markdown-link-prompt.tsx
 #: src/components/teach/TeachComputerOverlay.tsx
 #: src/pages/Artifacts.tsx
+#: src/pages/CallDoctorDirectory.tsx
+#: src/pages/CallRequests.tsx
 #: src/pages/KnowledgeSection.tsx
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
@@ -925,6 +929,11 @@ msgstr "无法连接服务器。"
 #: src/pages/shell/bot-credentials.tsx
 #: src/pages/shell/dialogs.tsx
 msgid "Cancel"
+msgstr "取消"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.cancel"
 msgstr "取消"
 
 #: src/pages/shell/bot-panel.tsx
@@ -1006,6 +1015,15 @@ msgstr "报到。"
 msgid "Check the API key or sign-in, then test again."
 msgstr "请检查 API 密钥或登录，然后重新测试。"
 
+#. placeholder {0}: reason.row
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Check the doctor details on row {0}."
+msgstr "请检查第 {0} 行的医生信息。"
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Check the name, email and Staff ID."
+msgstr "请检查姓名、邮箱和医生编号。"
+
 #: src/lib/model-connection-preflight.ts
 msgid "Check the server URL and network, then test again."
 msgstr "请检查服务器 URL 和网络，然后重新测试。"
@@ -1029,6 +1047,21 @@ msgstr "正在检查…"
 msgid "Checkout has local changes. Clean it before updating."
 msgstr "工作副本有本地更改。请先清理再更新。"
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.name"
+msgstr "节点名称"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.tree"
+msgstr "节点分支树，可拖拽浏览"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.title"
+msgstr "保存节点"
+
 #: src/pages/shell/avatar-studio-popover.tsx
 msgid "Choose a bot shape, color, or upload an image"
 msgstr "选择机器人形状和颜色，或上传图片"
@@ -1037,9 +1070,17 @@ msgstr "选择机器人形状和颜色，或上传图片"
 msgid "Choose a bot…"
 msgstr "选择 Bot…"
 
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Choose a CSV with up to 1,000 doctors, under 512 KB."
+msgstr "请选择少于 512 KB、最多包含 1,000 位医生的 CSV 文件。"
+
 #: src/pages/Auth.tsx
 msgid "Choose a new password"
 msgstr "设置新密码"
+
+#: src/components/QuestionCard.tsx
+msgid "Choose an answer"
+msgstr "Choose an answer"
 
 #: src/pages/shell/avatar-studio-popover.tsx
 msgid "Choose file"
@@ -1352,6 +1393,7 @@ msgid "Context limit"
 msgstr "上下文限制"
 
 #: src/components/integrations/IntegrationSetup.tsx
+#: src/components/QuestionCard.tsx
 #: src/pages/Onboarding.tsx
 msgid "Continue"
 msgstr "继续"
@@ -1370,10 +1412,11 @@ msgid "Continue with email"
 msgstr "使用邮箱继续"
 
 #: src/components/ComputersUnavailableHint.tsx
+#: src/pages/CallRequests.tsx
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
 msgid "Copied"
-msgstr ""
+msgstr "已复制"
 
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
@@ -1384,6 +1427,14 @@ msgstr "复制"
 #: src/components/ComputersUnavailableHint.tsx
 msgid "Copy .env example"
 msgstr ""
+
+#: src/pages/CallRequests.tsx
+msgid "Copy doctor link"
+msgstr "复制医生填写链接"
+
+#: src/pages/CallRequests.tsx
+msgid "Copy month table"
+msgstr "复制月度请求表"
 
 #: src/pages/ScratchpadSection.tsx
 msgid "Could not add"
@@ -1586,6 +1637,11 @@ msgstr ""
 msgid "Could not load bots. Reload to try again."
 msgstr ""
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.loadError"
+msgstr "无法读取节点。"
+
 #: src/components/computer/TerminalApp.tsx
 msgid "Could not load commands"
 msgstr ""
@@ -1672,6 +1728,10 @@ msgstr "无法连接到模型服务器。"
 msgid "Could not reach the server"
 msgstr "无法连接服务器"
 
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Could not read this file. Choose a CSV."
+msgstr "无法读取文件，请选择 CSV 文件。"
+
 #: src/pages/ScratchpadSection.tsx
 msgid "Could not remove"
 msgstr "无法移除"
@@ -1730,6 +1790,10 @@ msgstr "无法保存自动审核"
 #: src/pages/ModelBackupsSettings.tsx
 msgid "Could not save backup models"
 msgstr "无法保存备用模型。"
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Could not save doctors. Try again."
+msgstr "无法保存医生名单，请重试。"
 
 #: src/pages/GroupPanel.tsx
 msgid "Could not save group"
@@ -1792,6 +1856,7 @@ msgid "Could not start teaching"
 msgstr ""
 
 #: src/components/AskCard.tsx
+#: src/components/QuestionCard.tsx
 msgid "Could not submit this answer"
 msgstr "无法提交此回答"
 
@@ -1941,6 +2006,10 @@ msgstr "自定义机器人头像"
 msgid "Dark"
 msgstr "深色"
 
+#: src/pages/CallRequests.tsx
+msgid "Date"
+msgstr "日期"
+
 #: src/lib/billing.ts
 #: src/pages/RoutineSchedule.tsx
 msgid "day"
@@ -2023,6 +2092,17 @@ msgstr "删除群组"
 msgid "Delete memories too"
 msgstr "同时删除记忆"
 
+#. placeholder {0}: row.date
+#: src/pages/CallRequests.tsx
+msgid "Delete request for {0}"
+msgstr "删除 {0} 的请求"
+
+#. placeholder {0}: row.doctorName
+#. placeholder {1}: row.date
+#: src/pages/CallRequests.tsx
+msgid "Delete request from {0} for {1}"
+msgstr "删除 {0} 在 {1} 的请求"
+
 #: src/pages/Shell.tsx
 msgid "Delete space"
 msgstr ""
@@ -2076,6 +2156,10 @@ msgstr "详情"
 #: src/components/integrations/IntegrationSetup.tsx
 msgid "Direct MCP"
 msgstr ""
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Disabled"
+msgstr "已停用"
 
 #: src/pages/shell/bot-panel.tsx
 msgid "Disabled tools"
@@ -2138,6 +2222,18 @@ msgstr ""
 msgid "Docker limits access to your computer for added security. Using {hostLabel} lets bots work with your local files and tools."
 msgstr "Docker 限制对你电脑的访问，以提高安全性。使用{hostLabel}时，Bot 可以处理你的本地文件并使用本地工具。"
 
+#: src/pages/CallRequests.tsx
+msgid "Doctor"
+msgstr "医生"
+
+#: src/pages/CallRequests.tsx
+msgid "Doctor sign-in is unavailable. Contact your administrator."
+msgstr "医生登录暂不可用，请联系管理员。"
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Doctors"
+msgstr "医生名单"
+
 #: src/pages/Auth.tsx
 msgid "Don’t have an account?"
 msgstr "还没有账户？"
@@ -2192,9 +2288,22 @@ msgstr "复制"
 msgid "e.g. Hivenet Agent, Presales, Timesheets bot"
 msgstr "例如 Hivenet Agent、Presales、工时表机器人"
 
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Each doctor needs a unique Staff ID and email."
+msgstr "每位医生的编号和邮箱必须唯一。"
+
 #: src/components/AskCard.tsx
 msgid "Edit"
 msgstr "编辑"
+
+#. placeholder {0}: doctor.name
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Edit {0}"
+msgstr "编辑 {0}"
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Edit doctor"
+msgstr "编辑医生"
 
 #: src/components/AskCard.tsx
 msgid "Edit first"
@@ -2204,7 +2313,17 @@ msgstr "先编辑"
 msgid "Edit Profile"
 msgstr "编辑资料"
 
+#: src/pages/CallRequests.tsx
+msgid "Edit request"
+msgstr "编辑请求"
+
+#. placeholder {0}: row.date
+#: src/pages/CallRequests.tsx
+msgid "Edit request for {0}"
+msgstr "编辑 {0} 的请求"
+
 #: src/pages/Auth.tsx
+#: src/pages/CallDoctorDirectory.tsx
 msgid "Email"
 msgstr "邮箱"
 
@@ -2215,6 +2334,10 @@ msgstr "该邮箱不允许注册"
 #: src/lib/user-error.ts
 msgid "Email verification required"
 msgstr "需要验证邮箱"
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Enabled"
+msgstr "已启用"
 
 #: src/pages/BillingSettingsPanel.tsx
 msgid "Ends {day}"
@@ -2558,6 +2681,10 @@ msgstr "我做完了"
 msgid "If you heard that, voice is ready."
 msgstr "如果听到了，说明语音已就绪。"
 
+#: src/pages/CallRequests.tsx
+msgid "If your email is registered, a verification code has been sent."
+msgstr "如果该邮箱已登记，验证码已发送。"
+
 #: src/pages/ExternalConversationSettings.tsx
 msgid "Ignore"
 msgstr ""
@@ -2565,6 +2692,18 @@ msgstr ""
 #: src/pages/shell/avatar-studio-popover.tsx
 msgid "Image upload area"
 msgstr "图片上传区域"
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Import CSV"
+msgstr "导入 CSV"
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Import doctor CSV"
+msgstr "导入医生 CSV"
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Import doctors"
+msgstr "导入医生"
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Import OpenAPI JSON"
@@ -2743,6 +2882,11 @@ msgstr "自动加载网络图片"
 msgid "Loading activity…"
 msgstr "正在加载动态…"
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.loading"
+msgstr "正在读取节点…"
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Loading integrations…"
 msgstr "正在加载集成…"
@@ -2774,6 +2918,7 @@ msgstr "正在加载语音提供方…"
 #: src/App.tsx
 #: src/pages/Artifacts.tsx
 #: src/pages/Auth.tsx
+#: src/pages/CallRequests.tsx
 #: src/pages/IntegrationSetup.tsx
 #: src/pages/ModelBackupsSettings.tsx
 #: src/pages/Onboarding.tsx
@@ -2827,6 +2972,10 @@ msgstr ""
 msgid "Manage billing"
 msgstr ""
 
+#: src/pages/CallRequests.tsx
+msgid "Manage doctors"
+msgstr "管理医生"
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Manage MCP servers"
 msgstr "管理 MCP 服务器"
@@ -2842,6 +2991,11 @@ msgstr "管理工作区语义记忆提供方。"
 #: src/pages/PluginsOverlay.tsx
 msgid "Manual"
 msgstr ""
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.manual"
+msgstr "手动保存"
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Manual setup required"
@@ -3050,9 +3204,17 @@ msgstr ""
 msgid "Monthly"
 msgstr "每月"
 
+#: src/pages/CallRequests.tsx
+msgid "Monthly limit reached."
+msgstr "已达到每月请求上限。"
+
 #: src/pages/Shell.tsx
 msgid "More"
 msgstr ""
+
+#: src/pages/CallRequests.tsx
+msgid "More actions"
+msgstr "更多操作"
 
 #: src/components/ComputerMaintenanceActions.tsx
 msgid "More computer actions"
@@ -3080,6 +3242,7 @@ msgstr "静音"
 
 #: src/components/teach/SkillDraftCard.tsx
 #: src/pages/Auth.tsx
+#: src/pages/CallDoctorDirectory.tsx
 #: src/pages/GroupPanel.tsx
 #: src/pages/RoutineEditor.tsx
 #: src/pages/shell/bot-credentials.tsx
@@ -3087,6 +3250,11 @@ msgstr "静音"
 #: src/pages/shell/dialogs.tsx
 msgid "Name"
 msgstr "名称"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.namePlaceholder"
+msgstr "名称（可选）"
 
 #: src/pages/shell/bot-panel.tsx
 msgid "Name this bot"
@@ -3133,6 +3301,10 @@ msgstr "新的待办"
 #: src/pages/Auth.tsx
 msgid "New password"
 msgstr "新密码"
+
+#: src/pages/CallRequests.tsx
+msgid "New request"
+msgstr "新增请求"
 
 #: src/pages/BotContextMenu.tsx
 #: src/pages/shell/dialogs.tsx
@@ -3183,13 +3355,26 @@ msgstr ""
 msgid "No bots match"
 msgstr ""
 
+#: src/pages/CallRequests.tsx
+msgid "No call"
+msgstr "不值班"
+
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "No chat apps linked yet."
 msgstr "还没有关联聊天应用。"
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.empty"
+msgstr "还没有保存的节点。"
+
 #: src/pages/shell/bot-credentials.tsx
 msgid "No credentials saved for this bot."
 msgstr ""
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "No doctors added."
+msgstr "尚未添加医生。"
 
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "No group chats yet."
@@ -3239,6 +3424,10 @@ msgstr "未找到提供方。"
 msgid "No remote MCP servers found"
 msgstr ""
 
+#: src/pages/CallRequests.tsx
+msgid "No requests this month."
+msgstr "本月暂无请求。"
+
 #: src/pages/PluginsOverlay.tsx
 #: src/pages/SpaceSearch.tsx
 msgid "No results"
@@ -3271,6 +3460,11 @@ msgstr ""
 #: src/pages/RoutineEditor.tsx
 msgid "No trigger"
 msgstr "无触发器"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.noPrompt"
+msgstr "此节点尚无用户提问。"
 
 #: src/pages/ScratchpadSection.tsx
 msgid "None yet"
@@ -3433,6 +3627,10 @@ msgstr "或连接 API 密钥"
 msgid "Or paste an API key"
 msgstr "或粘贴 API 密钥"
 
+#: src/components/QuestionCard.tsx
+msgid "Or write your own response"
+msgstr "Or write your own response"
+
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "Organic"
 msgstr "自然"
@@ -3449,6 +3647,10 @@ msgstr "原消息不可用"
 #: src/pages/Onboarding.tsx
 msgid "Other model…"
 msgstr "其他模型…"
+
+#: src/pages/CallRequests.tsx
+msgid "Others"
+msgstr "其他"
 
 #: src/pages/Board.tsx
 msgid "Owner"
@@ -3537,6 +3739,20 @@ msgstr "插件"
 msgid "POST to"
 msgstr "POST 到"
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.preRollback"
+msgstr "回滚前"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.preSolve"
+msgstr "求解监测节点"
+
+#: src/pages/CallRequests.tsx
+msgid "Prefer call"
+msgstr "希望值班"
+
 #. placeholder {0}: props.name
 #: src/components/ArtifactFileCard.tsx
 msgid "Preview {0}"
@@ -3580,6 +3796,10 @@ msgstr "提供方"
 msgid "Pull request"
 msgstr "拉取请求"
 
+#: src/components/QuestionCard.tsx
+msgid "Question"
+msgstr "Question"
+
 #: src/pages/ActivityList.tsx
 msgid "Queued"
 msgstr "排队中"
@@ -3616,6 +3836,10 @@ msgstr ""
 #: src/pages/ActivityList.tsx
 msgid "Recent"
 msgstr "最近"
+
+#: src/components/QuestionCard.tsx
+msgid "Recommended"
+msgstr "Recommended"
 
 #: src/pages/McpServersOverlay.tsx
 msgid "Reconnect OAuth"
@@ -3695,6 +3919,10 @@ msgstr ""
 #: src/components/teach/TeachComputerOverlay.tsx
 msgid "Refreshing…"
 msgstr ""
+
+#: src/pages/CallRequests.tsx
+msgid "Registered email"
+msgstr "已登记的邮箱"
 
 #: src/lib/user-error.ts
 msgid "Registration is closed"
@@ -3819,6 +4047,14 @@ msgstr ""
 msgid "Replying to {0}"
 msgstr ""
 
+#: src/pages/CallRequests.tsx
+msgid "Request"
+msgstr "请求"
+
+#: src/pages/CallRequests.tsx
+msgid "Request month"
+msgstr "请求月份"
+
 #: src/pages/shell/message-cards.tsx
 msgid "Research & writing"
 msgstr "调研和写作"
@@ -3865,6 +4101,21 @@ msgstr ""
 msgid "Restore"
 msgstr "恢复"
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.restore"
+msgstr "恢复"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.restoreNode"
+msgstr "恢复节点"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.restoreError"
+msgstr "恢复未完成，请重试。"
+
 #: src/components/ComputerMaintenanceActions.tsx
 msgid "Restore the last saved workspace."
 msgstr "恢复上次保存的工作区。"
@@ -3872,6 +4123,11 @@ msgstr "恢复上次保存的工作区。"
 #: src/components/ComputerMaintenanceActions.tsx
 msgid "Restore the last saved workspace. Unsaved work on the computer is lost."
 msgstr "还原上次保存的工作区。电脑上未保存的工作会丢失。"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.confirm"
+msgstr "恢复到这个节点？"
 
 #: src/components/AskCard.tsx
 msgid "Restored"
@@ -3962,6 +4218,11 @@ msgstr "运行中"
 msgid "Running · Stop"
 msgstr "运行中 · 停止"
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.description"
+msgstr "当前任务将停止。若当前现场有变化，系统会先保存为“回滚前”节点。"
+
 #: src/pages/RoutineEditor.tsx
 msgid "Running…"
 msgstr "正在运行…"
@@ -3973,6 +4234,8 @@ msgstr ""
 #: src/components/AskCard.tsx
 #: src/components/teach/SkillDraftCard.tsx
 #: src/pages/Board.tsx
+#: src/pages/CallDoctorDirectory.tsx
+#: src/pages/CallRequests.tsx
 #: src/pages/ExternalConversationSettings.tsx
 #: src/pages/GroupPanel.tsx
 #: src/pages/KnowledgeSection.tsx
@@ -4119,6 +4382,10 @@ msgstr "请在 10 分钟内从聊天应用向该线路发送 <0>{linkCode}</0>�
 msgid "Send answer"
 msgstr "发送回答"
 
+#: src/pages/CallRequests.tsx
+msgid "Send code"
+msgstr "发送验证码"
+
 #: src/components/AccountAccess.tsx
 msgid "Send deletion code"
 msgstr "发送删除验证码"
@@ -4134,6 +4401,10 @@ msgstr "发送重置链接"
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "Send with Enter"
 msgstr "按 Enter 发送"
+
+#: src/components/QuestionCard.tsx
+msgid "Sending..."
+msgstr "Sending..."
 
 #: src/components/AskCard.tsx
 msgid "Sending…"
@@ -4163,6 +4434,11 @@ msgstr "服务器名称"
 #: src/pages/Onboarding.tsx
 msgid "Server URL"
 msgstr "服务器 URL"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.set"
+msgstr "设置节点"
 
 #: src/components/call/CallCard.tsx
 #: src/pages/MessagingSettingsOverlay.tsx
@@ -4208,6 +4484,10 @@ msgstr "共享技能"
 #: src/components/computer/TerminalApp.tsx
 msgid "Shell"
 msgstr "Shell"
+
+#: src/pages/CallRequests.tsx
+msgid "Shift (optional)"
+msgstr "班次（可选）"
 
 #: src/pages/Shell.tsx
 msgid "Show bots"
@@ -4263,6 +4543,11 @@ msgstr ""
 msgid "Sign in to Rakazo"
 msgstr "登录 Rakazo"
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.signIn"
+msgstr "请登录后使用节点功能。"
+
 #: src/lib/user-error.ts
 msgid "Sign in to your existing account to link SSO"
 msgstr "请登录现有账户以关联 SSO"
@@ -4270,6 +4555,10 @@ msgstr "请登录现有账户以关联 SSO"
 #: src/lib/model-connection-preflight.ts
 msgid "Sign in with the subscription, or test the API key instead."
 msgstr "请使用订阅登录，或改为测试 API 密钥。"
+
+#: src/pages/CallRequests.tsx
+msgid "Sign out"
+msgstr "退出登录"
 
 #: src/pages/Auth.tsx
 #: src/pages/Welcome.tsx
@@ -4355,6 +4644,10 @@ msgstr "语音模型"
 #: src/lib/user-error.ts
 msgid "SSO is temporarily unavailable. Try again."
 msgstr "SSO 暂时不可用，请重试。"
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Staff ID"
+msgstr "医生编号"
 
 #: src/pages/Paywall.tsx
 msgid "Start {trialDays}-day free trial"
@@ -4464,6 +4757,7 @@ msgstr "示范任务"
 msgid "Teaching in progress. Stop teaching before sending a new message."
 msgstr "正在示范，发送新消息前请先停止示范。"
 
+#: src/pages/SettingsOverlay.tsx
 #: src/pages/shell/bot-panel.tsx
 msgid "Team"
 msgstr "团队"
@@ -4483,6 +4777,10 @@ msgstr "Teams 消息"
 #: src/pages/RoutineEditor.tsx
 msgid "Teams not enabled"
 msgstr ""
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Template"
+msgstr "模板"
 
 #: src/components/computer/ComputerWorkspace.tsx
 msgid "Terminal"
@@ -4511,6 +4809,11 @@ msgstr "正在测试…"
 #: src/components/SoftwareUpdateSection.tsx
 msgid "The API did not come back. Refresh this page."
 msgstr "API 未恢复。请刷新此页面。"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.operationError"
+msgstr "节点操作未完成，请重试。"
 
 #: src/lib/model-connection-preflight.ts
 msgid "The connection timed out."
@@ -4568,6 +4871,10 @@ msgstr "这台电脑"
 #: src/pages/Artifacts.tsx
 msgid "This deletes all {0} versions of this artifact. This can't be undone."
 msgstr ""
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "This file has no doctors."
+msgstr "文件中没有医生信息。"
 
 #: src/components/ArtifactFileCard.tsx
 msgid "This file is not valid UTF-8 text."
@@ -4693,9 +5000,15 @@ msgstr "重试"
 msgid "Try the test again."
 msgstr "请重试测试。"
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.turn"
+msgstr "对话起点"
+
+#: src/pages/CallRequests.tsx
 #: src/pages/shell/bot-credentials.tsx
 msgid "Type"
-msgstr ""
+msgstr "类型"
 
 #: src/components/teach/TeachRecordingChrome.tsx
 msgid "Type without recording"
@@ -4748,6 +5061,7 @@ msgid "Up to date"
 msgstr "已是最新"
 
 #: src/components/SoftwareUpdateSection.tsx
+#: src/pages/CallDoctorDirectory.tsx
 msgid "Update"
 msgstr "更新"
 
@@ -4821,6 +5135,10 @@ msgstr "用量"
 msgid "Use {hostLabel}"
 msgstr "使用 {hostLabel}"
 
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Use a CSV with Staff ID, Name and Email columns."
+msgstr "请使用包含 Staff ID、Name 和 Email 列的 CSV 文件。"
+
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
 msgid "Use a found model"
@@ -4863,6 +5181,14 @@ msgstr ""
 msgid "Values are encrypted and never shown again."
 msgstr "值会加密保存，之后不再显示。"
 
+#: src/pages/CallRequests.tsx
+msgid "Verification code"
+msgstr "验证码"
+
+#: src/pages/CallRequests.tsx
+msgid "Verify"
+msgstr "验证"
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Verify and add"
 msgstr "校验并添加"
@@ -4878,6 +5204,11 @@ msgstr ""
 #: src/pages/RoutineRunHistory.tsx
 msgid "View chat"
 msgstr "查看聊天"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.view"
+msgstr "查看节点"
 
 #: src/pages/SettingsOverlay.tsx
 #: src/pages/Shell.tsx
@@ -4976,6 +5307,26 @@ msgstr ""
 msgid "Working…"
 msgstr "处理中…"
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.working"
+msgstr "正在处理，请稍候…"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.stale"
+msgstr "工作区已变更，请重试。"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.blocked"
+msgstr "工作区恢复未完成。请选择节点重试恢复。"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.messagingBlocked"
+msgstr "工作区恢复未完成，暂时无法发送消息。"
+
 #: src/components/computer/TerminalApp.tsx
 msgid "Wrote {path}"
 msgstr ""
@@ -5032,6 +5383,10 @@ msgstr "你的 OpenAI"
 #: src/lib/run-error.ts
 msgid "Your OpenRouter"
 msgstr "你的 OpenRouter"
+
+#: src/components/QuestionCard.tsx
+msgid "Your own response"
+msgstr "Your own response"
 
 #: src/pages/Welcome.tsx
 msgid "Your team of always-on agents<0/>that you can give real work to."

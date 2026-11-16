@@ -28,10 +28,10 @@ def pins(review):
     return {key: review[key] for key in ("policy", "workingDirectory", "sourceSha256", "inputs", "compilerSha256", "candidateSha256", "candidateCnlSha256", "changes")}
 
 
-def checked_path(root, value, directory=False):
+def checked_path(root, value, directory=False, allowed_roots=("workspace",)):
     if not isinstance(value, str) or len(value) > 1024 or "\\" in value or any(ord(c) < 32 for c in value): raise ValueError("Invalid workspace path")
     parts = value.split("/")
-    if not parts or parts[0] != "workspace" or any(p in ("", ".", "..") for p in parts): raise ValueError("Use a workspace-relative path")
+    if not any(value == prefix or value.startswith(prefix + "/") for prefix in allowed_roots) or any(p in ("", ".", "..") for p in parts): raise ValueError("Use an authorized workspace-relative path")
     path = root
     for part in parts:
         path = path / part
@@ -139,8 +139,9 @@ def business_groups(file, source_sha, ir):
 
 
 class Workbench:
-    def __init__(self, root=Path("/home/rakazo"), rost="/opt/rost/bin/rost"):
+    def __init__(self, root=Path("/home/rakazo"), rost="/opt/rost/bin/rost", allowed_roots=("workspace",)):
         self.root = Path(root).resolve(strict=True); self.rost = str(Path(rost).resolve(strict=True))
+        self.allowed_roots = allowed_roots
         self.deadline = time.monotonic() + 90
         self.version = sha(read_file(Path(self.rost), 64 * 1024**2))
     def command(self, args, cwd, maximum=16 * 1024**2):
@@ -169,17 +170,17 @@ class Workbench:
         for value in sorted(set(refs)):
             if not isinstance(value, str) or Path(value).is_absolute(): raise ValueError("Use audited workspace-relative inputs")
             rel = str(PurePosixPath(cwd.relative_to(self.root).as_posix()) / value)
-            path = checked_path(self.root, rel); raw = read_file(path, 16 * 1024**2); total += len(raw)
+            path = checked_path(self.root, rel, allowed_roots=self.allowed_roots); raw = read_file(path, 16 * 1024**2); total += len(raw)
             if total > 64 * 1024**2: raise ValueError("External input review cap reached")
             result.append({"path": path.relative_to(self.root).as_posix(), "sha256": sha(raw)})
         if policy is not None:
             catalogue = policy.with_suffix(".rules.json")
             if catalogue.exists() or catalogue.is_symlink():
-                checked_path(self.root, catalogue.relative_to(self.root).as_posix())
+                checked_path(self.root, catalogue.relative_to(self.root).as_posix(), allowed_roots=self.allowed_roots)
                 result.append({"path": catalogue.relative_to(self.root).as_posix(), "sha256": sha(read_file(catalogue)), "kind": "rule_presentation"})
         return result
     def inspect(self, policy, working_directory):
-        path = checked_path(self.root, policy); cwd = checked_path(self.root, working_directory, True)
+        path = checked_path(self.root, policy, allowed_roots=self.allowed_roots); cwd = checked_path(self.root, working_directory, True, self.allowed_roots)
         if path.suffix != ".rost": raise ValueError("Choose a .rost source")
         ledger = path.with_suffix(".rost-relax.json")
         if ledger.exists() or ledger.is_symlink(): raise ValueError("A relaxation ledger requires its separate reviewed workflow")
@@ -203,7 +204,7 @@ class Workbench:
         before, ir, source = self.inspect(policy, cwd)
         if before["sourceSha256"] != source_sha: raise ValueError("Source changed; load a fresh review")
         changes = changes_checked(ir, changes); candidate = edit_source(source, ir, changes)
-        path = checked_path(self.root, policy); work = checked_path(self.root, cwd, True)
+        path = checked_path(self.root, policy, allowed_roots=self.allowed_roots); work = checked_path(self.root, cwd, True, self.allowed_roots)
         with tempfile.TemporaryDirectory(prefix=".rost-priority-review-", dir=path.parent) as directory:
             preview = Path(directory) / "preview.rost"; preview.write_bytes(candidate)
             revised_ir = json.loads(self.command(["emit", str(preview), "--format", "ir"], work))
@@ -224,7 +225,7 @@ class Workbench:
         if not re.fullmatch(r"[a-f0-9-]{36}", identity): raise ValueError("Invalid review identity")
         fresh = self.review(review["policy"], review["workingDirectory"], review["sourceSha256"], review["changes"])
         if pins(fresh) != pins(review): raise ValueError("Review changed; reload before selecting a revision")
-        path = checked_path(self.root, review["policy"]); cwd = checked_path(self.root, review["workingDirectory"], True)
+        path = checked_path(self.root, review["policy"], allowed_roots=self.allowed_roots); cwd = checked_path(self.root, review["workingDirectory"], True, self.allowed_roots)
         source = read_file(path); ir = json.loads(self.command(["emit", str(path), "--format", "ir"], cwd))
         candidate = edit_source(source, ir, review["changes"])
         if sha(source) != review["sourceSha256"] or sha(candidate) != review["candidateSha256"] or self.inputs(ir, cwd, path) != review["inputs"]:
@@ -252,7 +253,7 @@ class Workbench:
 def main():
     raw = base64.b64decode(sys.argv[1], validate=True)
     if len(raw) > 2 * 1024**2: raise ValueError("Review request cap reached")
-    request = json.loads(raw); work = Workbench()
+    request = json.loads(raw); work = Workbench(allowed_roots=json.loads(sys.argv[2]) if len(sys.argv) > 2 else ("workspace",))
     if request["operation"] == "inspect": result = work.inspect(request["policy"], request["workingDirectory"])[0]
     elif request["operation"] == "review": result = work.review(request["policy"], request["workingDirectory"], request["sourceSha256"], request["changes"])
     elif request["operation"] == "apply": result = work.apply(request["review"], request["id"])

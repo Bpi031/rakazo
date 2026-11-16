@@ -1,9 +1,10 @@
 import type { MessageBlock } from "@rakazo/contracts";
+import { CheckpointConflictError, checkpointMessageWhere } from "./checkpoints.js";
 import type { Prisma, PrismaClient } from "./client.js";
 import { withTransactionRetry } from "./transaction-retry.js";
 
 /** Group turns use channel inputs and their own outputs, never private thread history. */
-export function loadRunHistoryMessages(
+export async function loadRunHistoryMessages(
   prisma: PrismaClient,
   run: { id: string; threadId: string },
   limit: number,
@@ -11,7 +12,7 @@ export function loadRunHistoryMessages(
 ) {
   return prisma.message.findMany({
     where: {
-      threadId: run.threadId,
+      AND: [await checkpointMessageWhere(prisma, run.threadId)],
       ...(channelId
         ? {
             OR: [
@@ -74,12 +75,14 @@ export async function createThreadMessageInTransaction(
       nextMessageSeq: { increment: 1 },
       unread: (input.markUnread ?? input.role === "bot") ? true : undefined,
     },
-    select: { nextMessageSeq: true },
+    select: { nextMessageSeq: true, activeBranchId: true, checkpointBlocked: true },
   });
+  if (thread.checkpointBlocked) throw new CheckpointConflictError();
   await assertRunCanWriteHistory(tx, input.runId, { allowCancelled: input.allowCancelledRun });
   return tx.message.create({
     data: {
       threadId: input.threadId,
+      branchId: thread.activeBranchId,
       seq: thread.nextMessageSeq - 1,
       role: input.role,
       blocks: input.blocks as Prisma.InputJsonValue,
@@ -107,9 +110,19 @@ export async function assertRunCanWriteHistory(
   if (!runId) return;
   const run = await tx.run.findUnique({
     where: { id: runId },
-    select: { status: true, startedAt: true },
+    select: {
+      status: true,
+      startedAt: true,
+      checkpointGeneration: true,
+      thread: { select: { checkpointGeneration: true, checkpointBlocked: true } },
+    },
   });
-  if (!run || (run.status === "cancelled" && !options?.allowCancelled)) {
+  if (
+    !run ||
+    (run.status === "cancelled" && !options?.allowCancelled) ||
+    run.thread?.checkpointBlocked ||
+    (run.thread && run.checkpointGeneration !== run.thread.checkpointGeneration)
+  ) {
     throw new RunHistoryWriteError();
   }
   return run;
@@ -128,9 +141,17 @@ export async function assertRunIsCancelled(
   if (!runId) throw new RunHistoryWriteError();
   const run = await tx.run.findUnique({
     where: { id: runId },
-    select: { status: true },
+    select: {
+      status: true,
+      checkpointGeneration: true,
+      thread: { select: { checkpointGeneration: true, checkpointBlocked: true } },
+    },
   });
-  if (run?.status !== "cancelled") {
+  if (
+    run?.status !== "cancelled" ||
+    run.thread?.checkpointBlocked ||
+    (run.thread && run.checkpointGeneration !== run.thread.checkpointGeneration)
+  ) {
     throw new RunHistoryWriteError();
   }
 }

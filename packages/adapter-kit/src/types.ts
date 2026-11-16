@@ -460,6 +460,8 @@ export interface RuntimeSession {
 }
 
 export interface AgentRunRequest {
+  /** Server-derived managed workspace binding, never accepted from model/browser input. */
+  workspace?: { cwd: string; roots: string[] };
   nativeWorker?: boolean;
   nativeControl?: {
     mode: "plan" | "execute";

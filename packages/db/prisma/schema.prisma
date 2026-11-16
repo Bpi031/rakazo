@@ -327,6 +327,8 @@ model Member {
 }
 
 model Space {
+  callDoctors CallDoctor[]
+  callRequestLogins CallRequestLogin[]
   aiDataConsents AiDataConsent[]
   id                          String                       @id
   organizationId              String
@@ -380,6 +382,71 @@ model Space {
   @@index([organizationId, createdAt])
   @@index([createdByUserId])
   @@map("spaces")
+}
+
+/// A doctor identity for request collection, independent of Rakazo users and Bots.
+model CallDoctor {
+  id String @id @default(cuid())
+  spaceId String
+  space Space @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  code String
+  name String
+  email String
+  active Boolean @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  requests CallRequest[]
+  sessions CallDoctorSession[]
+  @@unique([spaceId, code])
+  @@unique([spaceId, email])
+  @@unique([id, spaceId])
+  @@map("call_doctors")
+}
+
+model CallRequest {
+  id String @id @default(cuid())
+  doctorId String
+  spaceId String
+  doctor CallDoctor @relation(fields: [doctorId, spaceId], references: [id, spaceId], onDelete: Cascade)
+  date String
+  type String
+  shift String @default("")
+  text String @default("")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  deletedAt DateTime?
+  deletedByUserId String?
+  @@index([spaceId, date, deletedAt])
+  @@index([doctorId, date, deletedAt])
+  @@map("call_requests")
+}
+
+/// One durable rate-limit/challenge slot per normalized email, including unknown emails.
+model CallRequestLogin {
+  spaceId String
+  space Space @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  emailKey String
+  codeHash String?
+  expiresAt DateTime
+  attempts Int @default(0)
+  sentAt DateTime
+  windowStart DateTime
+  sends Int @default(0)
+  @@id([spaceId, emailKey])
+  @@index([expiresAt])
+  @@map("call_request_logins")
+}
+
+model CallDoctorSession {
+  tokenHash String @id
+  doctorId String
+  spaceId String
+  doctor CallDoctor @relation(fields: [doctorId, spaceId], references: [id, spaceId], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  @@index([doctorId])
+  @@index([expiresAt])
+  @@map("call_doctor_sessions")
 }
 
 model SpaceMember {
@@ -670,6 +737,9 @@ model Thread {
   historyCompactedUpToSeq     Int?
   historyCompactionSummary    String?    @db.Text
   historyCompactionGeneration Int        @default(0)
+  activeBranchId              String?
+  checkpointGeneration        Int        @default(0)
+  checkpointBlocked           Boolean    @default(false)
   unread                      Boolean    @default(false)
   messages                    Message[]
   events                      Event[]
@@ -681,11 +751,69 @@ model Thread {
   @@map("threads")
 }
 
+model ConversationBranch {
+  id                     String   @id @default(cuid())
+  // Immutable source identity; research history survives live-thread deletion.
+  threadId               String
+  parentBranchId         String?
+  parentCutoffMessageSeq Int?
+  parentCutoffEventSeq   Int?
+  createdAt              DateTime @default(now())
+
+  @@index([threadId])
+  @@map("conversation_branches")
+}
+
+model Checkpoint {
+  id               String   @id @default(cuid())
+  // Immutable source identity; not a foreign key to the live conversation.
+  threadId         String
+  spaceId          String
+  botId            String
+  userId           String
+  workspaceKey     String?
+  branchId         String
+  kind             String
+  label            String?
+  cutoffMessageSeq Int
+  cutoffEventSeq   Int
+  generation       Int
+  fileManifest     Json
+  businessState    Json
+  taskState        Json
+  createdAt        DateTime @default(now())
+
+  @@index([threadId, createdAt])
+  @@index([spaceId, botId])
+  @@map("checkpoints")
+}
+
+model RollbackAuditLog {
+  id                 String   @id @default(cuid())
+  // Immutable source identity; not a foreign key to the live conversation.
+  threadId           String
+  spaceId            String
+  botId              String
+  userId             String
+  fromCheckpointId   String?
+  toCheckpointId     String
+  rescueCheckpointId String?
+  branchId           String
+  generation         Int
+  status             String
+  details            Json
+  createdAt          DateTime @default(now())
+
+  @@index([threadId, createdAt])
+  @@map("rollback_audit_logs")
+}
+
 model Message {
   id               String    @id @default(cuid())
   threadId         String
   thread           Thread    @relation(fields: [threadId], references: [id], onDelete: Cascade)
   seq              Int
+  branchId         String?
   role             String
   blocks           Json
   botId            String?
@@ -715,6 +843,7 @@ model Event {
   thread    Thread   @relation(fields: [threadId], references: [id], onDelete: Cascade)
   botId     String
   seq       Int
+  branchId  String?
   type      String
   payload   Json
   runId     String?
@@ -753,6 +882,8 @@ model Run {
   botId                String
   bot                  Bot              @relation(fields: [botId], references: [id], onDelete: Cascade)
   threadId             String
+  branchId             String?
+  checkpointGeneration Int              @default(0)
   thread               Thread           @relation(fields: [threadId], references: [id], onDelete: Cascade)
   taskId               String
   task                 Task             @relation(fields: [taskId], references: [id], onDelete: Cascade)
@@ -923,6 +1054,7 @@ model Routine {
   thinkingLevel  String?
   lastRunAt      DateTime?
   jobWatch       Json?
+  checkpointGeneration Int @default(0)
   nextRunAt      DateTime?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
@@ -1165,6 +1297,8 @@ model ComputerExecutionLease {
 }
 
 model Artifact {
+  branchId   String?
+  checkpointHidden Boolean @default(false)
   id         String     @id @default(cuid())
   spaceId    String
   space      Space      @relation(fields: [spaceId], references: [id], onDelete: Cascade)

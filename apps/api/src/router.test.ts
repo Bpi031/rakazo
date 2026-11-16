@@ -25,6 +25,25 @@ import type { RouterDeps } from "./router.js";
 import { createRouter, enqueueBotIntroRun, HEARTBEAT_MS, SESSION_RECHECK_MS } from "./router.js";
 
 describe("account preferences", () => {
+  it.each([
+    ["owner", null, true],
+    ["admin", null, true],
+    ["member", null, false],
+    ["admin,member", null, true],
+    ["owner", "suspended", false],
+  ])("reports Call requests access for role %s and state %s", async (role, state, allowed) => {
+    const { deps, actor, handler } = preferencesDeps("organic");
+    Object.assign(deps.prisma, {
+      spaceMember: { findUnique: vi.fn().mockResolvedValue({ organizationId: "org", member: { role } }) },
+      teamMemberControl: { findUnique: vi.fn().mockResolvedValue(state ? { state } : null) },
+    });
+    const { response } = await handler.handle(new Request("http://127.0.0.1/rpc/me", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ json: null }),
+    }), { prefix: "/rpc", context: { actor } });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ json: { canManageCallRequests: allowed } });
+  });
+
   function preferencesDeps(avatarStyle: string) {
     const update = vi.fn().mockResolvedValue({});
     const prisma = {
@@ -1550,32 +1569,32 @@ describe("computer terminal and file transfer", () => {
       readFile: vi.fn().mockResolvedValue(new TextEncoder().encode("hello")),
       writeFile: vi.fn().mockResolvedValue(undefined),
     };
+    const computerRow = {
+      id: "computer-1", userId: actor.userId, spaceId: actor.spaceId,
+      screenGeneration: 3, kind: "docker", scope: "team", state: "running",
+      providerRef: "sandbox-ref-1", homeKey: "home-1", controlHolder: "none",
+      controlLeaseId: null, controlLeaseExpiresAt: null, controlBotId: null, controlRunId: null,
+      ...computer,
+    };
     const prisma = {
       bot: {
         findFirst: vi.fn().mockResolvedValue({
           id: "bot-1",
           screenGeneration: 2,
           thread: { id: "thread-1" },
-          computer: {
-            id: "computer-1",
-            screenGeneration: 3,
-            kind: "docker",
-            scope: "team",
-            state: "running",
-            providerRef: "sandbox-ref-1",
-            homeKey: "home-1",
-            controlHolder: "none",
-            controlLeaseId: null,
-            controlLeaseExpiresAt: null,
-            controlBotId: null,
-            controlRunId: null,
-            ...computer,
-          },
+          computer: computerRow,
         }),
       },
-      computer: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      computer: {
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        findUniqueOrThrow: vi.fn().mockResolvedValue(computerRow),
+      },
       computerExecutionLease: { findUnique: vi.fn().mockResolvedValue(null) },
     } as unknown as PrismaClient;
+    Object.assign(prisma, {
+      $queryRaw: vi.fn().mockResolvedValue([{ maintenanceId: computer.maintenanceId ?? null }]),
+      $transaction: async (operation: (tx: PrismaClient) => Promise<unknown>) => operation(prisma),
+    });
     const deps = {
       prisma,
       sandbox,
@@ -1769,6 +1788,34 @@ describe("computer terminal and file transfer", () => {
       { path: "bots/bot-1/notes.txt", content: Buffer.from("notes") },
       expect.anything(),
     );
+  });
+
+  it("rejects upload and new terminal sessions during shared checkpoint maintenance", async () => {
+    const { sandbox, call } = setup({ ...controlled, scope: "dedicated", maintenanceId: "checkpoint-restore:other-thread" });
+    await expect(call("uploadFile", { path: "workspace/notes.txt", contentBase64: Buffer.from("notes").toString("base64") })).resolves.toMatchObject({ status: 409 });
+    await expect(call("terminalUrl", {})).resolves.toMatchObject({ status: 409 });
+    expect(sandbox.writeFile).not.toHaveBeenCalled();
+    expect(sandbox.connectTerminal).not.toHaveBeenCalled();
+  });
+
+  it("rejects a stale upload lease after control changes between preflight and the locked write", async () => {
+    const { sandbox, prisma, call } = setup(controlled);
+    Object.assign(prisma.computer, { findUniqueOrThrow: vi.fn().mockResolvedValue({
+      id: "computer-1", userId: actor.userId, spaceId: actor.spaceId, state: "running",
+      scope: "team", kind: "docker", providerRef: "sandbox-ref-1", homeKey: "home-1",
+      ...controlled, controlLeaseId: "replacement-lease",
+    }) });
+    await expect(call("uploadFile", { path: "notes.txt", contentBase64: Buffer.from("notes").toString("base64") })).resolves.toMatchObject({ status: 409 });
+    expect(sandbox.writeFile).not.toHaveBeenCalled();
+  });
+
+  it("rejects an upload if the Bot was rebound after preflight", async () => {
+    const { sandbox, prisma, call } = setup(controlled);
+    vi.mocked(prisma.$queryRaw)
+      .mockResolvedValueOnce([{ maintenanceId: null }])
+      .mockResolvedValueOnce([]);
+    await expect(call("uploadFile", { path: "notes.txt", contentBase64: Buffer.from("notes").toString("base64") })).resolves.toMatchObject({ status: 409 });
+    expect(sandbox.writeFile).not.toHaveBeenCalled();
   });
 
   it("rejects team uploads into another bot workspace", async () => {
@@ -2148,14 +2195,17 @@ describe("bot intro run", () => {
   } satisfies Actor;
   const bot = { id: "bot-1", threadId: "thread-1" } as unknown as Bot;
 
-  function introDeps(options: { agentRuntime?: string; hasCredential?: boolean } = {}) {
+  function introDeps(options: { agentRuntime?: string; hasCredential?: boolean; generation?: number; blocked?: boolean } = {}) {
     let calls = 0;
     const create = vi.fn(({ data }: { data: object }) => {
       calls += 1;
       return Promise.resolve({ id: `record-${calls}`, ...data });
     });
     const enqueue = vi.fn().mockResolvedValue(undefined);
-    const tx = { task: { create }, run: { create } };
+    const tx = { task: { create }, run: { create }, thread: { update: vi.fn().mockResolvedValue({
+      activeBranchId: "current-branch", checkpointGeneration: options.generation ?? 0,
+      checkpointBlocked: options.blocked ?? false,
+    }) } };
     const preference =
       (options.hasCredential ?? true)
         ? { isDefault: true, modelId: "model-1", credential: { id: "cred-1", provider: "test" } }
@@ -2208,6 +2258,21 @@ describe("bot intro run", () => {
     await enqueueBotIntroRun(deps, actor, { id: "bot-1", threadId: null } as unknown as Bot);
 
     expect(create).not.toHaveBeenCalled();
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it("binds new turns after recovery to the current branch and generation", async () => {
+    const { create, deps } = introDeps({ generation: 3 });
+    await enqueueBotIntroRun(deps, actor, bot);
+    expect(create).toHaveBeenLastCalledWith(expect.objectContaining({ data: expect.objectContaining({
+      branchId: "current-branch", checkpointGeneration: 3,
+    }) }));
+  });
+
+  it("does not queue a new turn while checkpoint recovery is blocked", async () => {
+    const { create, enqueue, deps } = introDeps({ generation: 3, blocked: true });
+    await expect(enqueueBotIntroRun(deps, actor, bot)).rejects.toThrow("Workspace changed");
+    expect(create).toHaveBeenCalledTimes(1); // Only the task; the transaction rolls it back.
     expect(enqueue).not.toHaveBeenCalled();
   });
 
@@ -4051,6 +4116,7 @@ describe("export.bot", () => {
 
   async function exportFiles(scope: "team" | "dedicated", home: LocalAgentHomeStore) {
     const prisma = {
+      thread: { findUniqueOrThrow: vi.fn().mockResolvedValue({ activeBranchId: null }) },
       bot: {
         findFirst: vi.fn().mockResolvedValue({
           id: "bot-1",

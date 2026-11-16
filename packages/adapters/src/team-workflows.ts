@@ -3,6 +3,7 @@ import type { Actor, WorkflowDefinition } from "@rakazo/contracts";
 import { workflowDefinitionSchema, workflowToolInput } from "@rakazo/contracts";
 import {
   appendEventInTransaction,
+  checkpointRunFields,
   createThreadMessageInTransaction,
   type Prisma,
   type PrismaClient,
@@ -356,6 +357,7 @@ export class TeamWorkflowService {
     });
     const run = await tx.run.create({
       data: {
+        ...(await checkpointRunFields(tx, binding.threadId)),
         userId: binding.userId,
         spaceId: binding.spaceId,
         botId: binding.botId,

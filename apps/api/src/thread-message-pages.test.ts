@@ -1,5 +1,10 @@
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
+// Legacy pagination fixtures represent threads with no checkpoint branch.
+vi.mock("@rakazo/db", async (original) => ({
+  ...await original<typeof import("@rakazo/db")>(),
+  checkpointMessageWhere: vi.fn(async (_db, threadId: string) => ({ threadId })),
+}));
 import {
   isBackgroundRun,
   isPeerRun,

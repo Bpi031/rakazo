@@ -2,6 +2,7 @@ import type { JobPublisher } from "@rakazo/adapter-kit";
 import { runContinueJob } from "@rakazo/adapter-kit";
 import { isTicketCompletedStatus, TicketStatusSchema } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
+import { checkpointRunFields } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 
 /** Assignment wakes only its current owner, without posting a chat message. */
@@ -35,6 +36,7 @@ export async function wakeTicketAssignee(
     });
     return tx.run.create({
       data: {
+        ...(await checkpointRunFields(tx, bot.thread.id)),
         spaceId: input.spaceId,
         botId: bot.id,
         threadId: bot.thread.id,

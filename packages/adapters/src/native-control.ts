@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { CompletionReceipt, NativeDecision } from "@rakazo/contracts";
-import type { Actor } from "@rakazo/contracts";
-import type { PrismaClient, Prisma } from "@rakazo/db";
 import type { SandboxProvider } from "@rakazo/adapter-kit";
-import { memberScope } from "./team-storage.js";
+import type { Actor } from "@rakazo/contracts";
+import { CompletionReceipt, NativeDecision } from "@rakazo/contracts";
+import type { Prisma, PrismaClient } from "@rakazo/db";
+import { assertCheckpointGeneration } from "@rakazo/db";
 import { toComputerRef } from "./computer-support.js";
 import { teamDigest } from "./team-policy.js";
+import { memberScope } from "./team-storage.js";
+import { assertManagedTeamComputer, managedWorkspace, workspaceRelativeRoots } from "./managed-workspace.js";
 
 const files = readFileSync(new URL('./native-files.py', import.meta.url), 'utf8');
 const json = (v: unknown) => JSON.parse(JSON.stringify(v)) as Prisma.InputJsonValue;
@@ -16,7 +18,7 @@ export class NativeControl {
   private async owned(actor: Actor, botId: string) {
     await memberScope(this.db, actor.userId, actor.spaceId);
     const bot = await this.db.bot.findFirstOrThrow({ where: { id: botId, userId: actor.userId, spaceId: actor.spaceId, archivedAt: null }, include: { computer: true } });
-    if (bot.computer?.scope === 'team') throw new Error('Private native workspace required');
+    if (bot.computer) await assertManagedTeamComputer(this.db, bot.computer, actor);
     return bot;
   }
   private where(actor: Actor, botId: string) { return { userId: actor.userId, spaceId: actor.spaceId, botId }; }
@@ -41,10 +43,13 @@ export class NativeControl {
     });
   }
   async actor(runId: string) {
-    const run = await this.db.run.findUniqueOrThrow({ where: { id: runId } });
+    const run = await this.db.run.findUniqueOrThrow({where:{id:runId}});
     if (run.status !== 'running') throw new Error('Live owned agent turn required');
-    const actor = { userId: run.userId, spaceId: run.spaceId, email: '', isDeploymentOwner: false };
-    await this.owned(actor, run.botId); return { actor, run };
+    if (typeof run.checkpointGeneration === "number")
+      await assertCheckpointGeneration(this.db, run.threadId, run.checkpointGeneration);
+    const actor = {userId:run.userId,spaceId:run.spaceId,email:'',isDeploymentOwner:false};
+    const bot = await this.owned(actor,run.botId);
+    return { actor, run, bot };
   }
   async observe(runId: string, kind: string, payload: unknown) {
     const { actor, run } = await this.actor(runId);
@@ -53,30 +58,58 @@ export class NativeControl {
     return this.db.agentWorkbenchRecord.upsert({ where: { id }, create: { id, ...this.where(actor,run.botId), runId, kind: 'native_' + kind, status: 'observed', digest: teamDigest(payload), payload: json(payload) }, update: { digest: teamDigest(payload), payload: json(payload) } });
   }
   async prepare(runId: string, fingerprint: string) {
-    const { actor, run } = await this.actor(runId);
-    const view = await this.view(actor, run.botId); const p = view.preferences as any;
-    const id = this.key(actor, run.botId, 'native_session');
-    return this.db.$transaction(async tx => {
+    const {actor,run,bot}=await this.actor(runId);
+    const workspace = managedWorkspace(bot.computer?.scope ?? "dedicated", run.botId);
+    const view = await this.view(actor, run.botId);
+    const p = view.preferences as any;
+    const id=this.key(actor,run.botId,'native_session');
+    return this.db.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${id}, 0))`;
-      const thread = await tx.thread.findFirstOrThrow({ where: { id: run.threadId, spaceId: actor.spaceId, botId: run.botId }, select: { historyCompactionGeneration: true } });
+      const thread = await tx.thread.findFirstOrThrow({
+        where: { id: run.threadId, spaceId: actor.spaceId, botId: run.botId },
+        select: {
+          historyCompactionGeneration: true,
+          activeBranchId: true,
+          checkpointGeneration: true,
+          checkpointBlocked: true,
+        },
+      });
+      if (
+        thread.checkpointBlocked ||
+        (typeof run.checkpointGeneration === "number" &&
+          run.checkpointGeneration !== thread.checkpointGeneration)
+      )
+        throw new Error("Checkpoint branch changed");
       // Clearing chat increments its generation; native history must not resurrect it.
-      const ownedFingerprint = teamDigest({ fingerprint, threadId: run.threadId, historyGeneration: thread.historyCompactionGeneration });
+      const ownedFingerprint = teamDigest({
+        fingerprint,
+        threadId: run.threadId,
+        historyGeneration: thread.historyCompactionGeneration,
+        branchId: thread.activeBranchId ?? null,
+        checkpointGeneration: thread.checkpointGeneration ?? 0,
+        workspace,
+      });
       const row = await tx.agentWorkbenchRecord.findUnique({ where: { id } });
       const priorRun=row?.runId?await tx.run.findUniqueOrThrow({where:{id:row.runId}}):null;
       const answeredPause=row?.runId===runId&&row.status==='needs_review'&&(row.payload as any)?.paused===true&&run.leaseFence>((row.payload as any)?.leaseFence??Number.MAX_SAFE_INTEGER);
       if (priorRun&&['queued','leased','running','waiting_input','waiting_takeover'].includes(priorRun.status)&&!answeredPause) throw new Error('Native session already owned');
       const previous = row?.status === 'completed' && priorRun?.status==='completed' && (row.payload as any)?.fingerprint === ownedFingerprint ? (row.payload as any) : null;
-      const action = p.action ?? 'none';
+      // Restored history always starts from the reconstructed branch. An old
+      // workbench compact/fork preference must not borrow the abandoned session.
+      const action =
+        (thread.checkpointGeneration ?? 0) > 0 && !previous ? "none" : (p.action ?? "none");
       if (['compact','fork'].includes(action) && (!previous || !p.persistence)) throw new Error('A completed matching persistent native session is required');
       const payload = { fingerprint: ownedFingerprint, previous, mode: p.mode, action, sessionKey: id, revision: p.revision, currentRunId: runId,leaseFence:run.leaseFence };
       await tx.agentWorkbenchRecord.upsert({ where: { id }, create: { id, ...this.where(actor,run.botId), runId, kind: 'native_session', status: 'running', digest: teamDigest(payload), payload: json(payload) }, update: { runId, status:'running', digest:teamDigest(payload), payload:json(payload) } });
       const prefId = this.key(actor, run.botId, 'native_preferences');
       if (action !== 'none') await tx.agentWorkbenchRecord.updateMany({ where: { id: prefId, digest: teamDigest(p) }, data: { payload: json({ ...p, action:'none', revision:p.revision+1 }), digest:teamDigest({ ...p, action:'none', revision:p.revision+1 }) } });
-      return { ...payload, previous: p.persistence && action !== 'review' ? previous : null, persistent: p.persistence === true };
+      return { ...payload, workspace, previous: p.persistence && action !== 'review' ? previous : null, persistent: p.persistence === true };
     });
   }
   async finish(runId: string, value: any) {
     const run = await this.db.run.findUniqueOrThrow({where:{id:runId}});
+    if (typeof run.checkpointGeneration === "number")
+      await assertCheckpointGeneration(this.db, run.threadId, run.checkpointGeneration);
     const actor = {userId:run.userId,spaceId:run.spaceId,email:'',isDeploymentOwner:false};
     await this.owned(actor,run.botId);
     const id=this.key(actor,run.botId,'native_session');
@@ -90,9 +123,9 @@ export class NativeControl {
   }
   async files(actor: Actor, botId: string, input: Record<string,unknown>) {
     const bot=await this.owned(actor,botId);
-    if(!this.sandbox||!bot.computer?.providerRef||bot.computer.state!=='running')throw new Error('Existing private computer required');
+    if(!this.sandbox||!bot.computer?.providerRef||bot.computer.state!=='running')throw new Error('Existing owned running computer required');
     let stdout='',code:number|undefined;
-    for await(const e of this.sandbox.execute(toComputerRef(bot.computer),{argv:['/opt/office-python/bin/python3','-I','-c',files,Buffer.from(JSON.stringify(input)).toString('base64')],cwd:'/home/rakazo',timeoutMs:15000,unsetEnv:['PYTHONPATH','PYTHONHOME','LD_PRELOAD']},{...this.where(actor,botId),operationId:randomUUID(),traceId:'native-observation',signal:AbortSignal.timeout(20000)})){
+    for await(const e of this.sandbox.execute(toComputerRef(bot.computer),{argv:['/opt/office-python/bin/python3','-I','-c',files,Buffer.from(JSON.stringify(input)).toString('base64'), JSON.stringify(workspaceRelativeRoots(bot.computer.scope, botId))],cwd:'/home/rakazo',timeoutMs:15000,unsetEnv:['PYTHONPATH','PYTHONHOME','LD_PRELOAD']},{...this.where(actor,botId),operationId:randomUUID(),traceId:'native-observation',signal:AbortSignal.timeout(20000)})){
       if(e.type==='stdout'){stdout+=e.data;if(Buffer.byteLength(stdout)>400000)throw new Error('Observation cap');}if(e.type==='exit')code=e.code;
     }
     const result=JSON.parse(stdout);if(code!==0||result.error)throw new Error('Private workspace observation rejected');await this.owned(actor,botId);return result;
@@ -104,14 +137,23 @@ export class NativeControl {
     throw new Error('Read-only native tool denied');
   }
   async receipt(runId: string, raw: unknown) {
-    const claim=CompletionReceipt.parse(raw);const {actor,run}=await this.actor(runId);
+    const claim=CompletionReceipt.parse(raw);
+    const {actor,run}=await this.actor(runId);
     const all=[...claim.deliverables,...claim.evidence];
     const paths=[...new Set(all.map(f=>f.path))];
-    let observed:any[]=[];let status='needs_review';
+    let observed:any[]=[];
+    let status='needs_review';
     try{observed=(await this.files(actor,run.botId,{operation:'receipt',paths})).files;
       if(all.every(f=>observed.some(o=>o.path===f.path&&o.sha256===f.sha256)))status=claim.kind==='answer'&&claim.deliverables.length===0?'answer_recorded':'files_verified';
     }catch{}
-    const artifacts=await this.db.artifact.findMany({where:{...this.where(actor,run.botId),createdAt:{gte:run.createdAt}},select:{id:true,hash:true,name:true}});
+    const artifacts = await this.db.artifact.findMany({
+      where: {
+        ...this.where(actor, run.botId),
+        checkpointHidden: false,
+        createdAt: { gte: run.createdAt },
+      },
+      select: { id: true, hash: true, name: true },
+    });
     const payload={claim,observed,artifacts,status,validationAssessment:'model_supplied_unverified',policyApprovalGranted:false,solveStarted:false};
     await this.observe(runId,'completion',payload);
     return {message:status==='needs_review'?'Completion requires review: requested files were missing or changed. No completion was certified.':claim.message,status};

@@ -7,6 +7,20 @@ from unittest.mock import patch
 spec=importlib.util.spec_from_file_location('native_files_test',Path(__file__).with_name('native-files.py'))
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
 class NativeFilesTests(unittest.TestCase):
+    def test_team_inventory_reads_only_own_directory_and_shared(self):
+        for folder in ('bots/a', 'bots/other', 'shared'):
+            (self.root / folder).mkdir(parents=True)
+            (self.root / folder / 'policy.rost').write_text(folder)
+        with patch.object(module, 'ROOTS', ['bots/a', 'shared']):
+            found = module.execute({'operation': 'inventory'})['files']
+            self.assertEqual({row['path'] for row in found}, {'bots/a/policy.rost', 'shared/policy.rost'})
+            for path in ('bots/a/policy.rost', 'shared/policy.rost'):
+                self.assertIn('text', module.inspect(path, True))
+            for path in ('bots/other/policy.rost', 'workspace/a.rost', 'bots/a/../../other/policy.rost'):
+                with self.subTest(path=path), self.assertRaises(ValueError): module.inspect(path, True)
+            (self.root / 'bots/a/link').symlink_to(self.root / 'bots/other', target_is_directory=True)
+            with self.assertRaises(OSError): module.inspect('bots/a/link/policy.rost', True)
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name);(self.root/'workspace').mkdir()

@@ -12,7 +12,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { Navigate, Outlet, Route, Routes, useSearchParams } from "react-router-dom";
+import { Navigate, Outlet, Route, Routes, useLocation, useSearchParams } from "react-router-dom";
 import { LoadingState } from "./components/ai/primitives";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { SubscriptionGate } from "./components/SubscriptionGate";
@@ -51,6 +51,12 @@ const ArtifactsPage = lazy(() =>
 const BoardPage = lazy(() =>
   import("./pages/Board").then((module) => ({ default: module.BoardPage })),
 );
+const DoctorCallRequestsPage = lazy(() =>
+  import("./pages/CallRequests").then((module) => ({ default: module.DoctorCallRequestsPage })),
+);
+const ManagerCallRequestsPage = lazy(() =>
+  import("./pages/CallRequests").then((module) => ({ default: module.ManagerCallRequestsPage })),
+);
 
 function SsoCallbackPage() {
   useEffect(() => {
@@ -65,6 +71,7 @@ const linkFavicons: LinkFavicons = {
 };
 
 export function App() {
+  const location = useLocation();
   const loadRemoteImages = useSyncExternalStore(
     subscribeRemoteImages,
     getRemoteImagesEnabled,
@@ -74,9 +81,15 @@ export function App() {
     <RemoteImagesContext.Provider value={loadRemoteImages}>
       <LinkFaviconsContext.Provider value={linkFavicons}>
         <ErrorBoundary fallback={<AppFailed />}>
-          {window.location.pathname === SSO_CALLBACK_PATH ? (
+          {location.pathname.startsWith("/call-requests/") ? (
+            <Suspense fallback={<div className="h-full bg-background" />}>
+              <Routes>
+                <Route path="/call-requests/:spaceId" element={<DoctorCallRequestsPage />} />
+              </Routes>
+            </Suspense>
+          ) : location.pathname === SSO_CALLBACK_PATH ? (
             <SsoCallbackPage />
-          ) : window.location.pathname === LOCAL_SETTINGS_PAGE ? (
+          ) : location.pathname === LOCAL_SETTINGS_PAGE ? (
             <LocalSettingsPage />
           ) : (
             <SessionApp />
@@ -177,6 +190,7 @@ function SessionApp() {
             <Route path="/app/g/:groupId" element={<ShellPage />} />
             <Route path="/app/artifacts" element={<ArtifactsPage />} />
             <Route path="/app/artifacts/:artifactId" element={<ArtifactsPage />} />
+            <Route path="/app/call-requests" element={<ManagerCallRequestsPage />} />
             {ticketBoardEnabled ? <Route path="/app/board" element={<BoardPage />} /> : null}
             <Route path="/app/:botId" element={<ShellPage />} />
           </Route>
