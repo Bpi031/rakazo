@@ -25,6 +25,25 @@ import type { RouterDeps } from "./router.js";
 import { createRouter, enqueueBotIntroRun, HEARTBEAT_MS, SESSION_RECHECK_MS } from "./router.js";
 
 describe("account preferences", () => {
+  it.each([
+    ["owner", null, true],
+    ["admin", null, true],
+    ["member", null, false],
+    ["admin,member", null, true],
+    ["owner", "suspended", false],
+  ])("reports Call requests access for role %s and state %s", async (role, state, allowed) => {
+    const { deps, actor, handler } = preferencesDeps("organic");
+    Object.assign(deps.prisma, {
+      spaceMember: { findUnique: vi.fn().mockResolvedValue({ organizationId: "org", member: { role } }) },
+      teamMemberControl: { findUnique: vi.fn().mockResolvedValue(state ? { state } : null) },
+    });
+    const { response } = await handler.handle(new Request("http://127.0.0.1/rpc/me", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ json: null }),
+    }), { prefix: "/rpc", context: { actor } });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ json: { canManageCallRequests: allowed } });
+  });
+
   function preferencesDeps(avatarStyle: string) {
     const update = vi.fn().mockResolvedValue({});
     const prisma = {

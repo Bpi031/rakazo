@@ -86,6 +86,8 @@ import { mountManagedServiceGuards } from "./managed-services.js";
 import { mountManagedUsage } from "./managed-usage.js";
 import { mountPriorityHttp } from "./policy-priorities-http.js";
 import { mountCheckpointHttp } from "./checkpoints-http.js";
+import { CallRequestService } from "./call-requests.js";
+import { mountCallRequestHttp } from "./call-requests-http.js";
 import { mountWorkspaceInsights, WorkspaceInsights } from "./workspace-insights.js";
 import { PriorityService } from "@rakazo/adapters";
 import type { Actor, AuthCapabilities } from "@rakazo/contracts";
@@ -666,6 +668,13 @@ export async function createApp(
     return actor && { actor, sessionId: session.session.id };
   };
   const sessionActor = async (request: Request) => (await requestSession(request))?.actor ?? null;
+  const callRequests = new CallRequestService({ prisma, email, secret: env.authSecret });
+  mountCallRequestHttp(app, {
+    service: callRequests,
+    actor: sessionActor,
+    webOrigin: env.webOrigin,
+    additionalWebOrigins: env.additionalWebOrigins,
+  });
   if (checkpoints) mountCheckpointHttp(app, { service: checkpoints, actor: sessionActor, webOrigin: env.webOrigin, additionalWebOrigins: env.additionalWebOrigins });
   if (env.agentRuntime === "codex") {
     if (workbenchEnabled()) mountAgentWorkbench(app, { service: new AgentWorkbench({ prisma, sandbox }), isDeveloper:developerAccess, native: nativeEnabled()?new NativeControl(prisma,sandbox):undefined, actor: sessionActor,
@@ -1056,6 +1065,7 @@ export async function createApp(
       await messaging?.shutdown?.();
       await teamChatBridge?.stop();
       await email?.drain?.();
+      await settleWithTimeout(callRequests.drain(), 1_000);
       await reconciler?.stop();
       await jobs.close();
       await secrets.close();

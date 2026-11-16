@@ -1359,6 +1359,7 @@ export const ServerUpdateRequestSchema = z.object({
 export type ServerUpdateRequest = z.infer<typeof ServerUpdateRequestSchema>;
 
 export const MeSchema = z.object({
+  canManageCallRequests: z.boolean().optional(),
   developerMode:z.boolean().optional(),
   managedServices: z.boolean().optional(),
   maxUploadSizeBytes: z.number().int().positive().optional(),

@@ -13,38 +13,6 @@ msgstr ""
 "Language-Team: \n"
 "Plural-Forms: \n"
 
-#: src/components/QuestionCard.tsx
-msgid "Question"
-msgstr "Question"
-
-#: src/components/QuestionCard.tsx
-msgid "Answer later"
-msgstr "Answer later"
-
-#: src/components/QuestionCard.tsx
-msgid "Answer question"
-msgstr "Answer question"
-
-#: src/components/QuestionCard.tsx
-msgid "Choose an answer"
-msgstr "Choose an answer"
-
-#: src/components/QuestionCard.tsx
-msgid "Your own response"
-msgstr "Your own response"
-
-#: src/components/QuestionCard.tsx
-msgid "Or write your own response"
-msgstr "Or write your own response"
-
-#: src/components/QuestionCard.tsx
-msgid "Sending..."
-msgstr "Sending..."
-
-#: src/components/QuestionCard.tsx
-msgid "Recommended"
-msgstr "Recommended"
-
 #: src/pages/Shell.tsx
 msgid " (unread)"
 msgstr " (non lu)"
@@ -368,6 +336,10 @@ msgstr "Comptes"
 msgid "Action confirmations"
 msgstr "Confirmations d'action"
 
+#: src/pages/CallRequests.tsx
+msgid "Actions"
+msgstr "Actions"
+
 #. placeholder {0}: bot.name
 #. placeholder {0}: group.spaceName
 #. placeholder {0}: sectionMenu.section.name
@@ -444,6 +416,10 @@ msgstr "Ajoutez des modèles connectés pour les utiliser comme modèles de seco
 msgid "Add credential"
 msgstr ""
 
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Add doctor"
+msgstr "Add doctor"
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Add Executor"
 msgstr "Ajouter un exécuteur"
@@ -472,6 +448,10 @@ msgstr "Ajouter OpenAPI"
 #: src/pages/PluginsOverlay.tsx
 msgid "Add remote MCP server"
 msgstr "Ajouter un serveur MCP distant"
+
+#: src/pages/CallRequests.tsx
+msgid "Add request"
+msgstr "Add request"
 
 #: src/pages/McpServersOverlay.tsx
 msgid "Add server"
@@ -604,7 +584,16 @@ msgstr "Une clé API est enregistrée pour ce fournisseur, et non une connexion 
 msgid "Answer"
 msgstr "Répondre"
 
+#: src/components/QuestionCard.tsx
+msgid "Answer later"
+msgstr "Answer later"
+
+#: src/components/QuestionCard.tsx
+msgid "Answer question"
+msgstr "Answer question"
+
 #: src/components/AskCard.tsx
+#: src/components/QuestionCard.tsx
 msgid "Answered"
 msgstr "Répondu"
 
@@ -793,6 +782,14 @@ msgstr "Avatars"
 msgid "Back"
 msgstr "Retour"
 
+#: src/pages/CallRequests.tsx
+msgid "Back to Agents"
+msgstr "Back to Agents"
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Back to doctors"
+msgstr "Back to doctors"
+
 #: src/pages/Auth.tsx
 msgid "Back to sign in"
 msgstr "Retour à la connexion"
@@ -908,6 +905,11 @@ msgstr ""
 msgid "Built-in"
 msgstr "Intégré"
 
+#: src/pages/CallRequests.tsx
+#: src/pages/Shell.tsx
+msgid "Call requests"
+msgstr "Call requests"
+
 #: src/App.tsx
 msgid "Can't reach the server."
 msgstr "Impossible d'atteindre le serveur."
@@ -918,6 +920,8 @@ msgstr "Impossible d'atteindre le serveur."
 #: src/components/markdown-link-prompt.tsx
 #: src/components/teach/TeachComputerOverlay.tsx
 #: src/pages/Artifacts.tsx
+#: src/pages/CallDoctorDirectory.tsx
+#: src/pages/CallRequests.tsx
 #: src/pages/KnowledgeSection.tsx
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
@@ -926,6 +930,11 @@ msgstr "Impossible d'atteindre le serveur."
 #: src/pages/shell/dialogs.tsx
 msgid "Cancel"
 msgstr "Annuler"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.cancel"
+msgstr "Cancel"
 
 #: src/pages/shell/bot-panel.tsx
 msgid "Cancel new bot"
@@ -1006,6 +1015,15 @@ msgstr "Faites un point."
 msgid "Check the API key or sign-in, then test again."
 msgstr "Vérifiez la clé API ou la connexion, puis testez à nouveau."
 
+#. placeholder {0}: reason.row
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Check the doctor details on row {0}."
+msgstr "Check the doctor details on row {0}."
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Check the name, email and Staff ID."
+msgstr "Check the name, email and Staff ID."
+
 #: src/lib/model-connection-preflight.ts
 msgid "Check the server URL and network, then test again."
 msgstr "Vérifiez l'URL du serveur et le réseau, puis testez à nouveau."
@@ -1029,6 +1047,21 @@ msgstr "Vérification en cours…"
 msgid "Checkout has local changes. Clean it before updating."
 msgstr "La copie de travail a des modifications locales. Nettoyez-la avant de mettre à jour."
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.name"
+msgstr "Checkpoint name"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.tree"
+msgstr "Checkpoint tree, drag to pan"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.title"
+msgstr "Checkpoints"
+
 #: src/pages/shell/avatar-studio-popover.tsx
 msgid "Choose a bot shape, color, or upload an image"
 msgstr "Choisissez une forme, une couleur de bot, ou téléchargez une image"
@@ -1037,9 +1070,17 @@ msgstr "Choisissez une forme, une couleur de bot, ou téléchargez une image"
 msgid "Choose a bot…"
 msgstr "Choisissez un bot…"
 
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Choose a CSV with up to 1,000 doctors, under 512 KB."
+msgstr "Choose a CSV with up to 1,000 doctors, under 512 KB."
+
 #: src/pages/Auth.tsx
 msgid "Choose a new password"
 msgstr "Choisissez un nouveau mot de passe"
+
+#: src/components/QuestionCard.tsx
+msgid "Choose an answer"
+msgstr "Choose an answer"
 
 #: src/pages/shell/avatar-studio-popover.tsx
 msgid "Choose file"
@@ -1352,6 +1393,7 @@ msgid "Context limit"
 msgstr "Limite de contexte"
 
 #: src/components/integrations/IntegrationSetup.tsx
+#: src/components/QuestionCard.tsx
 #: src/pages/Onboarding.tsx
 msgid "Continue"
 msgstr "Continuer"
@@ -1370,10 +1412,11 @@ msgid "Continue with email"
 msgstr "Continuer avec l'e-mail"
 
 #: src/components/ComputersUnavailableHint.tsx
+#: src/pages/CallRequests.tsx
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
 msgid "Copied"
-msgstr ""
+msgstr "Copied"
 
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
@@ -1384,6 +1427,14 @@ msgstr "Copier"
 #: src/components/ComputersUnavailableHint.tsx
 msgid "Copy .env example"
 msgstr ""
+
+#: src/pages/CallRequests.tsx
+msgid "Copy doctor link"
+msgstr "Copy doctor link"
+
+#: src/pages/CallRequests.tsx
+msgid "Copy month table"
+msgstr "Copy month table"
 
 #: src/pages/ScratchpadSection.tsx
 msgid "Could not add"
@@ -1586,6 +1637,11 @@ msgstr ""
 msgid "Could not load bots. Reload to try again."
 msgstr "Impossible de charger les bots. Rechargez pour réessayer."
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.loadError"
+msgstr "Could not load checkpoints."
+
 #: src/components/computer/TerminalApp.tsx
 msgid "Could not load commands"
 msgstr ""
@@ -1672,6 +1728,10 @@ msgstr "Impossible de joindre le serveur du modèle."
 msgid "Could not reach the server"
 msgstr "Impossible d'atteindre le serveur"
 
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Could not read this file. Choose a CSV."
+msgstr "Could not read this file. Choose a CSV."
+
 #: src/pages/ScratchpadSection.tsx
 msgid "Could not remove"
 msgstr "Impossible de retirer"
@@ -1730,6 +1790,10 @@ msgstr "Impossible d'enregistrer la révision automatique"
 #: src/pages/ModelBackupsSettings.tsx
 msgid "Could not save backup models"
 msgstr "Impossible d’enregistrer les modèles de secours."
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Could not save doctors. Try again."
+msgstr "Could not save doctors. Try again."
 
 #: src/pages/GroupPanel.tsx
 msgid "Could not save group"
@@ -1792,6 +1856,7 @@ msgid "Could not start teaching"
 msgstr "Impossible de démarrer l'enseignement"
 
 #: src/components/AskCard.tsx
+#: src/components/QuestionCard.tsx
 msgid "Could not submit this answer"
 msgstr "Impossible de soumettre cette réponse"
 
@@ -1941,6 +2006,10 @@ msgstr "Personnaliser l'avatar du bot"
 msgid "Dark"
 msgstr "Sombre"
 
+#: src/pages/CallRequests.tsx
+msgid "Date"
+msgstr "Date"
+
 #: src/lib/billing.ts
 #: src/pages/RoutineSchedule.tsx
 msgid "day"
@@ -2023,6 +2092,17 @@ msgstr "Supprimer le groupe"
 msgid "Delete memories too"
 msgstr "Supprimer les mémoires également"
 
+#. placeholder {0}: row.date
+#: src/pages/CallRequests.tsx
+msgid "Delete request for {0}"
+msgstr "Delete request for {0}"
+
+#. placeholder {0}: row.doctorName
+#. placeholder {1}: row.date
+#: src/pages/CallRequests.tsx
+msgid "Delete request from {0} for {1}"
+msgstr "Delete request from {0} for {1}"
+
 #: src/pages/Shell.tsx
 msgid "Delete space"
 msgstr "Supprimer l'espace"
@@ -2076,6 +2156,10 @@ msgstr "Détails"
 #: src/components/integrations/IntegrationSetup.tsx
 msgid "Direct MCP"
 msgstr "MCP direct"
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Disabled"
+msgstr "Disabled"
 
 #: src/pages/shell/bot-panel.tsx
 msgid "Disabled tools"
@@ -2138,6 +2222,18 @@ msgstr ""
 msgid "Docker limits access to your computer for added security. Using {hostLabel} lets bots work with your local files and tools."
 msgstr "Docker limite l'accès à votre ordinateur pour une sécurité renforcée. Utiliser {hostLabel} permet aux bots de travailler avec vos fichiers et outils locaux."
 
+#: src/pages/CallRequests.tsx
+msgid "Doctor"
+msgstr "Doctor"
+
+#: src/pages/CallRequests.tsx
+msgid "Doctor sign-in is unavailable. Contact your administrator."
+msgstr "Doctor sign-in is unavailable. Contact your administrator."
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Doctors"
+msgstr "Doctors"
+
 #: src/pages/Auth.tsx
 msgid "Don’t have an account?"
 msgstr "Vous n'avez pas de compte ?"
@@ -2192,9 +2288,22 @@ msgstr "Dupliquer"
 msgid "e.g. Hivenet Agent, Presales, Timesheets bot"
 msgstr "ex. Agent Hivenet, Préventes, bot de feuilles de temps"
 
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Each doctor needs a unique Staff ID and email."
+msgstr "Each doctor needs a unique Staff ID and email."
+
 #: src/components/AskCard.tsx
 msgid "Edit"
 msgstr "Modifier"
+
+#. placeholder {0}: doctor.name
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Edit {0}"
+msgstr "Edit {0}"
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Edit doctor"
+msgstr "Edit doctor"
 
 #: src/components/AskCard.tsx
 msgid "Edit first"
@@ -2204,7 +2313,17 @@ msgstr "Modifier d'abord"
 msgid "Edit Profile"
 msgstr "Modifier le profil"
 
+#: src/pages/CallRequests.tsx
+msgid "Edit request"
+msgstr "Edit request"
+
+#. placeholder {0}: row.date
+#: src/pages/CallRequests.tsx
+msgid "Edit request for {0}"
+msgstr "Edit request for {0}"
+
 #: src/pages/Auth.tsx
+#: src/pages/CallDoctorDirectory.tsx
 msgid "Email"
 msgstr "E-mail"
 
@@ -2215,6 +2334,10 @@ msgstr "Cette adresse e-mail ne peut pas s’inscrire"
 #: src/lib/user-error.ts
 msgid "Email verification required"
 msgstr "Vérification de l’e-mail requise"
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Enabled"
+msgstr "Enabled"
 
 #: src/pages/BillingSettingsPanel.tsx
 msgid "Ends {day}"
@@ -2558,6 +2681,10 @@ msgstr "J'ai terminé"
 msgid "If you heard that, voice is ready."
 msgstr "Si vous avez entendu cela, la voix est prête."
 
+#: src/pages/CallRequests.tsx
+msgid "If your email is registered, a verification code has been sent."
+msgstr "If your email is registered, a verification code has been sent."
+
 #: src/pages/ExternalConversationSettings.tsx
 msgid "Ignore"
 msgstr "Ignorer"
@@ -2565,6 +2692,18 @@ msgstr "Ignorer"
 #: src/pages/shell/avatar-studio-popover.tsx
 msgid "Image upload area"
 msgstr "Zone de téléchargement d'image"
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Import CSV"
+msgstr "Import CSV"
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Import doctor CSV"
+msgstr "Import doctor CSV"
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Import doctors"
+msgstr "Import doctors"
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Import OpenAPI JSON"
@@ -2743,6 +2882,11 @@ msgstr "Charger automatiquement les images web"
 msgid "Loading activity…"
 msgstr "Chargement de l'activité…"
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.loading"
+msgstr "Loading checkpoints…"
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Loading integrations…"
 msgstr "Chargement des intégrations…"
@@ -2774,6 +2918,7 @@ msgstr "Chargement des fournisseurs vocaux…"
 #: src/App.tsx
 #: src/pages/Artifacts.tsx
 #: src/pages/Auth.tsx
+#: src/pages/CallRequests.tsx
 #: src/pages/IntegrationSetup.tsx
 #: src/pages/ModelBackupsSettings.tsx
 #: src/pages/Onboarding.tsx
@@ -2827,6 +2972,10 @@ msgstr ""
 msgid "Manage billing"
 msgstr ""
 
+#: src/pages/CallRequests.tsx
+msgid "Manage doctors"
+msgstr "Manage doctors"
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Manage MCP servers"
 msgstr "Gérer les serveurs MCP"
@@ -2842,6 +2991,11 @@ msgstr "Gérer le fournisseur de mémoire sémantique de l'espace."
 #: src/pages/PluginsOverlay.tsx
 msgid "Manual"
 msgstr "Manuel"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.manual"
+msgstr "Manual checkpoint"
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Manual setup required"
@@ -3050,9 +3204,17 @@ msgstr ""
 msgid "Monthly"
 msgstr "Mensuel"
 
+#: src/pages/CallRequests.tsx
+msgid "Monthly limit reached."
+msgstr "Monthly limit reached."
+
 #: src/pages/Shell.tsx
 msgid "More"
 msgstr "Plus"
+
+#: src/pages/CallRequests.tsx
+msgid "More actions"
+msgstr "More actions"
 
 #: src/components/ComputerMaintenanceActions.tsx
 msgid "More computer actions"
@@ -3080,6 +3242,7 @@ msgstr "Couper le micro"
 
 #: src/components/teach/SkillDraftCard.tsx
 #: src/pages/Auth.tsx
+#: src/pages/CallDoctorDirectory.tsx
 #: src/pages/GroupPanel.tsx
 #: src/pages/RoutineEditor.tsx
 #: src/pages/shell/bot-credentials.tsx
@@ -3087,6 +3250,11 @@ msgstr "Couper le micro"
 #: src/pages/shell/dialogs.tsx
 msgid "Name"
 msgstr "Nom"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.namePlaceholder"
+msgstr "Name (optional)"
 
 #: src/pages/shell/bot-panel.tsx
 msgid "Name this bot"
@@ -3133,6 +3301,10 @@ msgstr "Nouvel élément de travaux en cours"
 #: src/pages/Auth.tsx
 msgid "New password"
 msgstr "Nouveau mot de passe"
+
+#: src/pages/CallRequests.tsx
+msgid "New request"
+msgstr "New request"
 
 #: src/pages/BotContextMenu.tsx
 #: src/pages/shell/dialogs.tsx
@@ -3183,13 +3355,26 @@ msgstr "Aucun bot"
 msgid "No bots match"
 msgstr "Aucun bot ne correspond"
 
+#: src/pages/CallRequests.tsx
+msgid "No call"
+msgstr "No call"
+
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "No chat apps linked yet."
 msgstr "Aucune application de discussion connectée pour le moment."
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.empty"
+msgstr "No checkpoints yet."
+
 #: src/pages/shell/bot-credentials.tsx
 msgid "No credentials saved for this bot."
 msgstr ""
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "No doctors added."
+msgstr "No doctors added."
 
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "No group chats yet."
@@ -3239,6 +3424,10 @@ msgstr "Aucun fournisseur trouvé."
 msgid "No remote MCP servers found"
 msgstr "Aucun serveur MCP distant trouvé"
 
+#: src/pages/CallRequests.tsx
+msgid "No requests this month."
+msgstr "No requests this month."
+
 #: src/pages/PluginsOverlay.tsx
 #: src/pages/SpaceSearch.tsx
 msgid "No results"
@@ -3271,6 +3460,11 @@ msgstr "Aucun outil disponible."
 #: src/pages/RoutineEditor.tsx
 msgid "No trigger"
 msgstr "Aucun déclencheur"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.noPrompt"
+msgstr "No user message at this checkpoint."
 
 #: src/pages/ScratchpadSection.tsx
 msgid "None yet"
@@ -3433,6 +3627,10 @@ msgstr "Ou connectez une clé API"
 msgid "Or paste an API key"
 msgstr "Ou collez une clé API"
 
+#: src/components/QuestionCard.tsx
+msgid "Or write your own response"
+msgstr "Or write your own response"
+
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "Organic"
 msgstr "Organique"
@@ -3449,6 +3647,10 @@ msgstr "Message d’origine indisponible"
 #: src/pages/Onboarding.tsx
 msgid "Other model…"
 msgstr "Autre modèle…"
+
+#: src/pages/CallRequests.tsx
+msgid "Others"
+msgstr "Others"
 
 #: src/pages/Board.tsx
 msgid "Owner"
@@ -3537,6 +3739,20 @@ msgstr "Plugin"
 msgid "POST to"
 msgstr "POST vers"
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.preRollback"
+msgstr "Pre-rollback checkpoint"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.preSolve"
+msgstr "Pre-solve checkpoint"
+
+#: src/pages/CallRequests.tsx
+msgid "Prefer call"
+msgstr "Prefer call"
+
 #. placeholder {0}: props.name
 #: src/components/ArtifactFileCard.tsx
 msgid "Preview {0}"
@@ -3580,6 +3796,10 @@ msgstr "Fournisseurs"
 msgid "Pull request"
 msgstr "Demande de fusion"
 
+#: src/components/QuestionCard.tsx
+msgid "Question"
+msgstr "Question"
+
 #: src/pages/ActivityList.tsx
 msgid "Queued"
 msgstr "En file d'attente"
@@ -3616,6 +3836,10 @@ msgstr "Rappel uniquement"
 #: src/pages/ActivityList.tsx
 msgid "Recent"
 msgstr "Récent"
+
+#: src/components/QuestionCard.tsx
+msgid "Recommended"
+msgstr "Recommended"
 
 #: src/pages/McpServersOverlay.tsx
 msgid "Reconnect OAuth"
@@ -3695,6 +3919,10 @@ msgstr "Actualiser la vue"
 #: src/components/teach/TeachComputerOverlay.tsx
 msgid "Refreshing…"
 msgstr "Actualisation en cours…"
+
+#: src/pages/CallRequests.tsx
+msgid "Registered email"
+msgstr "Registered email"
 
 #: src/lib/user-error.ts
 msgid "Registration is closed"
@@ -3819,6 +4047,14 @@ msgstr ""
 msgid "Replying to {0}"
 msgstr ""
 
+#: src/pages/CallRequests.tsx
+msgid "Request"
+msgstr "Request"
+
+#: src/pages/CallRequests.tsx
+msgid "Request month"
+msgstr "Request month"
+
 #: src/pages/shell/message-cards.tsx
 msgid "Research & writing"
 msgstr "Recherche et rédaction"
@@ -3865,6 +4101,21 @@ msgstr "Redémarrez pour mettre à jour"
 msgid "Restore"
 msgstr "Restaurer"
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.restore"
+msgstr "Restore"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.restoreNode"
+msgstr "Restore checkpoint"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.restoreError"
+msgstr "Restore did not complete. Please try again."
+
 #: src/components/ComputerMaintenanceActions.tsx
 msgid "Restore the last saved workspace."
 msgstr "Restaurer le dernier espace de travail enregistré."
@@ -3872,6 +4123,11 @@ msgstr "Restaurer le dernier espace de travail enregistré."
 #: src/components/ComputerMaintenanceActions.tsx
 msgid "Restore the last saved workspace. Unsaved work on the computer is lost."
 msgstr "Restaurez le dernier espace de travail enregistré. Les travaux non enregistrés sur l'ordinateur seront perdus."
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.confirm"
+msgstr "Restore this checkpoint?"
 
 #: src/components/AskCard.tsx
 msgid "Restored"
@@ -3962,6 +4218,11 @@ msgstr "En cours"
 msgid "Running · Stop"
 msgstr "En cours · Arrêter"
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.description"
+msgstr "Running tasks will stop. Any changes will be saved as a pre-rollback checkpoint."
+
 #: src/pages/RoutineEditor.tsx
 msgid "Running…"
 msgstr "Exécution en cours…"
@@ -3973,6 +4234,8 @@ msgstr "S'exécute lorsque ce bot reçoit un message vérifié de ce fournisseur
 #: src/components/AskCard.tsx
 #: src/components/teach/SkillDraftCard.tsx
 #: src/pages/Board.tsx
+#: src/pages/CallDoctorDirectory.tsx
+#: src/pages/CallRequests.tsx
 #: src/pages/ExternalConversationSettings.tsx
 #: src/pages/GroupPanel.tsx
 #: src/pages/KnowledgeSection.tsx
@@ -4119,6 +4382,10 @@ msgstr "Envoyez <0>{linkCode}</0> au numéro depuis votre application de discuss
 msgid "Send answer"
 msgstr "Envoyer la réponse"
 
+#: src/pages/CallRequests.tsx
+msgid "Send code"
+msgstr "Send code"
+
 #: src/components/AccountAccess.tsx
 msgid "Send deletion code"
 msgstr "Envoyer le code de suppression"
@@ -4134,6 +4401,10 @@ msgstr "Envoyer le lien de réinitialisation"
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "Send with Enter"
 msgstr "Envoyer avec Entrée"
+
+#: src/components/QuestionCard.tsx
+msgid "Sending..."
+msgstr "Sending..."
 
 #: src/components/AskCard.tsx
 msgid "Sending…"
@@ -4163,6 +4434,11 @@ msgstr "Nom du serveur"
 #: src/pages/Onboarding.tsx
 msgid "Server URL"
 msgstr "URL du serveur"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.set"
+msgstr "Set a checkpoint"
 
 #: src/components/call/CallCard.tsx
 #: src/pages/MessagingSettingsOverlay.tsx
@@ -4208,6 +4484,10 @@ msgstr "Compétences partagées"
 #: src/components/computer/TerminalApp.tsx
 msgid "Shell"
 msgstr "Shell"
+
+#: src/pages/CallRequests.tsx
+msgid "Shift (optional)"
+msgstr "Shift (optional)"
 
 #: src/pages/Shell.tsx
 msgid "Show bots"
@@ -4263,6 +4543,11 @@ msgstr ""
 msgid "Sign in to Rakazo"
 msgstr "Connectez-vous à Rakazo"
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.signIn"
+msgstr "Sign in to use checkpoints."
+
 #: src/lib/user-error.ts
 msgid "Sign in to your existing account to link SSO"
 msgstr "Connectez-vous à votre compte existant pour associer SSO"
@@ -4270,6 +4555,10 @@ msgstr "Connectez-vous à votre compte existant pour associer SSO"
 #: src/lib/model-connection-preflight.ts
 msgid "Sign in with the subscription, or test the API key instead."
 msgstr "Connectez-vous avec l'abonnement, ou testez la clé API à la place."
+
+#: src/pages/CallRequests.tsx
+msgid "Sign out"
+msgstr "Sign out"
 
 #: src/pages/Auth.tsx
 #: src/pages/Welcome.tsx
@@ -4355,6 +4644,10 @@ msgstr "Modèle de parole"
 #: src/lib/user-error.ts
 msgid "SSO is temporarily unavailable. Try again."
 msgstr "SSO est temporairement indisponible. Réessayez."
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Staff ID"
+msgstr "Staff ID"
 
 #: src/pages/Paywall.tsx
 msgid "Start {trialDays}-day free trial"
@@ -4464,6 +4757,7 @@ msgstr "Enseigner une tâche"
 msgid "Teaching in progress. Stop teaching before sending a new message."
 msgstr "Enseignement en cours. Arrêtez l'enseignement avant d'envoyer un nouveau message."
 
+#: src/pages/SettingsOverlay.tsx
 #: src/pages/shell/bot-panel.tsx
 msgid "Team"
 msgstr "Équipe"
@@ -4483,6 +4777,10 @@ msgstr "Message Teams"
 #: src/pages/RoutineEditor.tsx
 msgid "Teams not enabled"
 msgstr "Teams non activé"
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Template"
+msgstr "Template"
 
 #: src/components/computer/ComputerWorkspace.tsx
 msgid "Terminal"
@@ -4511,6 +4809,11 @@ msgstr "Test en cours…"
 #: src/components/SoftwareUpdateSection.tsx
 msgid "The API did not come back. Refresh this page."
 msgstr "L'API n'est pas revenue. Actualisez cette page."
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.operationError"
+msgstr "The checkpoint operation could not be completed. Please try again."
 
 #: src/lib/model-connection-preflight.ts
 msgid "The connection timed out."
@@ -4568,6 +4871,10 @@ msgstr "cet ordinateur"
 #: src/pages/Artifacts.tsx
 msgid "This deletes all {0} versions of this artifact. This can't be undone."
 msgstr "Cela supprime toutes les {0} versions de cet artefact. Cette action est irréversible."
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "This file has no doctors."
+msgstr "This file has no doctors."
 
 #: src/components/ArtifactFileCard.tsx
 msgid "This file is not valid UTF-8 text."
@@ -4693,9 +5000,15 @@ msgstr "Réessayer"
 msgid "Try the test again."
 msgstr "Relancez le test."
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.turn"
+msgstr "Turn checkpoint"
+
+#: src/pages/CallRequests.tsx
 #: src/pages/shell/bot-credentials.tsx
 msgid "Type"
-msgstr ""
+msgstr "Type"
 
 #: src/components/teach/TeachRecordingChrome.tsx
 msgid "Type without recording"
@@ -4748,6 +5061,7 @@ msgid "Up to date"
 msgstr "À jour"
 
 #: src/components/SoftwareUpdateSection.tsx
+#: src/pages/CallDoctorDirectory.tsx
 msgid "Update"
 msgstr "Mettre à jour"
 
@@ -4821,6 +5135,10 @@ msgstr "Utilisation"
 msgid "Use {hostLabel}"
 msgstr "Utiliser {hostLabel}"
 
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Use a CSV with Staff ID, Name and Email columns."
+msgstr "Use a CSV with Staff ID, Name and Email columns."
+
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
 msgid "Use a found model"
@@ -4863,6 +5181,14 @@ msgstr ""
 msgid "Values are encrypted and never shown again."
 msgstr "Les valeurs sont chiffrées et ne sont plus affichées."
 
+#: src/pages/CallRequests.tsx
+msgid "Verification code"
+msgstr "Verification code"
+
+#: src/pages/CallRequests.tsx
+msgid "Verify"
+msgstr "Verify"
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Verify and add"
 msgstr "Vérifier et ajouter"
@@ -4878,6 +5204,11 @@ msgstr "Version"
 #: src/pages/RoutineRunHistory.tsx
 msgid "View chat"
 msgstr "Voir la conversation"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.view"
+msgstr "View checkpoints"
 
 #: src/pages/SettingsOverlay.tsx
 #: src/pages/Shell.tsx
@@ -4976,6 +5307,26 @@ msgstr ""
 msgid "Working…"
 msgstr "En cours…"
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.working"
+msgstr "Working…"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.stale"
+msgstr "Workspace changed. Please try again."
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.blocked"
+msgstr "Workspace recovery is incomplete. Choose a checkpoint to retry."
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.messagingBlocked"
+msgstr "Workspace recovery is incomplete. Messaging is paused."
+
 #: src/components/computer/TerminalApp.tsx
 msgid "Wrote {path}"
 msgstr ""
@@ -5032,6 +5383,10 @@ msgstr "Votre OpenAI"
 #: src/lib/run-error.ts
 msgid "Your OpenRouter"
 msgstr "Votre OpenRouter"
+
+#: src/components/QuestionCard.tsx
+msgid "Your own response"
+msgstr "Your own response"
 
 #: src/pages/Welcome.tsx
 msgid "Your team of always-on agents<0/>that you can give real work to."

@@ -327,6 +327,8 @@ model Member {
 }
 
 model Space {
+  callDoctors CallDoctor[]
+  callRequestLogins CallRequestLogin[]
   aiDataConsents AiDataConsent[]
   id                          String                       @id
   organizationId              String
@@ -380,6 +382,71 @@ model Space {
   @@index([organizationId, createdAt])
   @@index([createdByUserId])
   @@map("spaces")
+}
+
+/// A doctor identity for request collection, independent of Rakazo users and Bots.
+model CallDoctor {
+  id String @id @default(cuid())
+  spaceId String
+  space Space @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  code String
+  name String
+  email String
+  active Boolean @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  requests CallRequest[]
+  sessions CallDoctorSession[]
+  @@unique([spaceId, code])
+  @@unique([spaceId, email])
+  @@unique([id, spaceId])
+  @@map("call_doctors")
+}
+
+model CallRequest {
+  id String @id @default(cuid())
+  doctorId String
+  spaceId String
+  doctor CallDoctor @relation(fields: [doctorId, spaceId], references: [id, spaceId], onDelete: Cascade)
+  date String
+  type String
+  shift String @default("")
+  text String @default("")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  deletedAt DateTime?
+  deletedByUserId String?
+  @@index([spaceId, date, deletedAt])
+  @@index([doctorId, date, deletedAt])
+  @@map("call_requests")
+}
+
+/// One durable rate-limit/challenge slot per normalized email, including unknown emails.
+model CallRequestLogin {
+  spaceId String
+  space Space @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  emailKey String
+  codeHash String?
+  expiresAt DateTime
+  attempts Int @default(0)
+  sentAt DateTime
+  windowStart DateTime
+  sends Int @default(0)
+  @@id([spaceId, emailKey])
+  @@index([expiresAt])
+  @@map("call_request_logins")
+}
+
+model CallDoctorSession {
+  tokenHash String @id
+  doctorId String
+  spaceId String
+  doctor CallDoctor @relation(fields: [doctorId, spaceId], references: [id, spaceId], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  @@index([doctorId])
+  @@index([expiresAt])
+  @@map("call_doctor_sessions")
 }
 
 model SpaceMember {

@@ -13,38 +13,6 @@ msgstr ""
 "Language-Team: \n"
 "Plural-Forms: \n"
 
-#: src/components/QuestionCard.tsx
-msgid "Question"
-msgstr "Question"
-
-#: src/components/QuestionCard.tsx
-msgid "Answer later"
-msgstr "Answer later"
-
-#: src/components/QuestionCard.tsx
-msgid "Answer question"
-msgstr "Answer question"
-
-#: src/components/QuestionCard.tsx
-msgid "Choose an answer"
-msgstr "Choose an answer"
-
-#: src/components/QuestionCard.tsx
-msgid "Your own response"
-msgstr "Your own response"
-
-#: src/components/QuestionCard.tsx
-msgid "Or write your own response"
-msgstr "Or write your own response"
-
-#: src/components/QuestionCard.tsx
-msgid "Sending..."
-msgstr "Sending..."
-
-#: src/components/QuestionCard.tsx
-msgid "Recommended"
-msgstr "Recommended"
-
 #: src/pages/Shell.tsx
 msgid " (unread)"
 msgstr " (읽지 않음)"
@@ -368,6 +336,10 @@ msgstr ""
 msgid "Action confirmations"
 msgstr "작업 실행 전 확인"
 
+#: src/pages/CallRequests.tsx
+msgid "Actions"
+msgstr "Actions"
+
 #. placeholder {0}: bot.name
 #. placeholder {0}: group.spaceName
 #. placeholder {0}: sectionMenu.section.name
@@ -444,6 +416,10 @@ msgstr "백업으로 사용할 연결된 모델을 추가하세요."
 msgid "Add credential"
 msgstr ""
 
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Add doctor"
+msgstr "Add doctor"
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Add Executor"
 msgstr "Executor 추가"
@@ -472,6 +448,10 @@ msgstr "OpenAPI 추가"
 #: src/pages/PluginsOverlay.tsx
 msgid "Add remote MCP server"
 msgstr "원격 MCP 서버 추가"
+
+#: src/pages/CallRequests.tsx
+msgid "Add request"
+msgstr "Add request"
 
 #: src/pages/McpServersOverlay.tsx
 msgid "Add server"
@@ -604,7 +584,16 @@ msgstr "이 서비스에는 구독 로그인이 아니라 API 키가 저장되�
 msgid "Answer"
 msgstr "답변"
 
+#: src/components/QuestionCard.tsx
+msgid "Answer later"
+msgstr "Answer later"
+
+#: src/components/QuestionCard.tsx
+msgid "Answer question"
+msgstr "Answer question"
+
 #: src/components/AskCard.tsx
+#: src/components/QuestionCard.tsx
 msgid "Answered"
 msgstr "응답함"
 
@@ -793,6 +782,14 @@ msgstr "아바타"
 msgid "Back"
 msgstr "뒤로"
 
+#: src/pages/CallRequests.tsx
+msgid "Back to Agents"
+msgstr "Back to Agents"
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Back to doctors"
+msgstr "Back to doctors"
+
 #: src/pages/Auth.tsx
 msgid "Back to sign in"
 msgstr "로그인으로 돌아가기"
@@ -908,6 +905,11 @@ msgstr ""
 msgid "Built-in"
 msgstr "기본 제공"
 
+#: src/pages/CallRequests.tsx
+#: src/pages/Shell.tsx
+msgid "Call requests"
+msgstr "Call requests"
+
 #: src/App.tsx
 msgid "Can't reach the server."
 msgstr "서버에 연결할 수 없습니다."
@@ -918,6 +920,8 @@ msgstr "서버에 연결할 수 없습니다."
 #: src/components/markdown-link-prompt.tsx
 #: src/components/teach/TeachComputerOverlay.tsx
 #: src/pages/Artifacts.tsx
+#: src/pages/CallDoctorDirectory.tsx
+#: src/pages/CallRequests.tsx
 #: src/pages/KnowledgeSection.tsx
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
@@ -926,6 +930,11 @@ msgstr "서버에 연결할 수 없습니다."
 #: src/pages/shell/dialogs.tsx
 msgid "Cancel"
 msgstr "취소"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.cancel"
+msgstr "Cancel"
 
 #: src/pages/shell/bot-panel.tsx
 msgid "Cancel new bot"
@@ -1006,6 +1015,15 @@ msgstr "확인해 주세요."
 msgid "Check the API key or sign-in, then test again."
 msgstr "API 키 또는 로그인을 확인한 뒤 다시 테스트하세요."
 
+#. placeholder {0}: reason.row
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Check the doctor details on row {0}."
+msgstr "Check the doctor details on row {0}."
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Check the name, email and Staff ID."
+msgstr "Check the name, email and Staff ID."
+
 #: src/lib/model-connection-preflight.ts
 msgid "Check the server URL and network, then test again."
 msgstr "서버 URL과 네트워크를 확인한 뒤 다시 테스트하세요."
@@ -1029,6 +1047,21 @@ msgstr "확인 중…"
 msgid "Checkout has local changes. Clean it before updating."
 msgstr "체크아웃에 로컬 변경 사항이 있습니다. 업데이트하기 전에 정리하세요."
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.name"
+msgstr "Checkpoint name"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.tree"
+msgstr "Checkpoint tree, drag to pan"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.title"
+msgstr "Checkpoints"
+
 #: src/pages/shell/avatar-studio-popover.tsx
 msgid "Choose a bot shape, color, or upload an image"
 msgstr "봇 모양과 색을 고르거나 이미지를 업로드하세요"
@@ -1037,9 +1070,17 @@ msgstr "봇 모양과 색을 고르거나 이미지를 업로드하세요"
 msgid "Choose a bot…"
 msgstr "Bot 선택…"
 
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Choose a CSV with up to 1,000 doctors, under 512 KB."
+msgstr "Choose a CSV with up to 1,000 doctors, under 512 KB."
+
 #: src/pages/Auth.tsx
 msgid "Choose a new password"
 msgstr "새 비밀번호 선택"
+
+#: src/components/QuestionCard.tsx
+msgid "Choose an answer"
+msgstr "Choose an answer"
 
 #: src/pages/shell/avatar-studio-popover.tsx
 msgid "Choose file"
@@ -1352,6 +1393,7 @@ msgid "Context limit"
 msgstr "컨텍스트 한도"
 
 #: src/components/integrations/IntegrationSetup.tsx
+#: src/components/QuestionCard.tsx
 #: src/pages/Onboarding.tsx
 msgid "Continue"
 msgstr "계속"
@@ -1370,10 +1412,11 @@ msgid "Continue with email"
 msgstr "이메일로 계속하기"
 
 #: src/components/ComputersUnavailableHint.tsx
+#: src/pages/CallRequests.tsx
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
 msgid "Copied"
-msgstr ""
+msgstr "Copied"
 
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
@@ -1384,6 +1427,14 @@ msgstr "복사"
 #: src/components/ComputersUnavailableHint.tsx
 msgid "Copy .env example"
 msgstr ""
+
+#: src/pages/CallRequests.tsx
+msgid "Copy doctor link"
+msgstr "Copy doctor link"
+
+#: src/pages/CallRequests.tsx
+msgid "Copy month table"
+msgstr "Copy month table"
 
 #: src/pages/ScratchpadSection.tsx
 msgid "Could not add"
@@ -1586,6 +1637,11 @@ msgstr ""
 msgid "Could not load bots. Reload to try again."
 msgstr ""
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.loadError"
+msgstr "Could not load checkpoints."
+
 #: src/components/computer/TerminalApp.tsx
 msgid "Could not load commands"
 msgstr ""
@@ -1672,6 +1728,10 @@ msgstr "모델 서버에 연결하지 못했습니다."
 msgid "Could not reach the server"
 msgstr "서버에 연결할 수 없습니다"
 
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Could not read this file. Choose a CSV."
+msgstr "Could not read this file. Choose a CSV."
+
 #: src/pages/ScratchpadSection.tsx
 msgid "Could not remove"
 msgstr "삭제하지 못했습니다."
@@ -1730,6 +1790,10 @@ msgstr "자동 검토를 저장할 수 없습니다"
 #: src/pages/ModelBackupsSettings.tsx
 msgid "Could not save backup models"
 msgstr "백업 모델을 저장하지 못했습니다."
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Could not save doctors. Try again."
+msgstr "Could not save doctors. Try again."
 
 #: src/pages/GroupPanel.tsx
 msgid "Could not save group"
@@ -1792,6 +1856,7 @@ msgid "Could not start teaching"
 msgstr "가르치기를 시작하지 못했습니다."
 
 #: src/components/AskCard.tsx
+#: src/components/QuestionCard.tsx
 msgid "Could not submit this answer"
 msgstr "답변을 보내지 못했습니다."
 
@@ -1941,6 +2006,10 @@ msgstr "봇 아바타 맞춤설정"
 msgid "Dark"
 msgstr "다크"
 
+#: src/pages/CallRequests.tsx
+msgid "Date"
+msgstr "Date"
+
 #: src/lib/billing.ts
 #: src/pages/RoutineSchedule.tsx
 msgid "day"
@@ -2023,6 +2092,17 @@ msgstr "그룹 삭제"
 msgid "Delete memories too"
 msgstr "기억도 함께 삭제"
 
+#. placeholder {0}: row.date
+#: src/pages/CallRequests.tsx
+msgid "Delete request for {0}"
+msgstr "Delete request for {0}"
+
+#. placeholder {0}: row.doctorName
+#. placeholder {1}: row.date
+#: src/pages/CallRequests.tsx
+msgid "Delete request from {0} for {1}"
+msgstr "Delete request from {0} for {1}"
+
 #: src/pages/Shell.tsx
 msgid "Delete space"
 msgstr ""
@@ -2076,6 +2156,10 @@ msgstr "세부 정보"
 #: src/components/integrations/IntegrationSetup.tsx
 msgid "Direct MCP"
 msgstr ""
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Disabled"
+msgstr "Disabled"
 
 #: src/pages/shell/bot-panel.tsx
 msgid "Disabled tools"
@@ -2138,6 +2222,18 @@ msgstr ""
 msgid "Docker limits access to your computer for added security. Using {hostLabel} lets bots work with your local files and tools."
 msgstr "Docker는 보안을 위해 컴퓨터 접근을 제한합니다. {hostLabel}에서는 Bot이 로컬 파일과 도구로 작업할 수 있습니다."
 
+#: src/pages/CallRequests.tsx
+msgid "Doctor"
+msgstr "Doctor"
+
+#: src/pages/CallRequests.tsx
+msgid "Doctor sign-in is unavailable. Contact your administrator."
+msgstr "Doctor sign-in is unavailable. Contact your administrator."
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Doctors"
+msgstr "Doctors"
+
 #: src/pages/Auth.tsx
 msgid "Don’t have an account?"
 msgstr "계정이 없나요?"
@@ -2192,9 +2288,22 @@ msgstr "복제"
 msgid "e.g. Hivenet Agent, Presales, Timesheets bot"
 msgstr "예: Hivenet Agent, Presales, 근무표 봇"
 
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Each doctor needs a unique Staff ID and email."
+msgstr "Each doctor needs a unique Staff ID and email."
+
 #: src/components/AskCard.tsx
 msgid "Edit"
 msgstr "편집"
+
+#. placeholder {0}: doctor.name
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Edit {0}"
+msgstr "Edit {0}"
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Edit doctor"
+msgstr "Edit doctor"
 
 #: src/components/AskCard.tsx
 msgid "Edit first"
@@ -2204,7 +2313,17 @@ msgstr "수정 후 보내기"
 msgid "Edit Profile"
 msgstr "Bot 정보 수정"
 
+#: src/pages/CallRequests.tsx
+msgid "Edit request"
+msgstr "Edit request"
+
+#. placeholder {0}: row.date
+#: src/pages/CallRequests.tsx
+msgid "Edit request for {0}"
+msgstr "Edit request for {0}"
+
 #: src/pages/Auth.tsx
+#: src/pages/CallDoctorDirectory.tsx
 msgid "Email"
 msgstr "이메일"
 
@@ -2215,6 +2334,10 @@ msgstr "이 이메일은 가입이 허용되지 않습니다"
 #: src/lib/user-error.ts
 msgid "Email verification required"
 msgstr "이메일 인증이 필요합니다"
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Enabled"
+msgstr "Enabled"
 
 #: src/pages/BillingSettingsPanel.tsx
 msgid "Ends {day}"
@@ -2558,6 +2681,10 @@ msgstr "조작 끝내기"
 msgid "If you heard that, voice is ready."
 msgstr "샘플이 들렸다면 음성 설정이 완료되었습니다."
 
+#: src/pages/CallRequests.tsx
+msgid "If your email is registered, a verification code has been sent."
+msgstr "If your email is registered, a verification code has been sent."
+
 #: src/pages/ExternalConversationSettings.tsx
 msgid "Ignore"
 msgstr ""
@@ -2565,6 +2692,18 @@ msgstr ""
 #: src/pages/shell/avatar-studio-popover.tsx
 msgid "Image upload area"
 msgstr "이미지 업로드 영역"
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Import CSV"
+msgstr "Import CSV"
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Import doctor CSV"
+msgstr "Import doctor CSV"
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Import doctors"
+msgstr "Import doctors"
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Import OpenAPI JSON"
@@ -2743,6 +2882,11 @@ msgstr "웹 이미지 자동으로 불러오기"
 msgid "Loading activity…"
 msgstr "활동을 불러오는 중…"
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.loading"
+msgstr "Loading checkpoints…"
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Loading integrations…"
 msgstr "연동 목록을 불러오는 중…"
@@ -2774,6 +2918,7 @@ msgstr "음성 서비스를 불러오는 중…"
 #: src/App.tsx
 #: src/pages/Artifacts.tsx
 #: src/pages/Auth.tsx
+#: src/pages/CallRequests.tsx
 #: src/pages/IntegrationSetup.tsx
 #: src/pages/ModelBackupsSettings.tsx
 #: src/pages/Onboarding.tsx
@@ -2827,6 +2972,10 @@ msgstr ""
 msgid "Manage billing"
 msgstr ""
 
+#: src/pages/CallRequests.tsx
+msgid "Manage doctors"
+msgstr "Manage doctors"
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Manage MCP servers"
 msgstr "MCP 서버 관리"
@@ -2842,6 +2991,11 @@ msgstr "작업공간에서 사용할 장기 기억 서비스를 관리합니다.
 #: src/pages/PluginsOverlay.tsx
 msgid "Manual"
 msgstr ""
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.manual"
+msgstr "Manual checkpoint"
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Manual setup required"
@@ -3050,9 +3204,17 @@ msgstr ""
 msgid "Monthly"
 msgstr "매월"
 
+#: src/pages/CallRequests.tsx
+msgid "Monthly limit reached."
+msgstr "Monthly limit reached."
+
 #: src/pages/Shell.tsx
 msgid "More"
 msgstr ""
+
+#: src/pages/CallRequests.tsx
+msgid "More actions"
+msgstr "More actions"
 
 #: src/components/ComputerMaintenanceActions.tsx
 msgid "More computer actions"
@@ -3080,6 +3242,7 @@ msgstr "음소거"
 
 #: src/components/teach/SkillDraftCard.tsx
 #: src/pages/Auth.tsx
+#: src/pages/CallDoctorDirectory.tsx
 #: src/pages/GroupPanel.tsx
 #: src/pages/RoutineEditor.tsx
 #: src/pages/shell/bot-credentials.tsx
@@ -3087,6 +3250,11 @@ msgstr "음소거"
 #: src/pages/shell/dialogs.tsx
 msgid "Name"
 msgstr "이름"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.namePlaceholder"
+msgstr "Name (optional)"
 
 #: src/pages/shell/bot-panel.tsx
 msgid "Name this bot"
@@ -3133,6 +3301,10 @@ msgstr "새 진행 작업"
 #: src/pages/Auth.tsx
 msgid "New password"
 msgstr "새 비밀번호"
+
+#: src/pages/CallRequests.tsx
+msgid "New request"
+msgstr "New request"
 
 #: src/pages/BotContextMenu.tsx
 #: src/pages/shell/dialogs.tsx
@@ -3183,13 +3355,26 @@ msgstr ""
 msgid "No bots match"
 msgstr ""
 
+#: src/pages/CallRequests.tsx
+msgid "No call"
+msgstr "No call"
+
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "No chat apps linked yet."
 msgstr "아직 연결된 채팅 앱이 없습니다."
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.empty"
+msgstr "No checkpoints yet."
+
 #: src/pages/shell/bot-credentials.tsx
 msgid "No credentials saved for this bot."
 msgstr ""
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "No doctors added."
+msgstr "No doctors added."
 
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "No group chats yet."
@@ -3239,6 +3424,10 @@ msgstr "검색된 AI 서비스가 없습니다."
 msgid "No remote MCP servers found"
 msgstr ""
 
+#: src/pages/CallRequests.tsx
+msgid "No requests this month."
+msgstr "No requests this month."
+
 #: src/pages/PluginsOverlay.tsx
 #: src/pages/SpaceSearch.tsx
 msgid "No results"
@@ -3271,6 +3460,11 @@ msgstr ""
 #: src/pages/RoutineEditor.tsx
 msgid "No trigger"
 msgstr "트리거 없음"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.noPrompt"
+msgstr "No user message at this checkpoint."
 
 #: src/pages/ScratchpadSection.tsx
 msgid "None yet"
@@ -3433,6 +3627,10 @@ msgstr "또는 API 키 연결"
 msgid "Or paste an API key"
 msgstr "또는 API 키 붙여넣기"
 
+#: src/components/QuestionCard.tsx
+msgid "Or write your own response"
+msgstr "Or write your own response"
+
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "Organic"
 msgstr "자연스럽게"
@@ -3449,6 +3647,10 @@ msgstr "원본 메시지를 사용할 수 없습니다"
 #: src/pages/Onboarding.tsx
 msgid "Other model…"
 msgstr "다른 모델 직접 입력…"
+
+#: src/pages/CallRequests.tsx
+msgid "Others"
+msgstr "Others"
 
 #: src/pages/Board.tsx
 msgid "Owner"
@@ -3537,6 +3739,20 @@ msgstr "플러그인"
 msgid "POST to"
 msgstr "POST 대상"
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.preRollback"
+msgstr "Pre-rollback checkpoint"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.preSolve"
+msgstr "Pre-solve checkpoint"
+
+#: src/pages/CallRequests.tsx
+msgid "Prefer call"
+msgstr "Prefer call"
+
 #. placeholder {0}: props.name
 #: src/components/ArtifactFileCard.tsx
 msgid "Preview {0}"
@@ -3580,6 +3796,10 @@ msgstr "서비스"
 msgid "Pull request"
 msgstr "풀 리퀘스트"
 
+#: src/components/QuestionCard.tsx
+msgid "Question"
+msgstr "Question"
+
 #: src/pages/ActivityList.tsx
 msgid "Queued"
 msgstr "대기 중"
@@ -3616,6 +3836,10 @@ msgstr ""
 #: src/pages/ActivityList.tsx
 msgid "Recent"
 msgstr "최근"
+
+#: src/components/QuestionCard.tsx
+msgid "Recommended"
+msgstr "Recommended"
 
 #: src/pages/McpServersOverlay.tsx
 msgid "Reconnect OAuth"
@@ -3695,6 +3919,10 @@ msgstr "화면 새로고침"
 #: src/components/teach/TeachComputerOverlay.tsx
 msgid "Refreshing…"
 msgstr "새로고침 중…"
+
+#: src/pages/CallRequests.tsx
+msgid "Registered email"
+msgstr "Registered email"
 
 #: src/lib/user-error.ts
 msgid "Registration is closed"
@@ -3819,6 +4047,14 @@ msgstr ""
 msgid "Replying to {0}"
 msgstr ""
 
+#: src/pages/CallRequests.tsx
+msgid "Request"
+msgstr "Request"
+
+#: src/pages/CallRequests.tsx
+msgid "Request month"
+msgstr "Request month"
+
 #: src/pages/shell/message-cards.tsx
 msgid "Research & writing"
 msgstr ""
@@ -3865,6 +4101,21 @@ msgstr ""
 msgid "Restore"
 msgstr "복원"
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.restore"
+msgstr "Restore"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.restoreNode"
+msgstr "Restore checkpoint"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.restoreError"
+msgstr "Restore did not complete. Please try again."
+
 #: src/components/ComputerMaintenanceActions.tsx
 msgid "Restore the last saved workspace."
 msgstr "마지막으로 저장한 작업 공간을 복원합니다."
@@ -3872,6 +4123,11 @@ msgstr "마지막으로 저장한 작업 공간을 복원합니다."
 #: src/components/ComputerMaintenanceActions.tsx
 msgid "Restore the last saved workspace. Unsaved work on the computer is lost."
 msgstr "마지막으로 저장된 작업 공간을 복원합니다. 컴퓨터에서 저장하지 않은 작업은 사라집니다."
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.confirm"
+msgstr "Restore this checkpoint?"
 
 #: src/components/AskCard.tsx
 msgid "Restored"
@@ -3962,6 +4218,11 @@ msgstr "실행 중"
 msgid "Running · Stop"
 msgstr "실행 중 · 중지"
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.description"
+msgstr "Running tasks will stop. Any changes will be saved as a pre-rollback checkpoint."
+
 #: src/pages/RoutineEditor.tsx
 msgid "Running…"
 msgstr "실행 중…"
@@ -3973,6 +4234,8 @@ msgstr ""
 #: src/components/AskCard.tsx
 #: src/components/teach/SkillDraftCard.tsx
 #: src/pages/Board.tsx
+#: src/pages/CallDoctorDirectory.tsx
+#: src/pages/CallRequests.tsx
 #: src/pages/ExternalConversationSettings.tsx
 #: src/pages/GroupPanel.tsx
 #: src/pages/KnowledgeSection.tsx
@@ -4119,6 +4382,10 @@ msgstr "10분 안에 채팅 앱에서 연결할 회선으로 <0>{linkCode}</0>�
 msgid "Send answer"
 msgstr "답변 보내기"
 
+#: src/pages/CallRequests.tsx
+msgid "Send code"
+msgstr "Send code"
+
 #: src/components/AccountAccess.tsx
 msgid "Send deletion code"
 msgstr "삭제 코드 보내기"
@@ -4134,6 +4401,10 @@ msgstr "재설정 링크 보내기"
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "Send with Enter"
 msgstr "Enter 키로 전송"
+
+#: src/components/QuestionCard.tsx
+msgid "Sending..."
+msgstr "Sending..."
 
 #: src/components/AskCard.tsx
 msgid "Sending…"
@@ -4163,6 +4434,11 @@ msgstr "서버 이름"
 #: src/pages/Onboarding.tsx
 msgid "Server URL"
 msgstr "서버 URL"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.set"
+msgstr "Set a checkpoint"
 
 #: src/components/call/CallCard.tsx
 #: src/pages/MessagingSettingsOverlay.tsx
@@ -4208,6 +4484,10 @@ msgstr "공유 스킬"
 #: src/components/computer/TerminalApp.tsx
 msgid "Shell"
 msgstr "셸"
+
+#: src/pages/CallRequests.tsx
+msgid "Shift (optional)"
+msgstr "Shift (optional)"
 
 #: src/pages/Shell.tsx
 msgid "Show bots"
@@ -4263,6 +4543,11 @@ msgstr ""
 msgid "Sign in to Rakazo"
 msgstr "Rakazo 로그인"
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.signIn"
+msgstr "Sign in to use checkpoints."
+
 #: src/lib/user-error.ts
 msgid "Sign in to your existing account to link SSO"
 msgstr "SSO를 연결하려면 기존 계정에 로그인하세요"
@@ -4270,6 +4555,10 @@ msgstr "SSO를 연결하려면 기존 계정에 로그인하세요"
 #: src/lib/model-connection-preflight.ts
 msgid "Sign in with the subscription, or test the API key instead."
 msgstr "구독으로 로그인하거나 대신 API 키를 테스트하세요."
+
+#: src/pages/CallRequests.tsx
+msgid "Sign out"
+msgstr "Sign out"
 
 #: src/pages/Auth.tsx
 #: src/pages/Welcome.tsx
@@ -4355,6 +4644,10 @@ msgstr "음성 모델"
 #: src/lib/user-error.ts
 msgid "SSO is temporarily unavailable. Try again."
 msgstr "SSO를 일시적으로 사용할 수 없습니다. 다시 시도하세요."
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Staff ID"
+msgstr "Staff ID"
 
 #: src/pages/Paywall.tsx
 msgid "Start {trialDays}-day free trial"
@@ -4464,6 +4757,7 @@ msgstr "작업 가르치기"
 msgid "Teaching in progress. Stop teaching before sending a new message."
 msgstr "작업을 가르치는 중입니다. 새 메시지를 보내려면 먼저 가르치기를 종료하세요."
 
+#: src/pages/SettingsOverlay.tsx
 #: src/pages/shell/bot-panel.tsx
 msgid "Team"
 msgstr "팀 공용"
@@ -4483,6 +4777,10 @@ msgstr "Teams 메시지"
 #: src/pages/RoutineEditor.tsx
 msgid "Teams not enabled"
 msgstr ""
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Template"
+msgstr "Template"
 
 #: src/components/computer/ComputerWorkspace.tsx
 msgid "Terminal"
@@ -4511,6 +4809,11 @@ msgstr "테스트 중…"
 #: src/components/SoftwareUpdateSection.tsx
 msgid "The API did not come back. Refresh this page."
 msgstr "API가 다시 작동하지 않습니다. 이 페이지를 새로 고침하세요."
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.operationError"
+msgstr "The checkpoint operation could not be completed. Please try again."
 
 #: src/lib/model-connection-preflight.ts
 msgid "The connection timed out."
@@ -4568,6 +4871,10 @@ msgstr "이 컴퓨터"
 #: src/pages/Artifacts.tsx
 msgid "This deletes all {0} versions of this artifact. This can't be undone."
 msgstr ""
+
+#: src/pages/CallDoctorDirectory.tsx
+msgid "This file has no doctors."
+msgstr "This file has no doctors."
 
 #: src/components/ArtifactFileCard.tsx
 msgid "This file is not valid UTF-8 text."
@@ -4693,9 +5000,15 @@ msgstr "다시 시도"
 msgid "Try the test again."
 msgstr "테스트를 다시 시도하세요."
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.turn"
+msgstr "Turn checkpoint"
+
+#: src/pages/CallRequests.tsx
 #: src/pages/shell/bot-credentials.tsx
 msgid "Type"
-msgstr ""
+msgstr "Type"
 
 #: src/components/teach/TeachRecordingChrome.tsx
 msgid "Type without recording"
@@ -4748,6 +5061,7 @@ msgid "Up to date"
 msgstr "최신 상태"
 
 #: src/components/SoftwareUpdateSection.tsx
+#: src/pages/CallDoctorDirectory.tsx
 msgid "Update"
 msgstr "업데이트"
 
@@ -4821,6 +5135,10 @@ msgstr "사용량"
 msgid "Use {hostLabel}"
 msgstr "{hostLabel} 사용"
 
+#: src/pages/CallDoctorDirectory.tsx
+msgid "Use a CSV with Staff ID, Name and Email columns."
+msgstr "Use a CSV with Staff ID, Name and Email columns."
+
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
 msgid "Use a found model"
@@ -4863,6 +5181,14 @@ msgstr ""
 msgid "Values are encrypted and never shown again."
 msgstr "값은 암호화되며 다시 표시되지 않습니다."
 
+#: src/pages/CallRequests.tsx
+msgid "Verification code"
+msgstr "Verification code"
+
+#: src/pages/CallRequests.tsx
+msgid "Verify"
+msgstr "Verify"
+
 #: src/pages/PluginsOverlay.tsx
 msgid "Verify and add"
 msgstr "확인 후 추가"
@@ -4878,6 +5204,11 @@ msgstr ""
 #: src/pages/RoutineRunHistory.tsx
 msgid "View chat"
 msgstr "채팅 보기"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.view"
+msgstr "View checkpoints"
 
 #: src/pages/SettingsOverlay.tsx
 #: src/pages/Shell.tsx
@@ -4976,6 +5307,26 @@ msgstr ""
 msgid "Working…"
 msgstr "처리 중…"
 
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.working"
+msgstr "Working…"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.stale"
+msgstr "Workspace changed. Please try again."
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.blocked"
+msgstr "Workspace recovery is incomplete. Choose a checkpoint to retry."
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.messagingBlocked"
+msgstr "Workspace recovery is incomplete. Messaging is paused."
+
 #: src/components/computer/TerminalApp.tsx
 msgid "Wrote {path}"
 msgstr ""
@@ -5032,6 +5383,10 @@ msgstr "사용 중인 OpenAI"
 #: src/lib/run-error.ts
 msgid "Your OpenRouter"
 msgstr "사용 중인 OpenRouter"
+
+#: src/components/QuestionCard.tsx
+msgid "Your own response"
+msgstr "Your own response"
 
 #: src/pages/Welcome.tsx
 msgid "Your team of always-on agents<0/>that you can give real work to."

@@ -3,6 +3,7 @@ import { createRostJobWatch, assertRostWatchTriggers } from "@rakazo/adapters";
 import { implement, ORPCError } from "@orpc/server";
 import { managedCatalog, managedChoiceAllowed, MANAGED_PROVIDER } from "./managed-services.js";
 import {developerAccess} from './developer-access.js';
+import { canManageCallRequests } from "./call-requests.js";
 import type {
   AdapterContext,
   AgentHomeStore,
@@ -6482,11 +6483,13 @@ function hostCredentials(active: boolean, provider: string) {
 }
 
 async function meDto(deps: RouterDeps, actor: Actor): Promise<Me> {
-  const [user, setup] = await Promise.all([
+  const [user, setup, callRequestManager] = await Promise.all([
     deps.prisma.user.findUniqueOrThrow({ where: { id: actor.userId } }),
     modelSetup(deps, actor),
+    canManageCallRequests(deps.prisma, actor),
   ]);
   return {
+    canManageCallRequests: callRequestManager,
     ticketBoardEnabled: deps.env.ticketBoardEnabled === true,
     managedServices: deps.env.agentRuntime === "codex",
     developerMode: developerAccess(actor),

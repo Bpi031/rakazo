@@ -300,6 +300,30 @@ loopback host. In `NODE_ENV=development`, captured messages are available from
 `http://127.0.0.1:3100/api/dev/emails` with cache disabled; the API logs only delivery
 metadata, never reset tokens. The inbox route is not registered in test, staging, or production.
 
+### Doctor call requests
+
+Managers open **Call requests** from the Agents sidebar. **Manage doctors** in the page menu opens
+the doctor list with add/edit forms. Bulk CSV imports use **Staff ID**, **Name**, and **Email**
+columns and show a preview before saving. **Template** next to **Import CSV** downloads an example.
+Staff IDs stay fixed when editing; the Enabled switch
+controls access. **Copy doctor link** in the same menu provides the doctor-page link.
+Doctors use that link and an emailed verification code without creating a Rakazo account. Configure
+`SMTP_URL` and `EMAIL_FROM` as above for delivery; local tests can use the email emulator.
+The server generates and stores a hashed verification code with a ten-minute expiry, sends it
+through SMTP, and verifies it server-side. Missing delivery configuration directs doctors to
+contact their administrator; mail settings are configured on the server, not in the doctor UI.
+
+Each doctor can keep up to five active requests per requested calendar month. Editing does not use
+another slot. Requests contain one date, an optional shift, and **No call**, **Prefer call**, or
+**Others** (free text). Doctors can manage only their own requests. Managers can remove entries and
+copy the remaining monthly table for an Agent. Requests belong to a Space and are independent of
+Bot workspaces and checkpoints.
+
+The copied table specifies hard constraints for No call and Prefer call. Others must first be
+interpreted as explicit rules, with clarification where needed. Relaxation requires demonstrated
+infeasibility and Manager approval through the existing rule workflow; copying requests grants no
+solver or policy authorization.
+
 ### Billing
 
 Billing stays off, with no paywall, unless `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, and
