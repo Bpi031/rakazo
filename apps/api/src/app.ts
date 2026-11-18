@@ -86,6 +86,8 @@ import { mountManagedUsage } from "./managed-usage.js";
 import { mountPriorityHttp } from "./policy-priorities-http.js";
 import { mountWorkspaceInsights, WorkspaceInsights } from "./workspace-insights.js";
 import { PriorityService } from "@rakazo/adapters";
+import { PolicyWorkflow } from "@rakazo/adapters";
+import { mountPolicyWorkflow } from "./policy-workflow-http.js";
 import type { Actor, AuthCapabilities } from "@rakazo/contracts";
 import { signupAllowlistBootUpdate, signupPolicyFromEnv } from "@rakazo/core";
 import type { Pool, PrismaClient } from "@rakazo/db";
@@ -679,6 +681,8 @@ export async function createApp(
       additionalWebOrigins: env.additionalWebOrigins,
       verifyPassword: async (request, password) => (await auth.api.verifyPassword({ body: { password }, headers: sessionHeaders(request) })).status,
     });
+    mountPolicyWorkflow(app, { service: new PolicyWorkflow({ prisma, sandbox }), actor: sessionActor,
+      webOrigin: env.webOrigin, additionalWebOrigins: env.additionalWebOrigins });
   }
   if (!teamMessagingEnabled()) mountDisabledTeamHttp(app, sessionActor);
   if (teamMessagingEnabled()) mountTeamHttp(app, {

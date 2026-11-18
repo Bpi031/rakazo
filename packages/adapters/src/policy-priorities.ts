@@ -32,7 +32,9 @@ const detailQuery = z.object({ section: z.enum(["groups", "rules"]), sourceSha25
   groupId: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).max(200).optional() }).strict();
 function argumentError(fields: string[]) {
   return { code: "ROST_RULE_PRIORITIES_ARGUMENTS", error: "Invalid rule-priority tool arguments.", fields,
-    action: "Use policy workspace/.../policy.rost and workingDirectory workspace or workspace/... . Absolute paths, traversal and control characters are not accepted. Preserve the actual input-resolution directory; do not guess a replacement. For an unchanged rerun use current without path arguments. For paged details use list with section and the current sourceSha256/snapshotSha256. Correct the call without duplicating numerical work; presentation registration is not a numerical readiness gate.",
+    action: fields.some(field => ["changes", "sourceSha256"].includes(field)) ?
+      "Soft-priority review requires the current sourceSha256 and at least one changed soft weight/tier. Empty changes cannot create approval. For a hard-rule modelling correction use policy_workflow review with separate baseline/candidate files. This tool never checks or grants policy approval." :
+      "Use exact workspace-relative policy/cwd paths without traversal; preserve the real input-resolution directory and do not guess a replacement. For paged details include current sourceSha256/snapshotSha256. This presentation tool is not an approval or numerical readiness gate.",
     solveStarted: false, policyApprovalGranted: false };
 }
 function boundedAgentResult(value: Data): Data {
@@ -63,7 +65,7 @@ export function priorityAgentResult(value: Data, query?: z.infer<typeof detailQu
     ruleCounts: { total: rules.length, hard: rules.filter((r) => r.tier !== "soft").length, soft: rules.filter((r) => r.tier === "soft").length },
     groupCount: groups.length, presentationStatus: value.presentationStatus, inputCount: value.inputs?.length ?? 0,
     inputsSha256: teamDigest(value.inputs ?? []), cnlSha256: typeof value.cnl === "string" ? createHash("sha256").update(value.cnl).digest("hex") : null,
-    ruleDetailsInline: false, solveStarted: false, policyApprovalGranted: false,
+    ruleDetailsInline: false, solveStarted: false, policyApprovalGranted: false, approvalStatus: "not_evaluated_by_this_tool",
     action: "Use list with section groups or rules, sourceSha256/snapshotSha256 and optional groupId/offset/limit for bounded details. Full CNL and review evidence are not inline; current only reconciles the registered policy." };
   summary.snapshotSha256 = teamDigest({ policy: value.policy, workingDirectory: value.workingDirectory,
     sourceSha256: value.sourceSha256, compilerSha256: value.compilerSha256, helperSha256,
@@ -257,9 +259,23 @@ export class PriorityService {
   }
   async agent(runId: string, args: Data) {
     const run = await this.deps.prisma.run.findUniqueOrThrow({ where: { id: runId } });
-    if (run.status !== "running" || !["user", "follow_up"].includes(run.trigger)) throw new Error("A direct owned agent turn is required");
+    if (run.status !== "running") throw new Error("A running owned agent turn is required");
+    const direct = ["user", "follow_up"].includes(run.trigger);
+    if (!direct) {
+      // Completion watches consume their routine before waking the agent, so active is not an authority check.
+      const routine = run.trigger === "routine" && run.routineId && run.threadId
+        ? await this.deps.prisma.routine.findFirst({ where: { id: run.routineId, userId: run.userId,
+          spaceId: run.spaceId, botId: run.botId, threadId: run.threadId }, select: { id: true } }) : null;
+      if (!routine) throw new Error("A direct owned agent turn is required");
+    }
     const user = await this.deps.prisma.user.findUniqueOrThrow({ where: { id: run.userId } });
     const actor = { userId: run.userId, spaceId: run.spaceId, email: user.email, isDeploymentOwner: false };
+    if (!direct && !["current", "list"].includes(args.operation)) {
+      await this.owned(actor, run.botId);
+      return { code: "ROST_RULE_PRIORITIES_DIRECT_TURN_REQUIRED", error: "Scheduled turns may read current/list, not register or propose policy changes.",
+        action: "Use current/list for the existing policy. Continue the authorized completion handoff without changing rules or starting another solve. Ask the owner in a direct turn if a new policy draft is needed.",
+        solveStarted: false, policyApprovalGranted: false };
+    }
     if (args.operation === "current") return priorityAgentResult(await this.current(actor, run.botId));
     if (args.operation === "list") {
       const parsed = detailQuery.safeParse(Object.fromEntries(["section", "sourceSha256", "snapshotSha256", "offset", "limit", "groupId"]
@@ -279,7 +295,7 @@ export class PriorityService {
   }
 }
 
-export const priorityTools = [{ name: "rule_priorities", description: "Read the policy you manage or propose an exact soft-rule draft. Use inspect after authoring/checking a native .rost file to register source/cwd; use current before modeling/solving to reconcile human draft selections. For an unchanged rerun use current, not re-registration of every frozen copy. This presentation tool is not a numerical readiness gate. Summarize requested rules in chat with present_report, not a separate Rule Priorities page or raw weight controls. A review operation automatically posts an authenticated inline draft-review card. Selection grants no contract approval or solve allowance. Source-pinned .rules.json business groups and compiler CNL are display/review evidence, not approval. Never applies, disables hard rules or starts/stops a solve. Inspect/review require policy workspace/.../policy.rost and workingDirectory workspace or workspace/...; neither field accepts /home/rakazo or other absolute paths. Never change cwd merely to pass this schema.",
+export const priorityTools = [{ name: "rule_priorities", description: "Read the policy you manage or propose an exact soft-rule draft. Use inspect after authoring/checking a native .rost file to register source/cwd; use current before modeling/solving to reconcile human draft selections. For an unchanged rerun use current, not re-registration of every frozen copy. Owned scheduled completion turns may only use current/list; inspect/review require a direct user turn. This presentation tool is not a numerical readiness gate or authority to adopt a draft during completion. Summarize requested rules in chat with present_report, not a separate Rule Priorities page or raw weight controls. A review operation automatically posts an authenticated inline draft-review card. Selection grants no contract approval or solve allowance. Source-pinned .rules.json business groups and compiler CNL are display/review evidence, not approval. Never applies, disables hard rules or starts/stops a solve. Inspect/review require policy workspace/.../policy.rost and workingDirectory workspace or workspace/...; neither field accepts /home/rakazo or other absolute paths. Never change cwd merely to pass this schema.",
   inputSchema: { type: "object", properties: { operation: { type: "string", enum: ["current", "inspect", "list", "review"] },
     section: { type: "string", enum: ["groups", "rules"], description: "For list: request bounded pages pinned to sourceSha256 and snapshotSha256 from current." },
     snapshotSha256: { type: "string", pattern: "^[a-f0-9]{64}$", description: "Exact current receipt snapshot digest; binds inputs, compiler, CNL and review context." },
@@ -287,6 +303,6 @@ export const priorityTools = [{ name: "rule_priorities", description: "Read the 
     groupId: { type: "string", maxLength: 200, description: "Optional exact business group ID for a rules page." },
     policy: { type: "string", maxLength: 1024, pattern: "^workspace/[^\\\\\\u0000-\\u001f]+$", description: "Exact policy file relative to the private home, e.g. workspace/case/policy.rost. No absolute paths or traversal." },
     workingDirectory: { type: "string", maxLength: 1024, pattern: "^workspace(?:/[^\\\\\\u0000-\\u001f]+)?$", description: "Actual input-resolution directory: workspace or workspace/case. Never /home/rakazo. For unchanged reruns prefer current without path arguments." }, sourceSha256: { type: "string" },
-    changes: { type: "array", maxItems: 200, items: { type: "object", properties: { id: { type: "string" }, weight: { type: "string" },
+    changes: { type: "array", minItems: 1, maxItems: 200, items: { type: "object", properties: { id: { type: "string" }, weight: { type: "string" },
       priority: { type: "string", enum: ["critical", "high", "normal", "low"] } }, required: ["id", "weight", "priority"], additionalProperties: false } } },
     required: ["operation"], additionalProperties: false } }];

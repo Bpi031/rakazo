@@ -83,7 +83,7 @@ const scheduleCreateProperties = {
   timezone: { type: "string", description: "IANA timezone (default UTC)." },
   rostJobOut: {
     type: "string", maxLength: 512,
-    description: "For Rost completion monitoring only: exact job directory relative to workspace (no workspace/ prefix). Requires a repeating timer. Polls without model calls while running; wakes once on completion, failure or required decision. Never starts or changes a solve.",
+    description: "For Rost completion monitoring only: exact job directory relative to workspace. For /home/rakazo/workspace/case/owned-job pass case/owned-job. Never pass an absolute path or workspace/ prefix. Requires a repeating timer. Polls without model calls while running; wakes once on completion, failure or required decision. Never starts or changes a solve.",
   },
 };
 

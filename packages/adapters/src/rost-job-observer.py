@@ -1,9 +1,57 @@
 """Read one private Rost job. No solving, control writes, licenses or model calls."""
 import hashlib
 import json
+import os
 from pathlib import Path
+import stat
 import subprocess
 import sys
+
+JOB_STATUSES = frozenset(("reserved", "preparing", "starting", "running", "stopping", "checking",
+                          "completed", "stopped", "failed", "recovery_required"))
+
+
+def outcome(status):
+    """Only a first-stage, native proof can diagnose the original hard model."""
+    if status.get('observed_status') == 'recovery_required' or status.get('status') == 'recovery_required':
+        return 'technical_failure'
+    if status.get('status') not in ('completed', 'stopped', 'failed'):
+        return 'running'
+    if status.get('status') == 'failed':
+        return 'technical_failure'
+    terminal = status.get('native_terminal') or {}
+    if status.get('checked_candidate'):
+        return 'candidate_needs_validation'
+    if (status.get('status') == 'completed' and terminal.get('status') == 'native_returned'
+            and type(terminal.get('native_status')) is int and terminal['native_status'] == 3
+            and type(terminal.get('stage')) is int and terminal['stage'] == 0
+            and terminal.get('solution_count') == 0 and not terminal.get('reason')):
+        return 'proven_infeasible'
+    return 'no_candidate_unknown'
+
+
+def verify_current_inputs(intent, root):
+    ledger = Path(intent['policy']).with_suffix('.rost-relax.json')
+    if ledger.exists() or ledger.is_symlink():
+        raise ValueError('The effective policy changed after this job')
+    if not isinstance(intent.get('inputs'), list) or not 1 <= len(intent['inputs']) <= 256:
+        raise ValueError('Missing bounded input pins')
+    total = 0
+    for pin in intent['inputs']:
+        path = Path(pin['path'])
+        relative = path.relative_to(root)
+        current = root
+        for part in relative.parts:
+            current = current / part
+            if part in ('', '.', '..') or current.is_symlink():
+                raise ValueError('Unstable input path')
+        with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), 'rb') as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                raise ValueError('Input must be regular')
+            raw = stream.read(16 * 1024**2 + 1)
+        total += len(raw)
+        if len(raw) > 16 * 1024**2 or total > 64 * 1024**2 or hashlib.sha256(raw).hexdigest() != pin['sha256']:
+            raise ValueError('Current inputs do not match the terminal proof')
 
 
 def observe(relative, *, workspace=Path("/home/rakazo/workspace")):
@@ -38,8 +86,16 @@ def observe(relative, *, workspace=Path("/home/rakazo/workspace")):
     status = json.loads(result.stdout)
     if status.get("schema") != "rost/solve-job/v1":
         raise ValueError("unsupported status")
+    if not isinstance(status.get("status"), str) or status["status"] not in JOB_STATUSES:
+        raise ValueError("unsupported job status")
+    if "observed_status" in status and status["observed_status"] != "recovery_required":
+        raise ValueError("unsupported observed status")
+    classification = outcome(status)
+    if classification == 'proven_infeasible':
+        verify_current_inputs(intent, root)
     return {"binding": binding, "deadlineUtc": identity["maximum_deadline_utc"],
             "status": status.get("status"),
+            "outcome": classification,
             **({"observedStatus": status["observed_status"]} if "observed_status" in status else {})}
 
 

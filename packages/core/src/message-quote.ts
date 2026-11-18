@@ -162,6 +162,8 @@ function replyBlockText(block: MessageBlock): string {
       return block.report.title;
     case "policy_review":
       return "Policy draft review";
+    case "policy_approval":
+      return "Manager policy review";
     case "agent_status":
       return "Agent status";
     case "steps":

@@ -1,4 +1,8 @@
 import { stuckWorkStatusMessages } from "./stuck-work.js";
+import { usageRunError } from "./usage-run-error.js";
+import { questionRunError } from "./question-run-error.js";
+import { nativeRunError } from "./native-run-error.js";
+import { rostWatchRunError } from "./rost-watch-run-error.js";
 
 export const MISSING_TOOL_FINAL_RESPONSE_ERROR =
   "The tools finished, but the model did not write a final answer. Rephrase the request and try again.";
@@ -40,6 +44,8 @@ export function normalizeRunError(
   translate: RunErrorTranslator = english,
   locale = "en-US",
 ): { summary: string; details: string } {
+  const accounting = usageRunError(details) ?? questionRunError(details) ?? nativeRunError(details) ?? rostWatchRunError(details);
+  if (accounting) return { ...accounting, summary: translate(accounting.summary) };
   const prefix = details.trim().match(/^(\d{3})\s*:\s*/);
   const body = details.trim().slice(prefix?.[0].length ?? 0);
   let parsed: unknown;

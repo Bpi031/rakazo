@@ -57,6 +57,7 @@ import { assertComputerHomeWritable } from "./home-ownership.js";
 import { mountCodexSessions } from "./codex-sessions.mjs";
 import { mountTeamObservations } from "./team-observations.js";
 import { mappedTeamHome } from "./team-role.js";
+import { loadPinnedComputers } from "./pinned-computers.js";
 import {
   assertRequestIdentity,
   attemptComputerControl,
@@ -98,6 +99,7 @@ import {
 } from "./supervisor-logic.js";
 
 loadRootEnv();
+const pinnedComputers = loadPinnedComputers();
 
 const dockerSocketPath = resolveDockerSocketPath();
 const docker = dockerSocketPath ? new Docker({ socketPath: dockerSocketPath }) : new Docker();
@@ -235,6 +237,7 @@ app.post("/computers", async (c) => {
       const existing = await findBotContainer(body.botId, body.spaceId);
       if (existing) {
         const info = await existing.inspect();
+        pinnedComputers.assertContainer(body.botId, info, networkMode);
         if (roleManaged && info.Config.Labels?.["rost.role"] !== body.role)
           throw new Error("Computer role changed; operator reconciliation required without automatic recreation");
         const desired = await docker.getImage(image).inspect();
@@ -294,6 +297,7 @@ app.post("/computers", async (c) => {
         }
       }
 
+      pinnedComputers.assertReplacementAllowed(body.botId);
       // Under a space cap, serialize count+create and incompatible replace (remove+create)
       // per space inside the bot lock. Replacements skip the admission check but still
       // take the lock so a temporary free slot cannot be stolen by another bot's create.
@@ -1051,6 +1055,8 @@ app.delete("/computers/:id", async (c) => {
     if (!botId) throw new Error("missing computer identity");
     return await withBotLifecycleLock(botId, async () => {
       const { container } = await managedContainer(id, botId, c.req.header("x-rakazo-space-id"));
+      if (pinnedComputers.has(botId))
+        return c.json({ error: "Pinned manager deletion requires operator reconciliation" }, 409);
       await withComputerScreenLock(id, async () => {
         await container.remove({ force: true }).catch(() => undefined);
         clearComputerScreenRegistry(computerScreens, computerScreenBoots, id);
@@ -1604,7 +1610,7 @@ async function reconnectBotComputer(
       if (status !== 404 && !/not connected|not found|no such/i.test(String(error))) throw error;
     });
   }
-  return network.connect({ Container: container.id }).then(
+  return network.connect(pinnedComputers.connectOptions(botId, container.id, computerNetworkNameFor(botId))).then(
     () => true,
     (error) => {
       // A leftover or conflicting endpoint, which a retry would not clear.
@@ -1655,6 +1661,7 @@ async function screenPeerIds() {
 // network cannot start again. Each user is disconnected first, and a failed
 // disconnect keeps the network for the same reason.
 async function removeUnusedComputerNetwork(name: string, computerId?: string) {
+  if (pinnedComputers.retainsNetwork(name)) return;
   const users = await docker.listContainers({ all: true, filters: { network: [name] } });
   const peerIds = await screenPeerIds();
   if (users.some((user) => user.Id !== computerId && !peerIds.has(user.Id))) return;
@@ -1711,6 +1718,8 @@ async function rekeyRestrictedBotNetwork(name: string, botId: string, owner: str
     info?.Options?.["com.docker.network.bridge.name"] === expectedBridge;
   const info = await inspect();
   if (info && !hasNamedBridge(info)) {
+    if (pinnedComputers.retainsNetwork(name))
+      throw new Error("Pinned manager network reconfiguration requires operator reconciliation");
     const network = docker.getNetwork(name);
     const containerIds = Object.keys(info.Containers ?? {});
     for (const containerId of containerIds) {

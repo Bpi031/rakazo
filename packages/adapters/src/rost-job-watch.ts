@@ -8,15 +8,16 @@ import { toComputerRef } from "./computer-support.js";
 
 const observer = readFileSync(new URL("./rost-job-observer.py", import.meta.url), "utf8");
 export const RostJobOut = z.string().min(1).max(512).refine(
-  (value) => !value.startsWith("/") && !/[\x00-\x1f\x7f\\]/.test(value)
+  (value) => !value.startsWith("/") && value !== "workspace" && !value.startsWith("workspace/") && !/[\x00-\x1f\x7f\\]/.test(value)
     && value.split("/").every((part) => part !== "" && part !== "." && part !== ".."),
   "Use an exact path relative to this bot's workspace",
 );
 const Observation = z.object({
   binding: z.string().regex(/^[a-f0-9]{64}$/),
   deadlineUtc: z.number().finite().positive(),
-  status: z.enum(["reserved", "preparing", "running", "stopping", "completed", "stopped", "failed", "recovery_required"]),
+  status: z.enum(["reserved", "preparing", "starting", "running", "stopping", "checking", "completed", "stopped", "failed", "recovery_required"]),
   observedStatus: z.literal("recovery_required").optional(),
+  outcome: z.enum(["running", "proven_infeasible", "candidate_needs_validation", "technical_failure", "no_candidate_unknown"]).optional(),
 }).strict();
 const Watch = z.object({
   schema: z.literal("rost/job-watch/v1"),
@@ -28,12 +29,20 @@ const Watch = z.object({
   failures: z.number().int().min(0).max(3),
   lastCheckedAt: z.string().optional(),
   lastStatus: z.string().max(64).optional(),
+  outcome: Observation.shape.outcome,
   wakeReason: z.enum(["completion", "failure", "required_decision"]).optional(),
 }).strict();
 type Scope = { userId: string; spaceId: string; botId: string };
 type Deps = { prisma: PrismaClient; sandbox?: SandboxProvider };
 
-async function observe(deps: Deps, scope: Scope, out: string) {
+export class RostJobObservationError extends Error {
+  constructor() {
+    super("ROST_JOB_WATCH_OBSERVATION: A supported owned-job status could not be read. Check the existing job; do not restart it.");
+    this.name = "RostJobObservationError";
+  }
+}
+
+export async function observeRostJob(deps: Deps, scope: Scope, out: string) {
   await memberScope(deps.prisma, scope.userId, scope.spaceId);
   const bot = await deps.prisma.bot.findFirstOrThrow({
     where: { id: scope.botId, userId: scope.userId, spaceId: scope.spaceId, archivedAt: null },
@@ -47,20 +56,27 @@ async function observe(deps: Deps, scope: Scope, out: string) {
     ...scope, operationId: "rost-watch:" + randomUUID(), traceId: "rost-job-observe",
     signal: AbortSignal.timeout(20_000),
   };
-  let stdout = "", code: number | undefined;
-  for await (const event of deps.sandbox.execute(toComputerRef(bot.computer), {
-    argv: ["/opt/office-python/bin/python3", "-I", "-c", observer, RostJobOut.parse(out)],
-    cwd: "/home/rakazo", timeoutMs: 15000,
-    unsetEnv: ["PYTHONPATH", "PYTHONHOME", "LD_PRELOAD"],
-  }, context)) {
-    if (event.type === "stdout") {
-      stdout += event.data;
-      if (Buffer.byteLength(stdout) > 8192) throw new Error("Observation cap");
+  const relativeOut = RostJobOut.parse(out);
+  let value: z.infer<typeof Observation>;
+  try {
+    let stdout = "", code: number | undefined;
+    for await (const event of deps.sandbox.execute(toComputerRef(bot.computer), {
+      argv: ["/opt/office-python/bin/python3", "-I", "-c", observer, relativeOut],
+      cwd: "/home/rakazo", timeoutMs: 15000,
+      unsetEnv: ["PYTHONPATH", "PYTHONHOME", "LD_PRELOAD"],
+    }, context)) {
+      if (event.type === "stdout") {
+        stdout += event.data;
+        if (Buffer.byteLength(stdout) > 8192) throw new Error("Observation cap");
+      }
+      if (event.type === "exit") code = event.code;
     }
-    if (event.type === "exit") code = event.code;
+    if (code !== 0) throw new Error("Observation unavailable");
+    value = Observation.parse(JSON.parse(stdout));
+  } catch {
+    // This is monitoring evidence, not a provider failure or permission to retry a solve.
+    throw new RostJobObservationError();
   }
-  if (code !== 0) throw new Error("Observation unavailable");
-  const value = Observation.parse(JSON.parse(stdout));
   // Revocation/reassignment during the read must not deliver into another space.
   await memberScope(deps.prisma, scope.userId, scope.spaceId);
   await deps.prisma.bot.findFirstOrThrow({ where: {
@@ -72,7 +88,7 @@ async function observe(deps: Deps, scope: Scope, out: string) {
 
 export async function createRostJobWatch(deps: Deps, scope: Scope, out: string, threadId?: string | null) {
   out = RostJobOut.parse(out);
-  const value = await observe(deps, scope, out);
+  const value = await observeRostJob(deps, scope, out);
   if (threadId && threadId !== value.threadId) throw new Error("A private owned bot thread is required");
   return Watch.parse({ schema: "rost/job-watch/v1", out, computerId: value.computerId,
     binding: value.binding, deadlineUtc: value.deadlineUtc, checks: 0, failures: 0 });
@@ -92,17 +108,19 @@ export function reduceRostWatch(raw: unknown, observation: unknown, at = new Dat
   else if (status === "completed" || status === "stopped") wakeReason = "completion";
   else if (at.getTime() / 1000 > previous.deadlineUtc + 180) wakeReason = "required_decision";
   return Watch.parse({ ...previous, checks: previous.checks + 1, failures,
-    lastCheckedAt: at.toISOString(), lastStatus: status, ...(wakeReason ? { wakeReason } : {}) });
+    lastCheckedAt: at.toISOString(), lastStatus: status,
+    outcome: matching ? parsed.data.outcome : undefined, ...(wakeReason ? { wakeReason } : {}) });
 }
 
 export async function pollRostJobWatch(deps: Deps, scope: Scope, raw: unknown) {
   const previous = Watch.parse(raw);
   let value;
   try {
-    const current = await observe(deps, scope, previous.out);
+    const current = await observeRostJob(deps, scope, previous.out);
     if (current.computerId === previous.computerId) value = {
       binding: current.binding, deadlineUtc: current.deadlineUtc,
       status: current.status, ...(current.observedStatus ? { observedStatus: current.observedStatus } : {}),
+      ...(current.outcome ? { outcome: current.outcome } : {}),
     };
   } catch { /* Bounded transient retries stay token-free; the third failure requests attention. */ }
   return reduceRostWatch(previous, value);

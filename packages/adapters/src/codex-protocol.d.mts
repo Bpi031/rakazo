@@ -4,7 +4,7 @@ export function runtimeConfig(env?: NodeJS.ProcessEnv): { baseUrl: string; model
 export function runtimeFailure(error: unknown): Error;
 export const TASK_EXECUTION_GUIDANCE: string;
 export class CodexProtocolRuntime implements AgentRuntime {
-  constructor(options: { baseUrl: string; models: string[]; key: string; reasoning?: ManagedReasoning; modalities?: Record<string, ("text" | "image")[]>; structuredOutputs?: Record<string, boolean>; requestMetrics?: boolean });
+  constructor(options: { baseUrl: string; models: string[]; key: string; reasoning?: ManagedReasoning; modalities?: Record<string, ("text" | "image")[]>; structuredOutputs?: Record<string, boolean>; requestMetrics?: boolean; validateQuestion?: typeof import("./codex-question-validation.js").validateCodexQuestion });
   describe(): ReturnType<AgentRuntime["describe"]>;
   abort(runId: string): Promise<void>;
   run(request: AgentRunRequest, context?: Partial<AdapterContext>): AsyncIterable<AgentRuntimeEvent>;

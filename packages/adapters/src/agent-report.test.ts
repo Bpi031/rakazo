@@ -21,9 +21,35 @@ it("help reads no files and does not give the model an apply or execute callback
   expect(reportInput.safeParse({ report_path: "workspace/report.json", execute: "rm" }).success).toBe(false);
   expect(reportInput.safeParse({ help: true, report_path: "workspace/report.json" }).success).toBe(false);
 });
-it("refuses failed reads and malformed renderer data without publishing", async () => {
+it("refuses unknown process failures but returns correctable renderer rejection without publishing", async () => {
   await expect(readAgentReport(sandbox({}, 1), {} as any, {} as any, { report_path: "workspace/x" })).rejects.toThrow();
-  await expect(readAgentReport(sandbox({ ...captured, report: { ...report, approved: true } }), {} as any, {} as any, { report_path: "workspace/x" })).rejects.toThrow();
+  expect(await readAgentReport(sandbox({ ...captured, report: { ...report, approved: true } }), {} as any, {} as any,
+    { report_path: "workspace/x" })).toMatchObject({ code: "ROST_REPORT_SCHEMA", reportPublished: false, solveStarted: false });
+});
+it("returns a bounded failed result for an uploaded source path without widening roots or retrying", async () => {
+  const io = sandbox({ code: "ROST_REPORT_SOURCE_PATH", sourceIndex: 7 }, 1);
+  const result = await readAgentReport(io, {} as any, {} as any, { report_path: "workspace/report.json" });
+  expect(result).toMatchObject({ code: "ROST_REPORT_SOURCE_PATH", sourceIndex: 7,
+    reportPublished: false, solveStarted: false });
+  expect(result).not.toHaveProperty("block");
+  expect(result).toHaveProperty("action", expect.stringContaining("verify matching SHA-256"));
+  expect(io.execute).toHaveBeenCalledOnce();
+  expect(await readAgentReport(sandbox({ code: "ROST_REPORT_SOURCE_READ", sourceIndex: 0 }, 1),
+    {} as any, {} as any, { report_path: "workspace/report.json" })).toHaveProperty("code", "ROST_REPORT_SOURCE_READ");
+});
+it("rejects bad arguments before file access and does not expose untrusted reader errors", async () => {
+  const io = sandbox({});
+  expect(await readAgentReport(io, {} as any, {} as any, { report_path: "attachments/upload.json" }))
+    .toMatchObject({ code: "ROST_REPORT_ARGUMENTS", reportPublished: false });
+  expect(io.execute).not.toHaveBeenCalled();
+  for (const value of [{ code: "ROST_REPORT_SOURCE_PATH", sourceIndex: 8 },
+    { code: "ROST_REPORT_READ_REJECTED", secret: "PRIVATE_KEY" }]) {
+    await expect(readAgentReport(sandbox(value, 1), {} as any, {} as any, { report_path: "workspace/x" }))
+      .rejects.toThrow("Report publication failed");
+  }
+  const broken = { execute: vi.fn(async function* () { throw new Error("sandbox unavailable"); }) } as any;
+  await expect(readAgentReport(broken, {} as any, {} as any, { report_path: "workspace/x" }))
+    .rejects.toThrow("sandbox unavailable");
 });
 it("publishes rather than showing help when help is explicitly false", async () => {
   const io = sandbox(captured);

@@ -133,6 +133,7 @@ export function blocksToAgentHistoryText(blocks: MessageBlock[]): string {
       if (block.kind === "chart") return `[chart: ${block.name}]`;
       if (block.kind === "agent_report") return `[agent analysis: ${block.report.title}; file ${block.evidence.reportPath}; SHA-256 ${block.evidence.reportSha256}] ${block.report.summary ?? ""}`;
       if (block.kind === "policy_review") return `[soft-rule draft review: ${block.reviewId}; not approval]`;
+      if (block.kind === "policy_approval") return `[manager policy review: ${block.reviewId}; check policy_workflow status for live authority]`;
       if (block.kind === "image") return `[image: ${block.name}]`;
       if (block.kind === "file") {
         return `[file: ${block.name} (${block.mimeType}, ${block.size} bytes)]`;

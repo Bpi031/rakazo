@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createRunExecutor } from "./executor.js";
+import { createScheduleFromTool } from "./schedule-tools.js";
 import { assertRostWatchTriggers, createRostJobWatch, pollRostJobWatch, reduceRostWatch, RostJobOut } from "./rost-job-watch.js";
 
 const observation = { binding: "a".repeat(64), deadlineUtc: Date.now()/1000 + 21600, status: "running" };
@@ -23,7 +24,8 @@ function fixture(status = "running") {
   const db: any = {
     spaceMember: {findUnique: vi.fn(async () => ({organizationId: "org", member: {role: "owner"}}))},
     teamMemberControl: {findUnique: vi.fn(async () => null)},
-    routine: {findUnique: vi.fn(async () => ({...routine})), updateMany: update},
+    routine: {findUnique: vi.fn(async () => ({...routine})), updateMany: update,
+      create: vi.fn(async ({data}: any) => ({...data,id:'new-watch'}))},
     bot: { findUnique: vi.fn(async () => bot), findFirstOrThrow: vi.fn(async () => bot) },
     thread: {findFirst: vi.fn(async () => ({id: "thread"}))},
     agentSkill: {findMany: vi.fn(async () => [])},
@@ -41,13 +43,62 @@ function fixture(status = "running") {
 
 describe("token-free owned Rost watch", () => {
   it("rejects absolute, traversal, control and ambiguous paths and non-timer triggers", () => {
-    for (const path of ["/tmp/job", "../job", "a//b", "a/./b", "a/../b", "a\0b", "a\\b", ""]) expect(RostJobOut.safeParse(path).success).toBe(false);
+    for (const path of ["/tmp/job", "../job", "a//b", "a/./b", "a/../b", "a\0b", "a\\b", "", "workspace", "workspace/case/job"]) expect(RostJobOut.safeParse(path).success).toBe(false);
     expect(RostJobOut.parse("case/job")).toBe("case/job");
     for (const input of [{crons: []}, {crons:["@once"]}, {crons:["* * * * *"], webhookEnabled:true}, {crons:["* * * * *"], githubEnabled:true}, {crons:["* * * * *"], messageProvider:"chat"}])
       expect(() => assertRostWatchTriggers(watch, input)).toThrow();
   });
-  it("running/stopping/preparing and quality stalls never wake a model", () => {
-    for (const status of ["reserved", "preparing", "running", "stopping"]) expect(reduceRostWatch(watch, {...observation,status}).wakeReason).toBeUndefined();
+  it("returns recoverable tool argument errors without database, shell, queue or model work", async () => {
+    const f = fixture();
+    for (const rostJobOut of ["/home/rakazo/workspace/case/owned-job", "workspace/case/owned-job", "../job", "a//b", "", "a\0b"]) {
+      expect(await createScheduleFromTool(f.deps, { ...scope, threadId: "thread", name: "Completion", prompt: "Validate existing result",
+        rostJobOut, schedule: { every: 1, unit: "minutes" } }))
+        .toMatchObject({ code: "ROST_JOB_WATCH_ARGUMENTS", fields: ["rostJobOut"], watchCreated: false, solveStarted: false });
+    }
+    expect(await createScheduleFromTool(f.deps, { ...scope, threadId: "thread", name: "Completion", prompt: "Validate existing result",
+      rostJobOut: watch.out, schedule: { delayMinutes: 10 } }))
+      .toMatchObject({ code: "ROST_JOB_WATCH_ARGUMENTS", fields: ["schedule"], watchCreated: false, solveStarted: false });
+    expect(f.db.bot.findFirstOrThrow).not.toHaveBeenCalled(); expect(f.execute).not.toHaveBeenCalled();
+    expect(f.deps.jobs.enqueue).not.toHaveBeenCalled(); expect(f.deps.events.append).not.toHaveBeenCalled();
+    expect(f.runCreate).not.toHaveBeenCalled(); expect(f.taskCreate).not.toHaveBeenCalled();
+  });
+  it("all active lifecycle phases and quality stalls never wake a model", () => {
+    for (const status of ["reserved", "preparing", "starting", "running", "stopping", "checking"]) {
+      const result=reduceRostWatch(watch, {...observation,status});
+      expect(result.wakeReason).toBeUndefined(); expect(result.failures).toBe(0); expect(result.lastStatus).toBe(status);
+    }
+  });
+  it.each(['starting','checking'])("registers and polls %s without model work", async status => {
+    const f=fixture(status);
+    expect(await createScheduleFromTool(f.deps, {...scope,threadId:'thread',name:'Completion',prompt:'Inspect the existing result',
+      rostJobOut:watch.out,schedule:{every:1,unit:'minutes'}})).toMatchObject({ok:true,monitor:'token_free_rost_job'});
+    expect(f.db.routine.create).toHaveBeenCalledTimes(1);
+    await createRunExecutor(f.deps).wakeRoutine('routine',f.due.toISOString());
+    expect(f.routine.jobWatch.lastStatus).toBe(status); expect(f.routine.jobWatch.failures).toBe(0);
+    expect(f.runCreate).not.toHaveBeenCalled(); expect(f.taskCreate).not.toHaveBeenCalled();
+    expect(f.db.agentSkill.findMany).not.toHaveBeenCalled();
+  });
+  it.each(['unknown-status','missing-status','malformed-json','bad-exit','transport','oversize'])(
+    'returns a monitoring tool error for %s without publishing a watch or aborting into a provider error', async kind => {
+      const f=fixture();
+      f.execute.mockImplementation(async function* () {
+        if(kind==='transport') throw new Error('private internal transport detail');
+        const data=kind==='malformed-json' ? 'broken' : kind==='oversize' ? 'x'.repeat(8193)
+          : JSON.stringify({...observation,status:kind==='missing-status' ? undefined : kind==='unknown-status' ? 'unexpected_phase' : 'running'});
+        yield {type:'stdout',data}; yield {type:'exit',code:kind==='bad-exit' ? 1 : 0};
+      });
+      const result=await createScheduleFromTool(f.deps,{...scope,threadId:'thread',name:'Completion',prompt:'Inspect result',
+        rostJobOut:watch.out,schedule:{every:1,unit:'minutes'}});
+      expect(result).toMatchObject({code:'ROST_JOB_WATCH_OBSERVATION',watchCreated:false,solveStarted:false,existingJobUnchanged:true});
+      expect(JSON.stringify(result)).not.toContain('private internal');
+      expect(f.db.routine.create).not.toHaveBeenCalled(); expect(f.deps.jobs.enqueue).not.toHaveBeenCalled();
+      expect(f.deps.events.append).not.toHaveBeenCalled(); expect(f.runCreate).not.toHaveBeenCalled();
+    });
+  it('does not convert denied membership into a retriable monitoring error', async () => {
+    const f=fixture(); f.db.spaceMember.findUnique.mockResolvedValue(null);
+    await expect(createScheduleFromTool(f.deps,{...scope,threadId:'thread',name:'Completion',prompt:'Inspect result',
+      rostJobOut:watch.out,schedule:{every:1,unit:'minutes'}})).rejects.toThrow(/membership/);
+    expect(f.execute).not.toHaveBeenCalled(); expect(f.db.routine.create).not.toHaveBeenCalled();
   });
   it("completion, failure and explicit recovery need exactly one attention event", () => {
     for (const [status,reason] of [["completed","completion"],["stopped","completion"],["failed","failure"],["recovery_required","required_decision"]]) {
@@ -67,6 +118,16 @@ describe("token-free owned Rost watch", () => {
     const failed = reduceRostWatch(watch, undefined);
     expect(reduceRostWatch(failed, observation).failures).toBe(0);
     expect(reduceRostWatch(watch, observation, new Date((observation.deadlineUtc+181)*1000)).wakeReason).toBe("required_decision");
+  });
+  it('unknown future phases fail closed after bounded token-free polling, never as completion', async () => {
+    const f=fixture('future_phase'); let current:any=watch;
+    for(let attempt=1;attempt<=3;attempt++) {
+      current=await pollRostJobWatch(f.deps,scope,current);
+      expect(current.failures).toBe(attempt);
+      expect(current.wakeReason).toBe(attempt===3 ? 'required_decision' : undefined);
+      expect(current.lastStatus).toBe('observation_unavailable');
+    }
+    expect(f.runCreate).not.toHaveBeenCalled(); expect(f.deps.jobs.enqueue).not.toHaveBeenCalled();
   });
   it("registration requires current private ownership, membership and the originating private thread", async () => {
     const f = fixture();

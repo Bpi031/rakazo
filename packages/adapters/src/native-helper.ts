@@ -1,4 +1,5 @@
 import { CodexProtocolRuntime, runtimeConfig } from "./codex-protocol.mjs";
+import { validateCodexQuestion } from "./codex-question-validation.js";
 import { nativeReadTools } from "@rakazo/contracts";
 import { AgentWorkbench } from "./agent-workbench.js";
 import { NativeControl } from "./native-control.js";
@@ -26,7 +27,7 @@ export async function nativeHelper(
     prisma: deps.prisma,
     helperAuthority: "native_read_only_worker",
     generate: async (input) => {
-      const runtime = new CodexProtocolRuntime(runtimeConfig());
+      const runtime = new CodexProtocolRuntime({ ...runtimeConfig(), validateQuestion: validateCodexQuestion });
       let text = "",
         usage: any;
       const signal = AbortSignal.any([

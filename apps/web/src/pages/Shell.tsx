@@ -286,6 +286,7 @@ import { ManagedModelPicker } from "../components/ManagedModelPicker";
 import { AgentReportCard } from "../components/AgentReportCard";
 import { AgentStatusPanel } from "../components/AgentStatusPanel";
 import { PolicyReviewCard } from "../components/PolicyReviewCard";
+import { PolicyOwnerCard } from "../components/PolicyOwnerCard";
 import { TeamWorkflowsPanel } from "../components/TeamWorkflowsPanel";
 import { AgentWorkbenchPanel } from "../components/AgentWorkbenchPanel";
 import { NativeAgentPanel } from "../components/NativeAgentPanel";
@@ -6093,7 +6094,7 @@ export const Composer = memo(function Composer({
             {!sendError && runError ? (
               <details key={runError} className="mt-1">
                 <summary className="w-fit cursor-pointer">{t`Details`}</summary>
-                <pre className="mt-2 whitespace-pre-wrap break-words text-xs">{runError}</pre>
+                <pre className="mt-2 whitespace-pre-wrap break-words text-xs">{normalizeRunError(runError, translateRunError, i18n.locale || "en").details}</pre>
               </details>
             ) : null}
           </div>
@@ -7089,6 +7090,11 @@ const MessageView = memo(function MessageView({
         }
         if (block.kind === "agent_report") {
           return <AgentReportCard key={i} block={block} onCompose={onCompose} />;
+        }
+        if (block.kind === "policy_approval") {
+          return "botId" in artifactTarget && artifactTarget.botId === block.botId ?
+            <PolicyOwnerCard key={i} botId={block.botId} reviewId={block.reviewId} /> :
+            <p key={i}>Open the original bot chat to review this policy.</p>;
         }
         if (block.kind === "policy_review") {
           return "botId" in artifactTarget && artifactTarget.botId === block.botId ?

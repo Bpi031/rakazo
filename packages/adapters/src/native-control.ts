@@ -11,6 +11,12 @@ import { teamDigest } from "./team-policy.js";
 const files = readFileSync(new URL('./native-files.py', import.meta.url), 'utf8');
 const json = (v: unknown) => JSON.parse(JSON.stringify(v)) as Prisma.InputJsonValue;
 export const nativeEnabled = () => process.env.ROST_AGENT_NATIVE === '1';
+export class NativeSessionBusyError extends Error {
+  constructor() {
+    super('ROST_NATIVE_SESSION_BUSY: Another owned agent turn is using this private session.');
+    this.name = 'NativeSessionBusyError';
+  }
+}
 export class NativeControl {
   constructor(private db: PrismaClient, private sandbox?: SandboxProvider) {}
   private async owned(actor: Actor, botId: string) {
@@ -64,7 +70,12 @@ export class NativeControl {
       const row = await tx.agentWorkbenchRecord.findUnique({ where: { id } });
       const priorRun=row?.runId?await tx.run.findUniqueOrThrow({where:{id:row.runId}}):null;
       const answeredPause=row?.runId===runId&&row.status==='needs_review'&&(row.payload as any)?.paused===true&&run.leaseFence>((row.payload as any)?.leaseFence??Number.MAX_SAFE_INTEGER);
-      if (priorRun&&['queued','leased','running','waiting_input','waiting_takeover'].includes(priorRun.status)&&!answeredPause) throw new Error('Native session already owned');
+      if (priorRun&&['queued','leased','running','waiting_input','waiting_takeover'].includes(priorRun.status)&&!answeredPause) {
+        // A different queued turn may wait. A duplicate attempt of this run must
+        // not release/requeue the live owner's lease or replay its tool effects.
+        if (row!.runId !== runId) throw new NativeSessionBusyError();
+        throw new Error('Native session already owned');
+      }
       const previous = row?.status === 'completed' && priorRun?.status==='completed' && (row.payload as any)?.fingerprint === ownedFingerprint ? (row.payload as any) : null;
       const action = p.action ?? 'none';
       if (['compact','fork'].includes(action) && (!previous || !p.persistence)) throw new Error('A completed matching persistent native session is required');

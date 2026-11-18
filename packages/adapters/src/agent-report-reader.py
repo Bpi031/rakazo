@@ -10,6 +10,13 @@ REPORT_CAP = 262144
 SOURCE_CAP = 64 * 1024 * 1024
 
 
+class ReportSourceRejected(ValueError):
+    def __init__(self, code, index):
+        self.code = code
+        self.index = index
+        super().__init__(code)
+
+
 def workspace_path(value):
     if not isinstance(value, str) or len(value) > 1024 or not value.startswith("workspace/"):
         raise ValueError("Use a workspace-relative path")
@@ -74,7 +81,14 @@ def read_report(report_path):
     paths = report.get("sourcePaths")
     if not isinstance(paths, list) or not 1 <= len(paths) <= 8 or len(set(paths)) != len(paths):
         raise ValueError("One to eight distinct sources required")
-    sources = [snapshot(path, SOURCE_CAP)[0] for path in paths]
+    sources = []
+    for index, path in enumerate(paths):
+        if not isinstance(path, str) or not path.startswith("workspace/"):
+            raise ReportSourceRejected("ROST_REPORT_SOURCE_PATH", index)
+        try:
+            sources.append(snapshot(path, SOURCE_CAP)[0])
+        except (ValueError, OSError) as error:
+            raise ReportSourceRejected("ROST_REPORT_SOURCE_READ", index) from error
     # Detect replacement or modification between sequential source reads.
     for previous in sources:
         if snapshot(previous["path"], SOURCE_CAP)[0] != previous:
@@ -88,6 +102,9 @@ if __name__ == "__main__":
     try:
         path = base64.b64decode(sys.argv[1], validate=True).decode("utf-8")
         print(json.dumps(read_report(path), ensure_ascii=True, allow_nan=False))
+    except ReportSourceRejected as error:
+        print(json.dumps({"code": error.code, "sourceIndex": error.index}))
+        sys.exit(1)
     except Exception:
-        print(json.dumps({"error": "Report/source read rejected; inspect paths, size, links and JSON locally"}))
+        print(json.dumps({"code": "ROST_REPORT_READ_REJECTED"}))
         sys.exit(1)

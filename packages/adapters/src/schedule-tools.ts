@@ -1,5 +1,5 @@
 import type { JobPublisher, SandboxProvider } from "@rakazo/adapter-kit";
-import { createRostJobWatch, assertRostWatchTriggers } from "./rost-job-watch.js";
+import { createRostJobWatch, assertRostWatchTriggers, RostJobOut, RostJobObservationError } from "./rost-job-watch.js";
 import { routineJobKey, routineWakeupJob } from "@rakazo/adapter-kit";
 import {
   cronFromPreset,
@@ -224,8 +224,28 @@ export async function createScheduleFromTool(
   const timezone = String(input.timezone ?? "UTC");
   const resolved = resolveScheduleTiming(input.schedule, timezone);
   if (!resolved.ok) return { error: resolved.error };
-  const jobWatch = input.rostJobOut
-    ? await createRostJobWatch(deps, input, input.rostJobOut, input.threadId) : undefined;
+  if (input.rostJobOut !== undefined && !RostJobOut.safeParse(input.rostJobOut).success) return {
+    code: "ROST_JOB_WATCH_ARGUMENTS", error: "rostJobOut must be an exact workspace-relative job directory.",
+    fields: ["rostJobOut"], watchCreated: false, solveStarted: false,
+    action: "For /home/rakazo/workspace/case/owned-job use case/owned-job, without /home/rakazo/workspace/ or workspace/ prefixes. Do not guess a different job, restart, stop or extend the existing solve. Correct only this watch argument and retry schedule_create; no completion watch was created.",
+  };
+  if (input.rostJobOut !== undefined && resolved.oneShot) return {
+    code: "ROST_JOB_WATCH_ARGUMENTS", error: "A token-free Rost watch requires a repeating timer.",
+    fields: ["schedule"], watchCreated: false, solveStarted: false,
+    action: "Use every: 1 and unit: minutes with the same existing rostJobOut. Do not launch or change numerical work.",
+  };
+  let jobWatch;
+  try {
+    jobWatch = input.rostJobOut !== undefined
+      ? await createRostJobWatch(deps, input, input.rostJobOut, input.threadId) : undefined;
+  } catch (error) {
+    if (!(error instanceof RostJobObservationError)) throw error;
+    return {
+      code: "ROST_JOB_WATCH_OBSERVATION", error: "A supported status for this owned Rost job could not be read.",
+      watchCreated: false, solveStarted: false, existingJobUnchanged: true,
+      action: "Inspect this same job with rost job status. Repair only monitoring and retry schedule_create for the same rostJobOut once readable. Do not restart, duplicate, stop, extend or change the roster job. If it is terminal, inspect its result and follow validation or bounded diagnosis instead of launching again. This is not a model-provider error.",
+    };
+  }
   assertRostWatchTriggers(jobWatch, { crons: [resolved.cron] });
 
   const row = await deps.prisma.routine.create({

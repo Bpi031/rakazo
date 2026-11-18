@@ -11,11 +11,12 @@ import {
   QuestionForm,
   nativeReadTools,
 } from "@rakazo/contracts";
-import { NativeControl, nativeEnabled } from "./native-control.js";
+import { NativeControl, nativeEnabled, NativeSessionBusyError } from "./native-control.js";
 import { nativeHelper } from "./native-helper.js";
 import { AgentWorkbench, workbenchEnabled } from "./agent-workbench.js";
 import { teamMessagingEnabled, teamTools } from "./team-policy.js";
 import { PriorityService, priorityTools } from "./policy-priorities.js";
+import { PolicyWorkflow, policyWorkflowTools, policyWorkflowInstruction, managerChatPolicy } from "./policy-workflow.js";
 import { readAgentReport, reportTools } from "./agent-report.js";
 import { memberScope } from "./team-storage.js";
 import { observeTeamComputers } from "./team-observer.js";
@@ -457,6 +458,7 @@ const BUILTIN_AGENT_TOOL_NAMES = new Set(
     ...workflowTools,
     ...leadershipTools,
     ...priorityTools,
+    ...policyWorkflowTools,
     ...reportTools,
     ...workbenchTools,
     ...formTools,
@@ -3213,7 +3215,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
       });
       const routinePrompt = expandSkillReferencesInPrompt(routine.prompt, skillRecords)
         + (jobWatch ? "\n\nToken-free Rost watch: " + JSON.stringify({
-          out: jobWatch.out, reason: jobWatch.wakeReason, status: jobWatch.lastStatus,
+          out: jobWatch.out, reason: jobWatch.wakeReason, status: jobWatch.lastStatus, outcome: jobWatch.outcome,
           checkedAt: jobWatch.lastCheckedAt,
         }) + "\nInspect this existing job only. Never restart, extend, duplicate or change policy. "
           + "Completion is not approval or workbook validation. Observation failure requires attention, not a new solve." : "");
@@ -4127,7 +4129,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const builtins = [
           ...(teamMessagingEnabled() ? [...teamTools, ...workflowTools, ...leadershipTools] : []),
           ...(deps.runtime.describe().id === "codex"
-            ? [...priorityTools, ...reportTools].filter(
+            ? [...priorityTools, ...policyWorkflowTools, ...reportTools].filter(
                 (tool) => !disabledBuiltinTools.has(tool.name),
               )
             : []),
@@ -5783,7 +5785,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               name: String(args.name ?? ""),
               prompt: String(args.prompt ?? ""),
               timezone: args.timezone ? String(args.timezone) : undefined,
-              rostJobOut: args.rostJobOut ? String(args.rostJobOut) : undefined,
+              rostJobOut: args.rostJobOut === undefined || args.rostJobOut === null ? undefined : String(args.rostJobOut),
               schedule: compactScheduleInput({
                 cron: args.cron,
                 every: args.every,
@@ -6679,6 +6681,17 @@ export function createRunExecutor(deps: ExecutorDeps) {
             );
             return finish(result);
           }
+          if (name === "policy_workflow" && deps.runtime.describe().id === "codex") {
+            const result = await new PolicyWorkflow({ prisma: deps.prisma, sandbox: deps.sandbox }).agent(run.id, effectKey, args)
+              .catch(() => ({ error: "Policy workflow could not verify this request.", code: "ROST_POLICY_WORKFLOW_REVIEW_REQUIRED",
+                action: "Check exact source/input paths, manager ownership, stale/expired review and private diagnosis evidence. No approval or automatic retry occurred. Do not duplicate numerical work." }));
+            if (!managerChatPolicy() && ["review", "amendment_review", "relaxation_review"].includes(String(args.operation)) && "id" in result && typeof result.id === "string" && "status" in result && result.status === "pending") {
+              const message = await publishMessage(deps, run, "bot",
+                [{ kind: "policy_approval", reviewId: result.id, botId: run.botId }], undefined, `policy-owner:${effectKey}`);
+              if (message) publishedMidTurnUserMessage = true;
+            }
+            return finish(result);
+          }
           if (name === "rule_priorities" && deps.runtime.describe().id === "codex") {
             const result = await new PriorityService({
               prisma: deps.prisma,
@@ -7092,13 +7105,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   operationId: runId,
                 });
               },
-              prompt: workspaceState
+              prompt: (workspaceState
                 ? prompt +
                   "\n\nAdvisory user task tracking, not policy approval or numerical allowance: " +
                   JSON.stringify(workspaceState.goal)
-                : prompt,
+                : prompt),
               contextStrategy,
-              instructions: userTurnInstructions({
+              ...runtimeInstructionContext({
                 botInstructions: runIdentityInstruction(bot, run.trigger),
                 groupContext,
                 messagingContext,
@@ -7117,16 +7130,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 pageBrowserAllowed,
                 taskCatalogInstruction,
                 workspaceInstruction,
-                agentEnvironmentInstruction,
+                agentEnvironmentInstruction: [agentEnvironmentInstruction, policyWorkflowInstruction()].filter(Boolean).join("\n\n"),
                 botDirectory,
                 pluginLine,
                 agentSkillsLine,
                 taughtSkillsLine,
                 replyGuidance: runReplyGuidance(run.trigger),
                 disabledBuiltinTools,
-              })
-                .filter((instruction): instruction is string => Boolean(instruction))
-                .join("\n\n"),
+              }),
               history: runtimeHistory,
               currentTurnImages,
               tools,
@@ -7827,6 +7838,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
             getLogger().error("history.compact enqueue failed", error);
           }
         } catch (error) {
+          // prepare() rejected another live owner's session before opening the
+          // model. Use the existing fenced setup queue, not a provider failure.
+          if (error instanceof NativeSessionBusyError) throw new ComputerBusyError();
           if (!terminalCheckpointComplete) {
             await workspaceCheckpoint.flush().catch(() => undefined);
           }
@@ -8489,6 +8503,16 @@ function toolUsageLine(parts: {
 }
 
 // Ordering matters: stable blocks first, volatile ones last, so the prefix stays cacheable.
+export function runtimeInstructionContext(parts: Parameters<typeof userTurnInstructions>[0]) {
+  const join = (values: (string | undefined)[]) => values.filter(Boolean).join("\n\n");
+  return {
+    instructions: join(userTurnInstructions(parts)),
+    sessionInstructions: join(userTurnInstructions({ ...parts, redactedMemoryContext: undefined,
+      redactedScratchpadContext: undefined, redactedTicketContext: undefined, hasHistoricalContext: false,
+      botDirectory: undefined })),
+  };
+}
+
 export function userTurnInstructions(parts: {
   botInstructions: string;
   groupContext: string | undefined;

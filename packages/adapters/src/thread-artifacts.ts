@@ -159,7 +159,12 @@ export async function materializeCurrentTurnFiles(
         `Attached file exceeds the ${attachmentSizeLabel(deps.maxUploadSizeBytes ?? ATTACHMENT_MAX_BYTES)} limit: ${row.name}`,
       );
     }
-    const relativePath = `attachments/${row.id}${attachmentExtensionForMimeType(row.mimeType)}`;
+    if (input.computerMode === "dedicated" &&
+        (bytes.byteLength !== row.size || createHash("sha256").update(bytes).digest("hex") !== row.hash)) {
+      throw new Error("Attached file integrity check failed");
+    }
+    const base = input.computerMode === "dedicated" ? "workspace/inputs/uploads" : "attachments";
+    const relativePath = `${base}/${row.id}${attachmentExtensionForMimeType(row.mimeType)}`;
     input.markWorkspaceDirty?.();
     await deps.sandbox.writeFile(
       input.computer,

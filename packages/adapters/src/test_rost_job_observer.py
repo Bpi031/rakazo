@@ -62,3 +62,26 @@ class ObserverTests(unittest.TestCase):
         with patch.object(module.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, b"x"*65537)):
             with self.assertRaises(ValueError):
                 module.observe("job", workspace=self.root)
+
+    def test_all_known_phases_preserve_status_and_never_claim_early_completion(self):
+        for status in module.JOB_STATUSES:
+            with self.subTest(status=status):
+                result = self.observe({"schema": "rost/solve-job/v1", "status": status})
+                self.assertEqual(result['status'], status)
+                if status in ('reserved', 'preparing', 'starting', 'running', 'stopping', 'checking'):
+                    self.assertEqual(result['outcome'], 'running')
+                if status in ('failed', 'recovery_required'):
+                    self.assertEqual(result['outcome'], 'technical_failure')
+        for status in ('starting', 'checking'):
+            result = self.observe({'schema':'rost/solve-job/v1', 'status':status,
+                'native_terminal':{'status':'native_returned','native_status':3,'stage':0,'solution_count':0}})
+            self.assertEqual(result['outcome'], 'running')
+
+    def test_unknown_missing_and_invalid_phases_are_not_progress_or_proofs(self):
+        for status in (None, 3, [], {}, 'unknown', ''):
+            with self.subTest(status=status), self.assertRaises(ValueError):
+                self.observe({'schema':'rost/solve-job/v1', 'status':status})
+        with self.assertRaises(ValueError):
+            self.observe({'schema':'rost/solve-job/v1'})
+        with self.assertRaises(ValueError):
+            self.observe({'schema':'rost/solve-job/v1','status':'running','observed_status':'unknown'})

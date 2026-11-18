@@ -1,15 +1,16 @@
 import { expect, it, vi } from 'vitest';
-import { NativeControl } from './native-control.js';
+import { NativeControl, NativeSessionBusyError } from './native-control.js';
 
 function fixture() {
   let generation = 0;
   let row: any = null;
   let threadId = 'private-thread';
+  let priorStatus = 'completed';
   const actor = { userId: 'owner', spaceId: 'space' };
   const tx = {
     $executeRaw: vi.fn(async () => 1),
     thread: { findFirstOrThrow: vi.fn(async () => ({ historyCompactionGeneration: generation })) },
-    run: { findUniqueOrThrow: vi.fn(async () => ({ status: 'completed' })) },
+    run: { findUniqueOrThrow: vi.fn(async () => ({ status: priorStatus })) },
     agentWorkbenchRecord: {
       findUnique: vi.fn(async () => row),
       upsert: vi.fn(async ({ create, update }: any) => { row = row ? { ...row, ...update } : create; return row; }),
@@ -23,6 +24,9 @@ function fixture() {
     complete() { row = { ...row, status: 'completed', payload: { fingerprint: row.payload.fingerprint, threadId: 'native-owned', turnId: 'turn' } }; },
     clear() { generation++; },
     changeThread() { threadId = 'different-private-thread'; },
+    prior(status: string) { priorStatus = status; },
+    row() { return structuredClone(row); },
+    pause() { row = { ...row, status: 'needs_review', payload: { ...row.payload, paused: true, leaseFence: 0 } }; },
   };
 }
 
@@ -34,6 +38,28 @@ it('resumes unchanged owned history but not a cleared chat generation', async ()
   f.complete(); f.clear();
   expect((await f.service.prepare('after-clear', 'tools-v1')).previous).toBeNull();
   expect(f.tx.thread.findFirstOrThrow).toHaveBeenLastCalledWith({ where: { id: 'private-thread', spaceId: 'space', botId: 'bot' }, select: { historyCompactionGeneration: true } });
+});
+
+it.each(['queued','leased','running','waiting_input','waiting_takeover'])('defers another %s owner without stealing its session', async status => {
+  const f = fixture();
+  await f.service.prepare('owner', 'tools-v1'); f.prior(status);
+  const before = f.row();
+  await expect(f.service.prepare('routine', 'tools-v1')).rejects.toBeInstanceOf(NativeSessionBusyError);
+  expect(f.row()).toEqual(before);
+  f.complete(); f.prior('completed');
+  expect((await f.service.prepare('routine', 'tools-v1')).previous?.threadId).toBe('native-owned');
+});
+
+it('does not treat a duplicate attempt of the same live run as requeueable contention', async () => {
+  const f = fixture(); await f.service.prepare('owner', 'tools-v1'); f.prior('running');
+  const before = f.row();
+  await expect(f.service.prepare('owner', 'tools-v1')).rejects.not.toBeInstanceOf(NativeSessionBusyError);
+  expect(f.row()).toEqual(before);
+});
+
+it('still permits the same run to resume after an answered pause with a newer fence', async () => {
+  const f = fixture(); await f.service.prepare('owner', 'tools-v1'); f.prior('running'); f.pause();
+  expect((await f.service.prepare('owner', 'tools-v1')).currentRunId).toBe('owner');
 });
 
 it('does not borrow a completed native session from another product thread', async () => {

@@ -116,6 +116,17 @@ it("shows a readable run error with raw details, while preserving send errors", 
   expect(error?.querySelector("details")).toBeNull();
 });
 
+it("shows usage failures as application errors without raw ledger payloads", () => {
+  const runError = "Invalid `prisma.usageRecord.createMany()` invocation:\n{userId:'private-user',provider:undefined}\nArgument `provider` is missing.";
+  renderComposer(async () => true, { runError, runErrorId: "usage-failed" });
+  const error = container?.querySelector('[data-testid="composer-error"]');
+  expect(error?.textContent).toContain("Rakazo could not save model usage.");
+  expect(error?.textContent).not.toContain("The model provider returned an error.");
+  expect(error?.querySelector("pre")?.textContent).toContain("ROST_USAGE_RECORD_FAILED");
+  expect(error?.textContent).not.toContain("private-user");
+  expect(error?.textContent).not.toContain("prisma.usageRecord");
+});
+
 function pickAttachment() {
   const input = container?.querySelector<HTMLInputElement>('input[type="file"]');
   if (!input) throw new Error("attachment input not found");

@@ -45,6 +45,10 @@ export const QuestionForm = z
     "Distinct field ids required",
   );
 export type QuestionForm = z.infer<typeof QuestionForm>;
+export const QuestionFormInput = z.object({
+  question: safeText(2000).pipe(z.string().trim().min(1)),
+  form: QuestionForm,
+}).strict();
 export function validateQuestionAnswer(form: QuestionForm, raw: string) {
   const value = z
     .object({
@@ -181,9 +185,7 @@ export const formTools = [
   {
     name: "ask_form",
     description:
-      "Ask one to three related typed questions: choices, short text, bounded number or date. Persist the form and wait quietly for the authenticated owner's answers. No default, timeout, reminder or automatic consent. Never ask for passwords/keys or treat these answers as protected policy approval or extra solve allowance.",
-    inputSchema: z.toJSONSchema(
-      z.object({ question: safeText(2000).pipe(z.string().min(1)), form: QuestionForm }).strict(),
-    ),
+      "Ask one to three related typed questions: choices, short text, bounded number or date. Each field label and choice option must be 1-200 characters; put longer explanations in question (at most 2000 characters). Persist the form and wait quietly for the authenticated owner's answers. No default, timeout, reminder or automatic consent. Never ask for passwords/keys or treat these answers as protected policy approval or extra solve allowance.",
+    inputSchema: z.toJSONSchema(QuestionFormInput),
   },
 ];

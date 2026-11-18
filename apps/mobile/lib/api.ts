@@ -1130,6 +1130,7 @@ export function blockText(message: MobileMessage) {
       if (block.kind === "chart") return `[chart: ${block.name ?? "chart"}]`;
       if (block.kind === "agent_report") return `[Agent analysis] ${block.report.title}\n${block.report.summary ?? ""}\n${block.report.sections.map((s) => s.kind === "text" ? `${s.title}: ${s.text}` : s.kind === "metrics" ? s.items.map((m) => `${m.label}: ${m.value ?? "Unavailable"} ${m.unit ?? ""}`).join("; ") : `${s.title}: ${s.rows.length} rows (open the web chat for the interactive table)`).join("\n")}`;
       if (block.kind === "policy_review") return "Policy draft review. Open the web chat for authenticated draft selection.";
+      if (block.kind === "policy_approval") return "Manager policy review. Open the original web chat to review and approve the exact revision.";
       if (block.kind === "image") return `[image: ${block.name ?? "attachment"}]`;
       if (block.kind === "file") {
         return `[file: ${block.name ?? "attachment"}${block.size ? ` (${block.size} bytes)` : ""}]`;

@@ -25,7 +25,8 @@ beforeEach(async () => {
     }
     yield { type: "stdout", data: JSON.stringify(value) }; yield { type: "exit", code: 0 };
   });
-  prisma = { run: { findUniqueOrThrow: vi.fn() }, user: { findUniqueOrThrow: vi.fn().mockResolvedValue({ email: actor.email }) } };
+  prisma = { run: { findUniqueOrThrow: vi.fn() }, routine: { findFirst: vi.fn() },
+    user: { findUniqueOrThrow: vi.fn().mockResolvedValue({ email: actor.email }) } };
   service = new PriorityService({ prisma, sandbox: { execute } as any, dataDir: directory });
 });
 afterEach(async () => { await rm(directory, { recursive: true, force: true }); vi.resetAllMocks(); });
@@ -100,6 +101,53 @@ it("limits agent operations to inspect/review/current, not apply or background d
   prisma.run.findUniqueOrThrow.mockResolvedValue({ status: "running", trigger: "schedule", userId: "u", spaceId: "s", botId: "b" });
   await expect(service.agent("run", { operation: "inspect", ...inspection })).rejects.toThrow("direct owned");
   expect(priorityTools[0]!.inputSchema.properties.operation.enum).not.toContain("apply");
+});
+const routineRun = { status: "running", trigger: "routine", routineId: "routine", threadId: "thread",
+  userId: "u", spaceId: "s", botId: "b" };
+it("lets a consumed owned completion routine read current and pinned details without policy work", async () => {
+  await service.inspect(actor, inspection); execute.mockClear();
+  prisma.run.findUniqueOrThrow.mockResolvedValue(routineRun);
+  prisma.routine.findFirst.mockResolvedValue({ id: "routine" });
+  const current = await service.agent("run", { operation: "current" });
+  expect(current).toMatchObject({ sourceSha256: source, solveStarted: false, policyApprovalGranted: false });
+  if (!("snapshotSha256" in current)) throw new Error("Expected a pinned current receipt");
+  const page = await service.agent("run", { operation: "list", section: "rules", sourceSha256: source,
+    snapshotSha256: current.snapshotSha256 });
+  expect(page).toMatchObject({ total: 0, rows: [] });
+  expect(prisma.routine.findFirst).toHaveBeenCalledWith({ where: { id: "routine", userId: "u", spaceId: "s",
+    botId: "b", threadId: "thread" }, select: { id: true } });
+  expect(mocks.getBot).toHaveBeenCalledWith(actor, "b");
+  for (const [, request] of execute.mock.calls) {
+    const args = JSON.parse(Buffer.from(request.argv.at(-1), "base64").toString());
+    expect(args.operation).toBe("inspect");
+    expect(args).not.toHaveProperty("changes");
+  }
+});
+it("returns a bounded denial for scheduled draft operations without aborting completion reads", async () => {
+  prisma.run.findUniqueOrThrow.mockResolvedValue(routineRun);
+  prisma.routine.findFirst.mockResolvedValue({ id: "routine" });
+  for (const operation of ["inspect", "review", "apply"]) {
+    expect(await service.agent("run", { operation, ...inspection, sourceSha256: source, changes: change }))
+      .toMatchObject({ code: "ROST_RULE_PRIORITIES_DIRECT_TURN_REQUIRED", solveStarted: false, policyApprovalGranted: false });
+  }
+  expect(execute).not.toHaveBeenCalled(); expect(await readdir(directory)).toEqual([]);
+  expect(await service.agent("run", { operation: "current" })).toMatchObject({ status: "not_registered" });
+});
+it("does not authorize unowned, missing, unrelated, or stopped scheduled runs", async () => {
+  for (const run of [{ ...routineRun, routineId: null }, { ...routineRun, threadId: null },
+    { ...routineRun, trigger: "webhook" }, { ...routineRun, status: "completed" }]) {
+    prisma.run.findUniqueOrThrow.mockResolvedValue(run);
+    await expect(service.agent("run", { operation: "current" })).rejects.toThrow("owned agent turn");
+  }
+  prisma.run.findUniqueOrThrow.mockResolvedValue(routineRun);
+  // The scoped database query finds nothing after deletion, ownership transfer, or thread mismatch.
+  prisma.routine.findFirst.mockResolvedValue(null);
+  await expect(service.agent("run", { operation: "current" })).rejects.toThrow("direct owned");
+  prisma.routine.findFirst.mockResolvedValue({ id: "routine" });
+  mocks.getBot.mockRejectedValue(new Error("isolation"));
+  await expect(service.agent("run", { operation: "current" })).rejects.toThrow("isolation");
+  await expect(service.agent("run", { operation: "review" })).rejects.toThrow("isolation");
+  expect(execute).not.toHaveBeenCalled(); expect(await readdir(directory)).toEqual([]);
 });
 it("bounds untrusted API fields and rejects path traversal/extra controls", () => {
   for (const policy of ["/etc/passwd", "workspace/../secret", "workspace/a\\b", "workspace/a\0b"])

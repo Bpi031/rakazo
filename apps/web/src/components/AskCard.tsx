@@ -10,6 +10,7 @@ import { rpc } from "../lib/rpc";
 import { errorText } from "../lib/user-error";
 import { QuestionCard } from "./QuestionCard";
 import { QuestionFormCard } from "./QuestionFormCard";
+import { AnsweredForm } from "./AnsweredForm";
 
 export type AskBlock = Extract<ThreadMessage["blocks"][number], { kind: "ask" }>;
 
@@ -137,6 +138,9 @@ export function AskCard({
       </div>
     );
 
+  if (block.form && !block.approvalEffectId && !block.instructionUpdate && !secretInput && block.status === "answered") {
+    return <AnsweredForm question={block.text} form={block.form} answer={block.answer ?? ""} />;
+  }
   if (block.form && !block.approvalEffectId && !block.instructionUpdate && !secretInput && block.status !== "answered" && canAnswer) {
     return <QuestionFormCard question={block.text} form={block.form} onAnswer={onAnswer} />;
   }

@@ -100,6 +100,7 @@ export const MessageBlock = z.discriminatedUnion("kind", [
   AgentReportBlock,
   AgentStatusBlock,
   z.object({ kind: z.literal("policy_review"), reviewId: z.uuid(), botId: Id }).strict(),
+  z.object({ kind: z.literal("policy_approval"), reviewId: z.string().regex(/^[a-f0-9]{64}$/), botId: Id }).strict(),
   z.object({ kind: z.literal("text"), text: z.string() }),
   z.object({
     kind: z.literal("card"),

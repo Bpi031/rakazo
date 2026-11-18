@@ -3,6 +3,7 @@ import { managedEffort, managedReasoning } from "./managed-reasoning.mjs";
 import { readFileSync } from "node:fs";
 import { managedModalities, codexImages, codexQuestion } from "./codex-inputs.mjs";
 import { digestNative, boundedCapabilities, safeNativeDiff, usageDelta, nativeReadNames, completionOutputSchema } from "./native-protocol.mjs";
+import { BOT_PATH_GUIDANCE, canonicalToolPaths } from "./bot-path-contract.mjs";
 
 export const MAX_FRAME_BYTES = 2 * 1024 * 1024;
 const MAX_HISTORY_BYTES = 512 * 1024;
@@ -47,18 +48,15 @@ export function runtimeFailure(error) {
   return new Error(`${code}: ${detail} No automatic job retry or model change was made; check any existing job before retrying.`);
 }
 
-export const TASK_EXECUTION_GUIDANCE = `Task ownership and bounded autonomy
-Client-facing product identity is Rost. Do not volunteer backend solver names, provider/version banners, native parameter names or raw engine logs in normal chat or workbook titles. Keep truthful statuses, achieved gaps and limitations. Retain exact backend identities and unredacted technical evidence in authorized private operator diagnostics and required license notices; do not falsify certificates or claim a different engine. If a user directly asks which backend is used, do not lie or fabricate an answer.
-The current_request field is the current task; history is context, not a new authorization.
-Carry out the requested work with the tools and permissions actually offered. Do not stop at a plan or ask whether to run routine prerequisite checks. Read task files in the authorized workspace, load the relevant installed skills, check readiness, implement, test, and verify the requested artifacts. Do not invent additional operator sign-offs or exact-wording requirements. Explicit access restrictions and tool approval gates still apply.
-The read_file/list_files/write_file tools use paths relative to the private home; /home/rakazo/... is an alias, not arbitrary host filesystem access. Read installed /opt/... skill or runtime guides with skill_read or a read-only shell command, not read_file. Do not dump executable or Office binary bytes as text. A missing read-only file is a recoverable tool error: inspect the allowed path, not a reason to stop the entire task or change policy.
-For a human-requested existing-model rerun such as "rerun for 300 seconds and generate Excel", the stated 300 seconds already supplies the finite compute allowance for one attempt. Do not ask the user to repeat it as "300 seconds, one run". It is a total solver allowance, not 300 seconds for each stage or retry. A routine, quoted file, status question, or historical request does not grant new compute allowance. If the allowance or business meaning is genuinely missing, ask a concise decision-changing question.
-When Rost is available, follow its installed workflow. Perform live doctor/license/current-policy checks yourself using the operator-configured environment, without displaying license or secret contents. A previous successful check is not a current pass. An expired/missing license is a real blocker; never change its fields, copy secrets, change the configured license path, or fall back to another solver.
-Check for an existing owned job and use its recorded handle. A status request never launches another solve. Use one bounded owned job, fresh output paths, and the current source/input snapshot. Preserve previous results. Stay with the task through solve, independent validation, Excel export, saved-workbook readback, and file attachment when the tools permit. Do not end merely because one prerequisite finished. If the solve must outlive the agent turn, use an actually supported durable job/follow-up mechanism rather than claiming you will watch it without one.
-Shell transport time is not solver time. For a reviewed canonical Rost job that can approach the shell deadline, launch rost job start --background with one finite allowance, retain its handle and poll rost job status. Do not wrap a 300-second solve plus preparation/publication inside a shell with the same 300-second timeout. A specialized reviewed adapter must retain its objective semantics and have equivalent durable ownership; do not silently substitute another workflow. Shell exit 124 or a supervisor interrupt means publication may have been interrupted, not that no incumbent was found or the numerical allowance was fully used. Inspect owned terminal/checkpoint evidence; do not automatically rerun a solve, widen a deadline, manufacture a result, or search unrelated temporary directories.
-Keep compute authorization, authored policy, candidate validity, and policy-owner approval separate. An unchanged rerun is not a policy edit; never manufacture contract approval. Ask for genuine rule ambiguities, policy changes, protected relaxations, extra compute beyond the allowance, or external publication. Do not weaken hard rules, change fairness or stage objectives, or silently replace a reviewed case adapter with a different optimization workflow.
-For a decision with two to four clear alternatives, call ask_user instead of writing a prose option list. Ask one decision at a time, then wait quietly for the authenticated user's confirmed answer. Do not repeat the question, send reminders, choose a default, treat silence as consent or run dependent work while paused. Answer later only hides the panel, not a decision or authorization. A chat choice is not a protected policy-owner approval receipt.
-At a time limit, a current independently validated candidate can be exported as a draft, with its achieved gap and limitations. A timeout without a candidate is not infeasibility and must not produce invented or historical-as-new workbooks. Never claim approval, optimality, delivery, or a completed export without the corresponding live evidence. Attach the actual requested files after the applicable validation/readback gates, and briefly report remaining soft-rule trade-offs.`;
+export const TASK_EXECUTION_GUIDANCE = `Task ownership
+Client-facing product identity is Rost. Keep statuses and limitations truthful; do not falsify certificates, conceal failures or misrepresent the backend when directly asked. Operator diagnostics and credentials remain private.
+The current_request is the task; history is context, not a new authorization. Own technical preparation through delivery using the installed Rost and office workflows. Routine checks need no additional chat sign-off; actual tool approval gates remain binding. Use the configured runtime without editing credentials or falling back to another solver.
+An explicit rerun duration already supplies the finite compute allowance for one attempt, shared across all stages. Inspect ownership first; a status request never launches another solve. Use rost job start --background for canonical models and one token-free completion watch; only completion, failure or required attention wakes the model. Preserve specialized reviewed stage semantics.
+Shell transport time is not solver time. On timeout or interruption inspect the existing handle/checkpoints; do not retry numerical work or infer infeasibility or absence of a candidate from a shell exit.
+Preserve confirmed business meaning, hard rules, priorities and source mappings; never manufacture contract approval. Ask about real missing decisions, protected policy changes or additional compute. Use ask_user/ask_form and wait quietly; never treat silence as consent. Chat choices are not protected approval receipts.
+Policy authority: honor the deployment review mode; reuse valid approval for an unchanged revision. Keep any protected contract or relaxation ledger intact. Report proven infeasibility separately from an inconclusive or failed run. Do not automatically repair or retry. Use the installed Rost commands, exact inputs and unused finite allowance; never invent consent, a minimum-cost proof or a new numerical allowance.
+Independently validate the exact candidate and decode/read back the saved workbooks. Attach requested verified files before optional reports. Correctable path/report errors permit presentation repair, not a new solve, weaker checks or access expansion. Label drafts and unresolved quality honestly.
+${BOT_PATH_GUIDANCE}`;
 
 function toolWireName(name) {
   if (typeof name !== "string" || !name.trim() || Buffer.byteLength(name) > 512)
@@ -188,7 +186,8 @@ export class CodexProtocolRuntime {
         || context.botId !== request.botId) throw new Error("Authorized private computer is required");
     if (!this.options.models.includes(request.model.id) || request.model.oauth) throw new Error("Unapproved Codex model route");
     const effort = managedEffort(request.model.id, request.model.thinkingLevel, this.options.reasoning ?? {});
-    const preparation = request.nativeControl ? await request.nativeControl.prepare(digestNative({model:request.model.id,instructions:request.instructions,tools:request.tools,protocol:'0.144.5'})) : null;
+    const preparation = request.nativeControl ? await request.nativeControl.prepare(digestNative({model:request.model.id,provider:request.model.provider,
+      instructions:request.sessionInstructions ?? request.instructions,tools:request.tools,guidance:TASK_EXECUTION_GUIDANCE,protocol:'0.144.5',boundary:'stable-instructions-v2'})) : null;
     const readonly = request.nativeWorker === true || preparation?.mode === 'plan' || ['review','fork'].includes(preparation?.action);
     const currentImages = request.currentTurnImages ?? [];
     // Historical images are bounded attachments, not implicit permission to reread unrelated files.
@@ -222,10 +221,45 @@ export class CodexProtocolRuntime {
     const send = async (method, params) => {
       const id = ++sequence; pending.set(id, method); await session.send({ id, method, params }); return id;
     };
+    const usageEvent = () => ({ type: "usage", provider: "codex-foundry", model: request.model.id,
+      callId: `${request.runId}:codex${preparation?':'+threadId:''}${request.nativeWorker?':helper:'+preparation.sessionKey:''}`,
+      ...usageFromCodex(usageDelta(lastUsage, preparation?.previous?.usage)) });
+    const accountUsage = async (event) => {
+      if (!request.onUsage) return;
+      try { await request.onUsage(event); event.accounted = true; }
+      catch (cause) {
+        throw new Error("ROST_USAGE_RECORD_FAILED: Rakazo could not save model usage. Check existing work before retrying.", { cause });
+      }
+    };
+    let invalidQuestions = 0;
+    const prepareQuestion = (factory) => {
+      let question;
+      try { question = factory(); }
+      catch (error) {
+        if (!['Invalid form question', 'Invalid bounded question', 'Invalid native questions', 'Invalid or secret question', 'Invalid question choices'].includes(error?.message)) throw error;
+        return { success: false };
+      }
+      if (!question.form) return { success: true, data: question };
+      if (!this.options.validateQuestion) throw new Error('ROST_QUESTION_INPUT_INVALID: Question validation is unavailable. No answer was recorded.');
+      return this.options.validateQuestion(question);
+    };
+    const rejectQuestion = async (message, parsed, native = false) => {
+      if (++invalidQuestions > 3) {
+        await accountUsage(usageEvent());
+        throw new Error('ROST_QUESTION_INPUT_INVALID: The question form remained invalid after three correction attempts. No answer was recorded.');
+      }
+      const notice = { code: 'ROST_QUESTION_INPUT_INVALID', questionShown: false, answerRecorded: false,
+        action: 'Correct this question call only. Do not repeat other tools or numerical jobs. No consent or approval was given. Use 1-3 fields, distinct lowercase ids, 1-200 character field labels/options, and a question of at most 2000 characters. Put longer explanations in question, preserving the choices and their meaning. Use ask_form for a corrected form.',
+        issues: (parsed.error?.issues ?? []).slice(0, 8).map(issue => ({ code: String(issue.code).slice(0, 40),
+          path: (issue.path ?? []).slice(0, 5).map(part => Number.isInteger(part) ? part : ['form','fields','label','options','question','id','type','schema','min','max','required'].includes(part) ? part : 'field'),
+          ...(Number.isFinite(issue.maximum) ? { maximum: issue.maximum } : {}) })) };
+      if (native) await session.send({ id: message.id, error: { code: -32602, message: JSON.stringify(notice) } });
+      else await session.send({ id: message.id, result: { success: false, contentItems: [{ type: 'inputText', text: JSON.stringify(notice) }] } });
+    };
     const pauseNative=async()=>{
       if(!preparation)return;
       await session.close();
-      await request.onUsage?.({type:'usage',callId:`${request.runId}:codex:${threadId}`, ...usageFromCodex(usageDelta(lastUsage,preparation.previous?.usage))});
+      await accountUsage(usageEvent());
       await request.nativeControl.finish({completed:false,paused:true,threadId,turnId,usage:lastUsage});
       finalizedPause=true;
       if(this.active.get(request.runId)===session)this.active.delete(request.runId);
@@ -368,7 +402,14 @@ export class CodexProtocolRuntime {
           toolCalls.add(p.callId);
           if (!p.arguments || typeof p.arguments !== "object" || Array.isArray(p.arguments)) throw new Error("Invalid Codex tool arguments");
           if (wrapped && Object.keys(p.arguments).join(",") !== "payload") throw new Error("Invalid Codex tool argument envelope");
-          const args = wrapped ? p.arguments.payload : p.arguments;
+          let args = wrapped ? p.arguments.payload : p.arguments;
+          const paths = canonicalToolPaths(tool.name, args);
+          if (paths.error) {
+            await session.send({ id: message.id, result: { success: false,
+              contentItems: [{ type: "inputText", text: JSON.stringify(paths.error) }] } });
+            continue;
+          }
+          args = paths.args;
           if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error("Invalid Codex tool arguments");
           const executionId = `${request.runId}:codex:${p.callId}`;
           yield { type: "tool", name: tool.name, args, executionId };
@@ -379,7 +420,9 @@ export class CodexProtocolRuntime {
             try {result={success:true,contentItems:[{type:'inputText',text:JSON.stringify(await request.nativeControl.tool(tool.name,args))}]};}
             catch {result={success:false,contentItems:[{type:'inputText',text:'Private read rejected; inspect exact path and finite limits. No action executed.'}]};}
           } else if (tool.name === "ask_user" || tool.name === "ask_form") {
-            const question=questionEvent(args);pause = true;await pauseNative();yield question;if(preparation)return;
+            const parsed = prepareQuestion(() => questionEvent(args));
+            if (!parsed.success) { await rejectQuestion(message, parsed); continue; }
+            pause = true;await pauseNative();yield parsed.data;if(preparation)return;
             result = { content: [{ type: "inputText", text: "Waiting for the authenticated user's answer." }], success: true };
           } else if (tool.name === "run_subagent") {
             if (!request.runHelper) throw new Error("Qualified helper runtime unavailable");
@@ -435,7 +478,9 @@ export class CodexProtocolRuntime {
           if (pause) return;
         } else if (message.method === "item/tool/requestUserInput" && message.id !== undefined) {
           if (!turnId || p.threadId !== threadId || p.turnId !== turnId) throw new Error("Unbound native question");
-          const question=codexQuestion(p);pause = true;await pauseNative();yield question;return;
+          const parsed = prepareQuestion(() => codexQuestion(p));
+          if (!parsed.success) { await rejectQuestion(message, parsed, true); continue; }
+          pause = true;await pauseNative();yield parsed.data;return;
         } else if (message.id !== undefined) {
           // Tool consent cannot be turned into policy-owner approval.
           await session.send({ id: message.id, error: { code: -32601, message: "Unsupported server request" } });
@@ -470,9 +515,8 @@ export class CodexProtocolRuntime {
           if(compacting){if(p.turn?.status!=='completed')throw new Error('Native compaction failed; no fallback');compacting=false;await startTurn();continue;}
           if (!turnId || p.turn?.id !== turnId) throw new Error("Codex turn identity is missing or changed");
           if (p.turn.status !== "completed") throw runtimeFailure(p.turn.error);
-          const event = { type: "usage", provider: "codex-foundry", model: request.model.id,
-            callId: `${request.runId}:codex${preparation?':'+threadId:''}${request.nativeWorker?':helper:'+preparation.sessionKey:''}`, ...usageFromCodex(usageDelta(lastUsage,preparation?.previous?.usage)) };
-          if (request.onUsage) { await request.onUsage(event); event.accounted = true; }
+          const event = usageEvent();
+          await accountUsage(event);
           yield event;
           if(preparation){
             if(preparation.action==='review'){await request.nativeControl.observe('review',{text:reviewText||finalText,policyApprovalGranted:false});yield {type:'text',text:reviewText||finalText};}

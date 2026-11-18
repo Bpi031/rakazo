@@ -483,6 +483,8 @@ export interface AgentRunRequest {
   sourceMessageId?: string | null;
   prompt: string;
   instructions: string;
+  /** Stable authority/configuration only; excludes per-turn memory and scratchpad. */
+  sessionInstructions?: string;
   history: Array<{
     id?: string;
     createdAt?: string;
