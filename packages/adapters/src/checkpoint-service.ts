@@ -17,10 +17,7 @@ import {
   releaseCheckpointWorkspace,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
-import type {
-  CheckpointFileManifest,
-  CheckpointFileScope,
-} from "./checkpoint-files.js";
+import type { CheckpointFileManifest, CheckpointFileScope } from "./checkpoint-files.js";
 import { CheckpointFiles } from "./checkpoint-files.js";
 import { assertCheckpointWritersIdle, stopCheckpointWriters } from "./checkpoint-processes.js";
 import { toComputerRef } from "./computer-lifecycle.js";
@@ -28,10 +25,27 @@ import { PriorityService } from "./policy-priorities.js";
 
 const json = (value: unknown): Prisma.InputJsonValue => JSON.parse(JSON.stringify(value));
 const txOptions = { maxWait: 10_000, timeout: 300_000 };
+function checkpointStatus(
+  thread: {
+    checkpointGeneration: number;
+    checkpointBlocked: boolean;
+    checkpointLabelRevision: number;
+  },
+  workspaceBlocked: boolean,
+  latestId?: string,
+): CheckpointStatus {
+  const generation = thread.checkpointGeneration;
+  const blocked = thread.checkpointBlocked || workspaceBlocked;
+  return {
+    generation,
+    blocked,
+    revision: `${generation}:${blocked}:${latestId ?? ""}:${thread.checkpointLabelRevision ?? 0}`,
+  };
+}
 type CaptureInput = {
   runId: string;
-  kind: "auto_turn_boundary" | "auto_pre_solve";
-  reason: "turn_start" | "rost_watch_observed";
+  kind: "auto_pre_solve";
+  reason: "rost_watch_observed";
 };
 type CheckpointTranscript = Array<{
   id: string;
@@ -190,18 +204,64 @@ export class CheckpointService {
     };
   }
 
-  async status(actor: Actor, botId: string): Promise<CheckpointStatus> {
-    const { thread, workspaceBlocked = false } = await this.owned(actor, botId);
-    const latest = await this.deps.prisma.checkpoint.findFirst({
-      where: { threadId: thread.id },
+  private latestCheckpointId(db: Pick<PrismaClient, "checkpoint">, threadId: string) {
+    return db.checkpoint.findFirst({
+      where: { threadId },
       select: { id: true },
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     });
-    return {
-      generation: thread.checkpointGeneration,
-      blocked: thread.checkpointBlocked || workspaceBlocked,
-      revision: `${thread.checkpointGeneration}:${thread.checkpointBlocked || workspaceBlocked}:${latest?.id ?? ""}`,
-    };
+  }
+
+  async status(actor: Actor, botId: string): Promise<CheckpointStatus> {
+    const { thread, workspaceBlocked = false } = await this.owned(actor, botId);
+    const latest = await this.latestCheckpointId(this.deps.prisma, thread.id);
+    return checkpointStatus(thread, workspaceBlocked, latest?.id);
+  }
+
+  async rename(
+    actor: Actor,
+    input: { botId: string; label: string; expectedRevision: string } & (
+      | { checkpointId: string }
+      | { branchId: string }
+    ),
+  ) {
+    const { thread } = await this.owned(actor, input.botId);
+    return this.deps.prisma.$transaction(async (tx) => {
+      await checkpointThreadLock(tx, thread.id);
+      await tx.$queryRaw`SELECT id FROM threads WHERE id = ${thread.id} FOR UPDATE`;
+      const {
+        thread: current,
+        workspaceKey,
+        workspaceBlocked = false,
+      } = await this.owned(actor, input.botId, tx);
+      const latest = await this.latestCheckpointId(tx, current.id);
+      const status = checkpointStatus(current, workspaceBlocked, latest?.id);
+      if (current.id !== thread.id || status.blocked || status.revision !== input.expectedRevision)
+        throw new Error("Workspace changed; refresh checkpoints");
+      const updated =
+        "branchId" in input
+          ? await tx.conversationBranch.updateMany({
+              where: { id: input.branchId, threadId: current.id },
+              data: { label: input.label },
+            })
+          : await tx.checkpoint.updateMany({
+              where: {
+                id: input.checkpointId,
+                botId: input.botId,
+                threadId: current.id,
+                spaceId: actor.spaceId,
+                userId: actor.userId,
+                OR: [{ workspaceKey }, { workspaceKey: null }],
+              },
+              data: { customLabel: input.label },
+            });
+      if (updated.count !== 1) throw new IsolationError();
+      await tx.thread.update({
+        where: { id: current.id },
+        data: { checkpointLabelRevision: { increment: 1 } },
+      });
+      return { ok: true };
+    }, txOptions);
   }
 
   async list(actor: Actor, botId: string): Promise<CheckpointView> {
@@ -215,7 +275,10 @@ export class CheckpointService {
         where: { threadId: thread.id, status: "completed" },
         orderBy: { createdAt: "desc" },
       }),
-      this.deps.prisma.conversationBranch.findMany({ where: { threadId: thread.id } }),
+      this.deps.prisma.conversationBranch.findMany({
+        where: { threadId: thread.id },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      }),
     ]);
     const origins = new Map(audits.map((audit) => [audit.branchId, audit.toCheckpointId]));
     const previous = new Map<string, string>();
@@ -224,6 +287,7 @@ export class CheckpointService {
       (a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id),
     );
     const states = new Map<string, (typeof rows)[number]>();
+    const visibleKinds = new Map<string, string>();
     const names = new Map<string, string>();
     const signatures = new Map<string, string>();
     for (const row of ordered) {
@@ -233,6 +297,10 @@ export class CheckpointService {
       );
       signatures.set(row.id, digest);
       if (!states.has(digest)) states.set(digest, row);
+      // Keep the first node identity without hiding a later explicit save of the same state.
+      const kind = visibleKinds.get(digest);
+      if (!kind || kind === "auto_turn_boundary" || row.kind === "manual")
+        visibleKinds.set(digest, row.kind);
       if (row.label?.trim()) names.set(digest, row.label);
     }
     for (const row of ordered) aliases.set(row.id, states.get(signatures.get(row.id)!)!.id);
@@ -247,11 +315,12 @@ export class CheckpointService {
       parents.set(row.id, parentCheckpointId);
       previous.set(row.branchId, row.id);
       if (aliases.get(row.id) !== row.id) return [];
+      const signature = signatures.get(row.id)!;
       return [
         {
           id: row.id,
-          kind: row.kind as CheckpointView["checkpoints"][number]["kind"],
-          label: names.get(signatures.get(row.id)!) ?? row.label,
+          kind: visibleKinds.get(signature) as CheckpointView["checkpoints"][number]["kind"],
+          label: row.customLabel ?? names.get(signature) ?? row.label,
           branchId: row.branchId,
           createdAt: row.createdAt.toISOString(),
           parentCheckpointId,
@@ -279,9 +348,7 @@ export class CheckpointService {
         if (id) used.set(id, Math.max(used.get(id) ?? 0, time));
     }
     return {
-      generation: thread.checkpointGeneration,
-      blocked: thread.checkpointBlocked || workspaceBlocked,
-      revision: `${thread.checkpointGeneration}:${thread.checkpointBlocked || workspaceBlocked}:${rows[0]?.id ?? ""}`,
+      ...checkpointStatus(thread, workspaceBlocked, rows[0]?.id),
       activeBranchId: thread.activeBranchId,
       currentCheckpointId: resolve(
         thread.activeBranchId
@@ -291,6 +358,7 @@ export class CheckpointService {
       checkpoints: nodes,
       branches: branches.map((branch) => ({
         id: branch.id,
+        label: branch.label,
         parentCheckpointId: resolve(origins.get(branch.id)),
         lastUsedAt: new Date(used.get(branch.id) ?? branch.createdAt?.getTime() ?? 0).toISOString(),
       })),
@@ -567,9 +635,7 @@ export class CheckpointService {
     });
     let release = false;
     try {
-      const result = await this.rollbackClaimed(actor, input, workspaceKey, { owner, computerId });
-      release = result.ok;
-      return result;
+      return await this.rollbackClaimed(actor, input, workspaceKey, { owner, computerId });
     } catch (error) {
       const state = await this.deps.prisma.thread.findUnique({
         where: { id: thread.id },
@@ -628,6 +694,23 @@ export class CheckpointService {
       const current = await ensureCheckpointBranch(tx, thread.id);
       if (current.checkpointGeneration !== input.expectedGeneration)
         throw new Error("Workspace changed; refresh checkpoints");
+      // A failed transfer may have already replaced part of the tree. Reuse the
+      // committed rescue from before that attempt, never snapshot the partial tree.
+      const previousRescue = current.checkpointBlocked
+        ? await tx.rollbackAuditLog.findFirst({
+            where: {
+              threadId: thread.id,
+              botId: input.botId,
+              spaceId: actor.spaceId,
+              userId: actor.userId,
+              generation: current.checkpointGeneration,
+              status: "failed",
+              rescueCheckpointId: { not: null },
+            },
+            orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+            select: { rescueCheckpointId: true },
+          })
+        : null;
       const tasks = await tx.run.findMany({
         where: { threadId: thread.id, status: { in: [...ACTIVE_RUN_STATUSES] } },
         select: { id: true, taskId: true, status: true, trigger: true },
@@ -641,9 +724,14 @@ export class CheckpointService {
         where: { id: thread.id },
         data: { checkpointGeneration: { increment: 1 }, checkpointBlocked: true },
       });
-      return { generation: updated.checkpointGeneration, branchId: current.activeBranchId, tasks };
+      return {
+        generation: updated.checkpointGeneration,
+        branchId: current.activeBranchId,
+        priorRescueId: previousRescue?.rescueCheckpointId ?? undefined,
+        tasks,
+      };
     }, txOptions);
-    let rescueId: string | undefined;
+    let rescueId = preparation.priorRescueId;
     try {
       await stopCheckpointWriters(
         this.deps.sandbox,
@@ -671,6 +759,20 @@ export class CheckpointService {
             where: { executionRunId: { in: cancelledIds } },
             data: { executionRunId: null, executionBotId: null, executionLeaseExpiresAt: null },
           });
+        }
+        if (preparation.priorRescueId) {
+          const existing = await tx.checkpoint.findFirstOrThrow({
+            where: {
+              id: preparation.priorRescueId,
+              threadId: thread.id,
+              botId: input.botId,
+              spaceId: actor.spaceId,
+              userId: actor.userId,
+            },
+          });
+          if (existing.workspaceKey && existing.workspaceKey !== expectedWorkspaceKey)
+            throw new Error("Rescue belongs to a different workspace");
+          return existing;
         }
         return this.capture(
           tx,
@@ -808,6 +910,11 @@ export class CheckpointService {
             }),
           },
         });
+        const released = await tx.computer.updateMany({
+          where: { id: maintenance.computerId, maintenanceId: maintenance.owner },
+          data: { maintenanceId: null },
+        });
+        if (released.count !== 1) throw new Error("Checkpoint maintenance owner changed");
         return {
           ok: true as const,
           generation: preparation.generation,

@@ -1,13 +1,21 @@
-import type { Context, Hono } from "hono";
-import type { Actor } from "@rakazo/contracts";
-import { CheckpointCreate, CheckpointRollback } from "@rakazo/contracts";
 import type { CheckpointService } from "@rakazo/adapters";
+import type { Actor } from "@rakazo/contracts";
+import {
+  CheckpointBranchRename,
+  CheckpointCreate,
+  CheckpointRename,
+  CheckpointRollback,
+} from "@rakazo/contracts";
+import type { Context, Hono } from "hono";
 import { isAllowedWebOrigin } from "./web-origins.js";
 
 export function mountCheckpointHttp(
   app: Hono,
   deps: {
-    service: Pick<CheckpointService, "status" | "list" | "create" | "rollback" | "audit">;
+    service: Pick<
+      CheckpointService,
+      "status" | "list" | "create" | "rename" | "rollback" | "audit"
+    >;
     actor: (request: Request) => Promise<Actor | null>;
     webOrigin: string;
     additionalWebOrigins?: readonly string[];
@@ -55,6 +63,19 @@ export function mountCheckpointHttp(
       const body: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
       if (route === "/api/checkpoints")
         return c.json(await deps.service.create(actor, CheckpointCreate.parse(body)), 201);
+      const branch = /^\/api\/checkpoints\/branches\/([^/]+)\/rename$/.exec(route);
+      if (branch) {
+        const input = CheckpointBranchRename.parse(body);
+        if (input.branchId !== branch[1]) return c.json({ error: "Branch does not match" }, 400);
+        return c.json(await deps.service.rename(actor, input));
+      }
+      const rename = /^\/api\/checkpoints\/([^/]+)\/rename$/.exec(route);
+      if (rename) {
+        const input = CheckpointRename.parse(body);
+        if (input.checkpointId !== rename[1])
+          return c.json({ error: "Checkpoint does not match" }, 400);
+        return c.json(await deps.service.rename(actor, input));
+      }
       const match = /^\/api\/checkpoints\/([^/]+)\/rollback$/.exec(route);
       if (match) {
         const input = CheckpointRollback.parse(body);

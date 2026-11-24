@@ -1,5 +1,22 @@
 import type { CheckpointStatus, CheckpointView } from "@rakazo/contracts";
-import { Button, Input } from "@rakazo/ui-web";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  Button,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  Input,
+} from "@rakazo/ui-web";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { checkpointError, useCheckpointI18n } from "../lib/checkpoint-i18n";
 import { checkpointApi, checkpointNeedsReload } from "../lib/checkpoints";
@@ -28,7 +45,13 @@ export function CheckpointsPanel({
   const [operationError, setOperationError] = useState("");
   const [busy, setBusy] = useState(false);
   const [name, setName] = useState("");
-  const [target, setTarget] = useState<{ id: string } | null>(null);
+  const [target, setTarget] = useState<{ id: string; generation: number } | null>(null);
+  const [renameTarget, setRenameTarget] = useState<{
+    id: string;
+    revision: string;
+    kind: "checkpoint" | "branch";
+  } | null>(null);
+  const [newName, setNewName] = useState("");
   const controller = useRef<AbortController | null>(null);
   const revision = useRef<string | undefined>(undefined);
   const busyRef = useRef(false);
@@ -36,6 +59,8 @@ export function CheckpointsPanel({
   busyRef.current = busy;
   const operationBusy = busy || workspaceBusy;
   const error = operationError || loadError;
+  const targetCheckpoint = view?.checkpoints.find((item) => item.id === target?.id);
+  const restoreStale = !!(target && view && target.generation !== view.generation);
   const load = useCallback(async () => {
     const signal = controller.current?.signal;
     const value = await checkpointApi<CheckpointView>("", botId, undefined, signal);
@@ -107,11 +132,11 @@ export function CheckpointsPanel({
     }
   }
   async function restore() {
-    if (!target || !view) return;
+    if (!target || !view || target.generation !== view.generation) return;
     const result = await checkpointApi<RestoreResult>(
       `/${encodeURIComponent(target.id)}/rollback`,
       botId,
-      { checkpointId: target.id, expectedGeneration: view.generation },
+      { checkpointId: target.id, expectedGeneration: target.generation },
     );
     if (!result.ok) throw new Error(copy.restoreError);
     if (mounted.current) {
@@ -120,24 +145,27 @@ export function CheckpointsPanel({
     }
   }
 
+  async function rename() {
+    if (!renameTarget || !newName.trim() || view?.blocked) return;
+    const id = encodeURIComponent(renameTarget.id);
+    const branch = renameTarget.kind === "branch";
+    await checkpointApi(`/${branch ? "branches/" : ""}${id}/rename`, botId, {
+      ...(branch ? { branchId: renameTarget.id } : { checkpointId: renameTarget.id }),
+      expectedRevision: renameTarget.revision,
+      label: newName.trim(),
+    });
+    if (mounted.current) setRenameTarget(null);
+    await load();
+  }
+
   return (
     <section aria-label={copy.title} className="space-y-4">
-      {error && (
-        <p role="alert" className="break-words text-sm text-destructive">
-          {error}
-        </p>
-      )}
-      {view?.blocked && (
-        <p role="alert" className="text-sm text-destructive">
-          {copy.blocked}
-        </p>
-      )}
       {!view && !error && (
         <p role="status" className="text-sm text-muted-foreground">
           {copy.loading}
         </p>
       )}
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         <Input
           aria-label={copy.name}
           placeholder={copy.namePlaceholder}
@@ -145,7 +173,7 @@ export function CheckpointsPanel({
           maxLength={120}
           disabled={operationBusy || !view || view.blocked}
           onChange={(event) => setName(event.target.value)}
-          className="min-w-0 flex-1"
+          className="min-w-0 flex-1 basis-24"
         />
         <Button
           disabled={operationBusy || !view || view.blocked}
@@ -163,34 +191,6 @@ export function CheckpointsPanel({
           {copy.set}
         </Button>
       </div>
-      {target && (
-        <div
-          role="alertdialog"
-          aria-labelledby="checkpoint-confirm-title"
-          aria-describedby="checkpoint-confirm-description"
-          className="space-y-3 rounded-md border border-border p-3"
-        >
-          <h3 id="checkpoint-confirm-title" className="text-sm font-medium">
-            {copy.confirm}
-          </h3>
-          <p id="checkpoint-confirm-description" className="text-sm text-muted-foreground">
-            {copy.description}
-          </p>
-          <div className="flex gap-2">
-            <Button disabled={operationBusy} onClick={() => void run(restore)}>
-              {copy.restore}
-            </Button>
-            <Button variant="outline" disabled={operationBusy} onClick={() => setTarget(null)}>
-              {copy.cancel}
-            </Button>
-          </div>
-        </div>
-      )}
-      {operationBusy && (
-        <p role="status" className="text-sm text-muted-foreground">
-          {copy.working}
-        </p>
-      )}
       {view?.checkpoints.length === 0 && (
         <p className="text-sm text-muted-foreground">{copy.empty}</p>
       )}
@@ -198,9 +198,137 @@ export function CheckpointsPanel({
         <CheckpointTree
           view={view}
           disabled={operationBusy}
-          selectedId={target?.id}
-          onSelect={(item) => setTarget({ id: item.id })}
+          viewportId={botId}
+          onRename={(item) => {
+            setOperationError("");
+            setNewName(item.label ?? "");
+            setRenameTarget({ id: item.id, revision: view.revision, kind: "checkpoint" });
+          }}
+          onRenameBranch={(id, displayName) => {
+            setOperationError("");
+            setNewName(displayName.slice(0, 120));
+            setRenameTarget({ id, revision: view.revision, kind: "branch" });
+          }}
+          onRestore={(item) => {
+            setOperationError("");
+            setTarget({ id: item.id, generation: view.generation });
+          }}
         />
+      )}
+      {operationBusy && !targetCheckpoint && !renameTarget && (
+        <p role="status" className="text-sm text-muted-foreground">
+          {copy.working}
+        </p>
+      )}
+      {error && !targetCheckpoint && !renameTarget && (
+        <p role="alert" className="break-words text-sm text-destructive">
+          {error}
+        </p>
+      )}
+      {view?.blocked && (
+        <p role="alert" className="text-sm text-destructive">
+          {copy.blocked}
+        </p>
+      )}
+      {renameTarget && (
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            if (!open && !operationBusy) {
+              setRenameTarget(null);
+              setOperationError("");
+            }
+          }}
+        >
+          <DialogContent showCloseButton={false}>
+            <DialogHeader>
+              <DialogTitle>
+                {renameTarget.kind === "branch" ? copy.renameBranch : copy.rename}
+              </DialogTitle>
+              <DialogDescription>
+                {renameTarget.kind === "branch"
+                  ? copy.renameBranchDescription
+                  : copy.renameDescription}
+              </DialogDescription>
+            </DialogHeader>
+            <form
+              className="min-w-0 space-y-4"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (!operationBusy) void run(rename);
+              }}
+            >
+              <Input
+                aria-label={renameTarget.kind === "branch" ? copy.branchNameField : copy.name}
+                value={newName}
+                maxLength={120}
+                disabled={operationBusy}
+                onChange={(event) => setNewName(event.target.value)}
+              />
+              {operationError && (
+                <p role="alert" className="text-sm text-destructive">
+                  {operationError}
+                </p>
+              )}
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={operationBusy}
+                  onClick={() => {
+                    setRenameTarget(null);
+                    setOperationError("");
+                  }}
+                >
+                  {copy.cancel}
+                </Button>
+                <Button type="submit" disabled={operationBusy || !newName.trim() || view?.blocked}>
+                  {operationBusy ? copy.working : copy.saveName}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+      )}
+      {targetCheckpoint && (
+        <AlertDialog
+          open
+          onOpenChange={(open) => {
+            if (!open && !operationBusy) {
+              setTarget(null);
+              setOperationError("");
+            }
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>{copy.confirm}</AlertDialogTitle>
+              <AlertDialogDescription className="min-w-0">
+                <span
+                  className="mb-2 line-clamp-2 font-semibold text-foreground [overflow-wrap:anywhere]"
+                  data-testid="checkpoint-confirm-target"
+                >
+                  {targetCheckpoint.label || copy.kinds[targetCheckpoint.kind]}
+                </span>
+                {copy.description}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            {(error || restoreStale) && (
+              <p role="alert" className="break-words text-sm text-destructive">
+                {error || copy.stale}
+              </p>
+            )}
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={operationBusy}>{copy.cancel}</AlertDialogCancel>
+              <AlertDialogAction
+                disabled={operationBusy || restoreStale}
+                onClick={() => void run(restore)}
+              >
+                {operationBusy ? copy.working : copy.restore}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       )}
     </section>
   );

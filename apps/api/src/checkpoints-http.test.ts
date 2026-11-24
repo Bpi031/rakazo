@@ -1,7 +1,7 @@
+import type { CheckpointService } from "@rakazo/adapters";
+import type { Actor } from "@rakazo/contracts";
 import { Hono } from "hono";
 import { describe, expect, it, vi } from "vitest";
-import type { Actor } from "@rakazo/contracts";
-import type { CheckpointService } from "@rakazo/adapters";
 import { mountCheckpointHttp } from "./checkpoints-http.js";
 
 const actor: Actor = { userId: "user", spaceId: "space", email: "", isDeploymentOwner: false };
@@ -11,6 +11,7 @@ function fixture(authenticated = true) {
     status: vi.fn().mockResolvedValue({ generation: 2, blocked: false, revision: "2:false:saved" }),
     list: vi.fn().mockResolvedValue({ generation: 2, checkpoints: [] }),
     create: vi.fn().mockResolvedValue({ id: "saved" }),
+    rename: vi.fn().mockResolvedValue({ ok: true }),
     rollback: vi.fn().mockResolvedValue({ ok: true, generation: 3, rescueCheckpointId: "rescue" }),
     audit: vi.fn().mockResolvedValue({ schema: "rakazo/checkpoint-audit/v1", messages: [] }),
   };
@@ -28,6 +29,29 @@ const post = (body: unknown, origin = "https://app.example") => ({
 });
 
 describe("checkpoint HTTP", () => {
+  it("renames only the addressed checkpoint after same-origin validation", async () => {
+    const { app, service } = fixture();
+    const input = {
+      botId: "bot",
+      checkpointId: "saved",
+      label: "  Draft checked  ",
+      expectedRevision: "2:false:saved:0",
+    };
+    expect(
+      (await app.request("/api/checkpoints/saved/rename", post(input, "https://other.example")))
+        .status,
+    ).toBe(403);
+    expect((await app.request("/api/checkpoints/other/rename", post(input))).status).toBe(400);
+    expect(
+      (await app.request("/api/checkpoints/saved/rename", post({ ...input, label: " " }))).status,
+    ).toBe(409);
+    expect(service.rename).not.toHaveBeenCalled();
+    expect((await app.request("/api/checkpoints/saved/rename", post(input))).status).toBe(200);
+    expect(service.rename).toHaveBeenCalledExactlyOnceWith(actor, {
+      ...input,
+      label: "Draft checked",
+    });
+  });
   it("serves lightweight status without loading snapshot history", async () => {
     const { app, service } = fixture();
     const response = await app.request("/api/checkpoints/status?botId=bot");
@@ -35,6 +59,23 @@ describe("checkpoint HTTP", () => {
     expect(await response.json()).toMatchObject({ revision: "2:false:saved" });
     expect(service.status).toHaveBeenCalledWith(actor, "bot");
     expect(service.list).not.toHaveBeenCalled();
+  });
+  it("renames only the addressed branch", async () => {
+    const { app, service } = fixture();
+    const input = {
+      botId: "bot",
+      branchId: "one",
+      label: "Weekend trial",
+      expectedRevision: "2:false:saved:0",
+    };
+    expect((await app.request("/api/checkpoints/branches/two/rename", post(input))).status).toBe(
+      400,
+    );
+    expect(service.rename).not.toHaveBeenCalled();
+    expect((await app.request("/api/checkpoints/branches/one/rename", post(input))).status).toBe(
+      200,
+    );
+    expect(service.rename).toHaveBeenCalledWith(actor, input);
   });
   it("requires authentication for history and audit exports", async () => {
     const { app, service } = fixture(false);

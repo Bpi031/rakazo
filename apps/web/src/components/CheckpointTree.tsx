@@ -1,11 +1,25 @@
 import type { CheckpointListItem, CheckpointView } from "@rakazo/contracts";
 import { botColors } from "@rakazo/ui-tokens";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@rakazo/ui-web";
-import { useId, useMemo, useRef, useState } from "react";
+import {
+  Button,
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuTrigger,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@rakazo/ui-web";
+import { ArrowUp, Copy, GitBranch, MoreHorizontal, Pencil, RotateCcw, X } from "lucide-react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useCheckpointI18n } from "../lib/checkpoint-i18n";
+import { useCopyText } from "../lib/copy-text";
 
-const laneWidth = 44;
-const rowHeight = 48;
+const laneWidth = 12;
+const laneInset = 10;
+const connectedLanes = 5;
+const rowHeight = 56;
 const date = (value: string, locale: string) =>
   new Date(value).toLocaleString(locale, {
     month: "short",
@@ -14,250 +28,560 @@ const date = (value: string, locale: string) =>
     minute: "2-digit",
   });
 
+function readViewport(key?: string) {
+  try {
+    const value = key ? JSON.parse(sessionStorage.getItem(key) ?? "null") : null;
+    return {
+      top: Number.isFinite(value?.top) && value.top >= 0 ? value.top : 0,
+      branch: typeof value?.branch === "string" ? value.branch : "",
+      showTurns: value?.showTurns === true,
+    };
+  } catch {
+    return { top: 0, branch: "", showTurns: false };
+  }
+}
+
 export function checkpointTreeLayout(view: CheckpointView) {
   const byId = new Map(view.checkpoints.map((item) => [item.id, item]));
-  const lineage = new Set<string>();
-  let anchor = view.currentCheckpointId;
-  while (anchor && !lineage.has(anchor)) {
-    lineage.add(anchor);
-    anchor = byId.get(anchor)?.parentCheckpointId ?? null;
-  }
-  const owner = (item: CheckpointListItem) =>
-    lineage.has(item.id) && view.activeBranchId ? view.activeBranchId : item.branchId;
-  const used = new Set(view.checkpoints.map(owner));
-  const branches = view.branches.filter(
-    (branch) => branch.id === view.activeBranchId || used.has(branch.id),
-  );
-  for (const item of view.checkpoints)
-    if (!branches.some((branch) => branch.id === owner(item)))
-      branches.push({ id: owner(item), parentCheckpointId: null, lastUsedAt: item.createdAt });
-  if (view.activeBranchId && !branches.some((branch) => branch.id === view.activeBranchId))
-    branches.push({
-      id: view.activeBranchId,
-      parentCheckpointId: view.currentCheckpointId,
-      lastUsedAt: new Date().toISOString(),
-    });
-  branches.sort((a, b) =>
-    a.id === view.activeBranchId
-      ? -1
-      : b.id === view.activeBranchId
-        ? 1
-        : b.lastUsedAt.localeCompare(a.lastUsedAt) || a.id.localeCompare(b.id),
-  );
   const items = [...view.checkpoints].sort(
     (a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
   );
-  type PositionedNode = {
-    item: CheckpointListItem;
-    branchId: string;
-    x: number;
-    y: number;
-    row: number;
-  };
-  const positioned = new Map<string, PositionedNode>();
-  const nextLaneRow = new Map<string, number>();
-  const visiting = new Set<string>();
-  function place(item: CheckpointListItem): PositionedNode {
-    const existing = positioned.get(item.id);
-    if (existing) return existing;
-    visiting.add(item.id);
-    const parentItem = item.parentCheckpointId ? byId.get(item.parentCheckpointId) : undefined;
-    const parent = parentItem && !visiting.has(parentItem.id) ? place(parentItem) : undefined;
-    visiting.delete(item.id);
-    const branchId = owner(item);
-    const row = Math.max(parent ? parent.row + 1 : 0, nextLaneRow.get(branchId) ?? 0);
-    const node = {
-      item,
-      branchId,
-      row,
-      x: 28 + branches.findIndex((branch) => branch.id === branchId) * laneWidth,
-      y: 30 + row * rowHeight,
-    };
-    positioned.set(item.id, node);
-    nextLaneRow.set(branchId, row + 1);
-    return node;
+  const visited = new Set<string>();
+  const ordered: CheckpointListItem[] = [];
+  // Oldest first so new rescue checkpoints never shift earlier rows.
+  for (const item of items) {
+    const path: CheckpointListItem[] = [];
+    let cursor: CheckpointListItem | undefined = item;
+    while (cursor && !visited.has(cursor.id)) {
+      visited.add(cursor.id);
+      path.push(cursor);
+      cursor = byId.get(cursor.parentCheckpointId ?? "");
+    }
+    while (path.length) ordered.push(path.pop()!);
   }
-  const nodes = items.map(place);
+  const branchColors = new Map<string, number>();
+  const lastRow = Array.from({ length: connectedLanes }, () => -1);
+  const positions = new Map<string, { column: number; row: number }>();
+  let furthestColumn = 0;
+  const nodes = ordered.map((item, row) => {
+    if (!branchColors.has(item.branchId)) branchColors.set(item.branchId, branchColors.size);
+    const parentId = item.parentCheckpointId ?? "";
+    const parent = positions.get(parentId);
+    const sameBranch = byId.get(parentId)?.branchId === item.branchId;
+    // Reuse columns only when a new line fits without overwriting a prior node or line.
+    const column = parent
+      ? sameBranch && lastRow[parent.column] === parent.row
+        ? parent.column
+        : lastRow.findIndex((end, lane) => lane !== parent.column && end < parent.row)
+      : 0;
+    const reference = column < 0;
+    const visualColumn = reference ? connectedLanes : column;
+    if (!reference) lastRow[column] = row;
+    positions.set(item.id, { column: visualColumn, row });
+    furthestColumn = Math.max(furthestColumn, visualColumn);
+    return {
+      item,
+      x: laneInset + visualColumn * laneWidth,
+      y: (row + 0.5) * rowHeight,
+      color: botColors[branchColors.get(item.branchId)! % botColors.length]!,
+      reference,
+    };
+  });
   return {
-    branches,
+    branches: [...branchColors.keys()],
     nodes,
-    width: Math.max(120, branches.length * laneWidth + 32),
-    height: Math.max(240, ...nodes.map((node) => node.y + 42)),
+    width: laneInset * 2 + furthestColumn * laneWidth,
+    height: nodes.length * rowHeight,
   };
+}
+
+export function filterCheckpointTree(view: CheckpointView, branch: string, showTurns: boolean) {
+  const byId = new Map(view.checkpoints.map((item) => [item.id, item]));
+  const ancestry = new Set<string>();
+  if (branch) {
+    const origin = view.branches.find(({ id }) => id === branch)?.parentCheckpointId;
+    const starts = view.checkpoints.filter(
+      (item) => item.branchId === branch || item.id === origin,
+    );
+    for (const item of starts) {
+      let cursor: CheckpointListItem | undefined = item;
+      while (cursor && !ancestry.has(cursor.id)) {
+        ancestry.add(cursor.id);
+        cursor = byId.get(cursor.parentCheckpointId ?? "");
+      }
+    }
+  }
+  const visible = view.checkpoints.filter(
+    (item) =>
+      (!branch || ancestry.has(item.id)) && (showTurns || item.kind !== "auto_turn_boundary"),
+  );
+  const ids = new Set(visible.map((item) => item.id));
+  const resolved = new Map<string, string | null>();
+  function visibleParent(id: string | null) {
+    const skipped = new Set<string>();
+    while (id && !ids.has(id) && !resolved.has(id)) {
+      if (skipped.has(id)) return null;
+      skipped.add(id);
+      id = byId.get(id)?.parentCheckpointId ?? null;
+    }
+    const parent = id && !ids.has(id) ? resolved.get(id)! : id;
+    for (const hidden of skipped) resolved.set(hidden, parent);
+    return parent;
+  }
+  return {
+    ...view,
+    checkpoints: visible.map((item) => ({
+      ...item,
+      parentCheckpointId: visibleParent(item.parentCheckpointId),
+    })),
+  };
+}
+
+function branchNames(
+  view: CheckpointView,
+  copy: ReturnType<typeof useCheckpointI18n>["copy"],
+  locale: string,
+) {
+  const branches = new Map(view.branches.map((branch) => [branch.id, branch]));
+  const items = new Map(view.checkpoints.map((point) => [point.id, point]));
+  const history = checkpointTreeLayout(view);
+  const originByBranch = new Map<string, CheckpointListItem>();
+  for (const { item } of history.nodes) {
+    const parent = items.get(item.parentCheckpointId ?? "");
+    if (parent && parent.branchId !== item.branchId && !originByBranch.has(item.branchId))
+      originByBranch.set(item.branchId, parent);
+  }
+  const ids = new Set([
+    ...branches.keys(),
+    ...history.branches,
+    ...(view.activeBranchId ? [view.activeBranchId] : []),
+  ]);
+  const names = new Map<string, string>();
+  const used = new Set<string>();
+  for (const id of ids) {
+    const branch = branches.get(id);
+    const origin = items.get(branch?.parentCheckpointId ?? "") ?? originByBranch.get(id);
+    const label = origin?.label?.replace(/\s+/g, " ").trim();
+    const name =
+      branch?.label ||
+      (label
+        ? copy.branchFrom(label.length > 54 ? `${label.slice(0, 53)}…` : label)
+        : origin
+          ? copy.branchRestoredAt(date(origin.createdAt, locale))
+          : branch?.parentCheckpointId
+            ? copy.restoredBranch
+            : copy.originalBranch);
+    let unique = name;
+    for (let number = 2; used.has(unique); number++) unique = `${name} (${number})`;
+    used.add(unique);
+    names.set(id, unique);
+  }
+  return names;
+}
+
+function edgePath(parent: { x: number; y: number }, node: { x: number; y: number }) {
+  if (parent.x === node.x) return `M ${parent.x} ${parent.y} V ${node.y}`;
+  // Join near the fork, then follow the destination lane instead of drawing a long diagonal.
+  const elbow = parent.y + rowHeight / 2;
+  const entry = node.x - Math.sign(node.x - parent.x) * 5;
+  return `M ${parent.x} ${parent.y} V ${elbow - 5} Q ${parent.x} ${elbow} ${parent.x + Math.sign(node.x - parent.x) * 5} ${elbow} H ${entry} Q ${node.x} ${elbow} ${node.x} ${elbow + 5} V ${node.y}`;
 }
 
 export function CheckpointTree({
   view,
   disabled,
-  selectedId,
-  onSelect,
+  onRename,
+  onRenameBranch,
+  onRestore,
+  viewportId,
 }: {
   view: CheckpointView;
   disabled: boolean;
-  selectedId?: string;
-  onSelect: (item: CheckpointListItem) => void;
+  onRename: (item: CheckpointListItem) => void;
+  onRenameBranch?: (id: string, displayName: string) => void;
+  onRestore: (item: CheckpointListItem) => void;
+  viewportId?: string;
 }) {
   const { copy, locale } = useCheckpointI18n();
-  const tooltipId = useId();
-  const layout = useMemo(() => checkpointTreeLayout(view), [view]);
-  const branchColors = useMemo(
+  const history = useRef<HTMLElement>(null);
+  const viewportKey = viewportId ? `rakazo:checkpoint-viewport:${viewportId}` : undefined;
+  const [branch, setBranch] = useState(() => readViewport(viewportKey).branch);
+  const [showTurns, setShowTurns] = useState(() => readViewport(viewportKey).showTurns);
+  const [selectedId, setSelectedId] = useState<string>();
+  const [contextId, setContextId] = useState<string>();
+  const [copied, copyText] = useCopyText();
+  const names = useMemo(() => branchNames(view, copy, locale), [view, copy, locale]);
+  const allBranches = useMemo(
     () =>
-      new Map(
-        [
-          ...new Set([
-            ...view.branches.map((branch) => branch.id),
-            ...layout.branches.map((branch) => branch.id),
-          ]),
-        ]
-          .sort()
-          .map((id, index) => [id, botColors[index % botColors.length]!]),
-      ),
-    [view.branches, layout.branches],
+      [
+        ...new Set([
+          ...view.checkpoints.map((item) => item.branchId),
+          ...(view.activeBranchId ? [view.activeBranchId] : []),
+        ]),
+      ].sort((a, b) => names.get(a)!.localeCompare(names.get(b)!, locale)),
+    [view, names, locale],
   );
-  const colorFor = (id: string) => branchColors.get(id) ?? botColors[0];
-  const viewport = useRef<HTMLDivElement>(null);
-  const drag = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
-  const [dragging, setDragging] = useState(false);
-  const [hover, setHover] = useState<string | null>(null);
+  const branchFilter = allBranches.includes(branch) ? branch : "";
+  const hasTurns = view.checkpoints.some((item) => item.kind === "auto_turn_boundary");
+  const onlyRecoveryTurns =
+    view.blocked && view.checkpoints.every((item) => item.kind === "auto_turn_boundary");
+  const layout = useMemo(
+    () =>
+      checkpointTreeLayout(
+        filterCheckpointTree(view, branchFilter, showTurns || onlyRecoveryTurns),
+      ),
+    [view, branchFilter, showTurns, onlyRecoveryTurns],
+  );
   const positions = new Map(layout.nodes.map((node) => [node.item.id, node]));
+  const selectedNode = selectedId ? positions.get(selectedId) : undefined;
+  const selected = selectedNode?.item;
+  const linkedParent =
+    selectedNode?.reference && selected?.parentCheckpointId
+      ? positions.get(selected.parentCheckpointId)?.item
+      : undefined;
+  const branchLabel = (id: string) =>
+    (names.get(id) ?? copy.restoredBranch) +
+    (id === view.activeBranchId ? ` (${copy.currentBranch})` : "");
+  const editableBranch = (id: string) =>
+    !!onRenameBranch && view.branches.some((item) => item.id === id);
+  function renameBranch(id: string) {
+    onRenameBranch?.(
+      id,
+      view.branches.find((item) => item.id === id)?.label ?? names.get(id) ?? "",
+    );
+  }
 
-  return (
-    <TooltipProvider>
-      <div className="overflow-hidden rounded-xl border border-border bg-muted/10">
-        <section
-          ref={viewport}
-          aria-label={copy.tree}
-          // biome-ignore lint/a11y/noNoninteractiveTabindex: Keyboard users need to focus and scroll the tree viewport.
-          tabIndex={0}
-          className="relative overflow-auto overscroll-contain outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          style={{
-            height: "clamp(360px, 62vh, 760px)",
-            cursor: dragging ? "grabbing" : "grab",
-            touchAction: "none",
-            userSelect: "none",
-            backgroundImage: "radial-gradient(var(--border) 1px, transparent 1px)",
-            backgroundSize: "20px 20px",
-          }}
-          onPointerDown={(event) => {
-            if (event.button !== 0 || (event.target as HTMLElement).closest("button")) return;
-            drag.current = {
-              x: event.clientX,
-              y: event.clientY,
-              left: event.currentTarget.scrollLeft,
-              top: event.currentTarget.scrollTop,
-            };
-            event.currentTarget.setPointerCapture?.(event.pointerId);
-            setDragging(true);
-            setHover(null);
-          }}
-          onPointerMove={(event) => {
-            if (!drag.current) return;
-            event.currentTarget.scrollLeft = drag.current.left - (event.clientX - drag.current.x);
-            event.currentTarget.scrollTop = drag.current.top - (event.clientY - drag.current.y);
-          }}
-          onPointerUp={() => {
-            drag.current = null;
-            setDragging(false);
-          }}
-          onPointerCancel={() => {
-            drag.current = null;
-            setDragging(false);
-          }}
-          onScroll={() => setHover(null)}
+  useLayoutEffect(() => {
+    if (history.current && viewportKey) history.current.scrollTop = readViewport(viewportKey).top;
+  }, [viewportKey]);
+
+  function saveViewport(nextBranch = branchFilter, nextTurns = showTurns) {
+    if (!viewportKey) return;
+    try {
+      sessionStorage.setItem(
+        viewportKey,
+        JSON.stringify({
+          top: history.current?.scrollTop ?? 0,
+          branch: nextBranch,
+          showTurns: nextTurns,
+        }),
+      );
+    } catch {
+      // Restore remains available when storage is disabled.
+    }
+  }
+
+  function changeFilter(nextBranch: string, nextTurns: boolean) {
+    setBranch(nextBranch);
+    setShowTurns(nextTurns);
+    setSelectedId(undefined);
+    if (history.current) history.current.scrollTop = 0;
+    saveViewport(nextBranch, nextTurns);
+  }
+
+  function actions(item: CheckpointListItem) {
+    const parentId = item.parentCheckpointId;
+    return (
+      <>
+        <DropdownMenuItem onClick={() => onRestore(item)} disabled={disabled}>
+          <RotateCcw aria-hidden="true" />
+          {copy.restoreNode}
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => onRename(item)} disabled={disabled || view.blocked}>
+          <Pencil aria-hidden="true" />
+          {copy.rename}
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          onClick={() => copyText(item.id)}
+          disabled={!globalThis.navigator?.clipboard}
         >
-          <div
-            data-testid="checkpoint-tree-canvas"
-            className="relative"
-            style={{ width: layout.width, height: layout.height }}
+          <Copy aria-hidden="true" />
+          {copy.copyId}
+        </DropdownMenuItem>
+        {parentId && positions.has(parentId) && (
+          <DropdownMenuItem
+            onClick={() => {
+              setSelectedId(parentId);
+              const row = history.current?.querySelector<HTMLButtonElement>(
+                `[data-checkpoint-id="${CSS.escape(parentId)}"]`,
+              );
+              row?.scrollIntoView({ block: "nearest" });
+              row?.focus({ preventScroll: true });
+            }}
           >
-            <svg
-              aria-hidden="true"
-              className="pointer-events-none absolute inset-0"
-              width={layout.width}
-              height={layout.height}
-            >
-              {layout.nodes.map((node) => {
-                const parent = node.item.parentCheckpointId
-                  ? positions.get(node.item.parentCheckpointId)
-                  : undefined;
-                if (!parent) return null;
-                const bend = parent.y + Math.min(40, (node.y - parent.y) / 2);
-                return (
-                  <path
-                    key={node.item.id}
-                    d={`M ${parent.x} ${parent.y} C ${parent.x} ${bend}, ${node.x} ${bend}, ${node.x} ${node.y}`}
-                    fill="none"
-                    stroke={colorFor(node.branchId)}
-                    strokeWidth="2"
-                    opacity="0.55"
-                  />
-                );
-              })}
-            </svg>
-            {layout.nodes.map(({ item, branchId, x, y }) => {
-              const isCurrent = item.id === view.currentCheckpointId;
-              const color = colorFor(branchId);
-              return (
-                <Tooltip
-                  key={item.id}
-                  open={hover === item.id}
-                  onOpenChange={(open) => setHover(open ? item.id : null)}
+            <ArrowUp aria-hidden="true" />
+            {copy.navigateParent}
+          </DropdownMenuItem>
+        )}
+        {allBranches.length > 1 && (
+          <DropdownMenuItem
+            onClick={() => changeFilter(item.branchId, showTurns)}
+            disabled={branchFilter === item.branchId}
+          >
+            <GitBranch aria-hidden="true" />
+            {copy.focusBranch}
+          </DropdownMenuItem>
+        )}
+        {editableBranch(item.branchId) && (
+          <DropdownMenuItem
+            disabled={disabled || view.blocked}
+            onClick={() => renameBranch(item.branchId)}
+          >
+            <Pencil aria-hidden="true" />
+            {copy.renameBranch}
+          </DropdownMenuItem>
+        )}
+      </>
+    );
+  }
+
+  const contextItem = contextId ? positions.get(contextId)?.item : undefined;
+  return (
+    <div className="min-w-0 space-y-2">
+      {(allBranches.length > 1 || hasTurns) && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+          {allBranches.length > 1 && (
+            <div className="flex min-w-0 max-w-full items-center gap-1">
+              <select
+                aria-label={copy.branchFilter}
+                className="h-8 min-w-0 max-w-full rounded-md border border-input bg-background px-2 text-xs"
+                value={branchFilter}
+                onChange={(event) => changeFilter(event.target.value, showTurns)}
+              >
+                <option value="">{copy.allBranches}</option>
+                {allBranches.map((id) => (
+                  <option key={id} value={id}>
+                    {branchLabel(id)}
+                  </option>
+                ))}
+              </select>
+              {branchFilter && editableBranch(branchFilter) && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  className="shrink-0"
+                  aria-label={copy.renameBranch}
+                  title={copy.renameBranch}
+                  disabled={disabled || view.blocked}
+                  onClick={() => renameBranch(branchFilter)}
                 >
-                  <TooltipTrigger
-                    disabled={disabled}
-                    render={<button type="button" disabled={disabled} />}
-                    aria-label={`${copy.restoreNode} ${item.label || copy.kinds[item.kind]}`}
-                    aria-describedby={hover === item.id ? `${tooltipId}-${item.id}` : undefined}
-                    onClick={() => {
-                      setHover(null);
-                      onSelect(item);
-                    }}
-                    className="absolute cursor-pointer rounded-full border-2 border-background transition-shadow hover:ring-4 hover:ring-muted focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring disabled:cursor-wait disabled:opacity-60"
-                    style={{
-                      left: x - (isCurrent ? 9 : 8),
-                      top: y - (isCurrent ? 9 : 8),
-                      width: isCurrent ? 18 : 16,
-                      height: isCurrent ? 18 : 16,
-                      backgroundColor: color,
-                      boxShadow:
-                        selectedId === item.id || isCurrent
-                          ? `0 0 0 3px color-mix(in srgb, ${color} 30%, transparent)`
-                          : undefined,
-                    }}
-                  />
-                  <TooltipContent
-                    role="tooltip"
-                    id={`${tooltipId}-${item.id}`}
-                    side="bottom"
-                    align="start"
-                    sideOffset={10}
-                    className="block w-70 max-w-[calc(100vw-24px)] p-4"
-                  >
-                    {item.label && (
-                      <p className="mb-2 break-words text-sm font-semibold">{item.label}</p>
+                  <Pencil className="size-4" aria-hidden="true" />
+                </Button>
+              )}
+            </div>
+          )}
+          {hasTurns && !onlyRecoveryTurns && (
+            <label className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+              <input
+                type="checkbox"
+                className="size-3.5 shrink-0"
+                checked={showTurns}
+                onChange={(event) => changeFilter(branchFilter, event.target.checked)}
+              />
+              {copy.showTurns}
+            </label>
+          )}
+        </div>
+      )}
+      {layout.nodes.length === 0 && (
+        <p className="text-sm text-muted-foreground">{copy.emptyFiltered}</p>
+      )}
+      <section
+        hidden={layout.nodes.length === 0}
+        ref={history}
+        aria-label={copy.tree}
+        // biome-ignore lint/a11y/noNoninteractiveTabindex: Keyboard users can scroll the history.
+        tabIndex={0}
+        className="max-h-[min(62vh,760px)] overflow-x-hidden overflow-y-auto overscroll-contain rounded-lg border border-border outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        onScroll={() => saveViewport()}
+      >
+        <ContextMenu
+          disabled={disabled}
+          onOpenChange={(open, details) => {
+            if (!open) return;
+            const target = details.event.target;
+            const id =
+              target instanceof Element
+                ? target.closest<HTMLButtonElement>("button[data-checkpoint-id]")?.dataset
+                    .checkpointId
+                : undefined;
+            if (!id || !positions.has(id)) {
+              details.cancel();
+              return;
+            }
+            setContextId(id);
+          }}
+        >
+          <ContextMenuTrigger data-testid="checkpoint-tree-canvas" className="relative @container">
+            <div
+              aria-hidden="true"
+              data-testid="checkpoint-graph-gutter"
+              className="pointer-events-none absolute inset-y-0 start-0 z-10"
+              style={{ width: layout.width }}
+            >
+              <svg
+                className="absolute top-0 max-w-none"
+                width={layout.width}
+                height={layout.height}
+              >
+                {layout.nodes.map((node) => {
+                  const parent = node.item.parentCheckpointId
+                    ? positions.get(node.item.parentCheckpointId)
+                    : undefined;
+                  if (!parent || node.reference) return null;
+                  return (
+                    <path
+                      key={node.item.id}
+                      data-checkpoint-edge={node.item.id}
+                      d={edgePath(parent, node)}
+                      fill="none"
+                      stroke={node.color}
+                      strokeWidth="2"
+                      vectorEffect="non-scaling-stroke"
+                      opacity="0.55"
+                    />
+                  );
+                })}
+                {layout.nodes.map(({ item, x, y, color, reference }) => (
+                  <g key={item.id}>
+                    {item.id === view.currentCheckpointId && (
+                      <circle cx={x} cy={y} r={7} fill="none" stroke={color} strokeWidth={2} />
                     )}
-                    <p className="line-clamp-4 whitespace-pre-wrap break-words text-sm leading-relaxed">
-                      {item.promptPreview
-                        ? item.promptPreview.length > 180
-                          ? `${item.promptPreview.slice(0, 180)}…`
-                          : item.promptPreview
-                        : copy.noPrompt}
-                    </p>
-                    {item.promptCreatedAt && (
+                    <circle
+                      data-checkpoint-point={item.id}
+                      data-checkpoint-reference={reference ? "" : undefined}
+                      cx={x}
+                      cy={y}
+                      r={4.5}
+                      fill={reference ? "var(--background)" : color}
+                      stroke={reference ? color : "var(--background)"}
+                      strokeWidth={reference ? 2 : 1}
+                    />
+                  </g>
+                ))}
+              </svg>
+            </div>
+            {layout.nodes.map(({ item }) => {
+              const isCurrent = item.id === view.currentCheckpointId;
+              const title = item.label || copy.kinds[item.kind];
+              const preview = item.promptPreview?.replace(/\s+/g, " ").trim() || copy.noPrompt;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  disabled={disabled}
+                  aria-label={`${copy.inspectNode} ${title}`}
+                  aria-current={isCurrent ? "true" : undefined}
+                  aria-pressed={selectedId === item.id}
+                  aria-haspopup="menu"
+                  data-checkpoint-id={item.id}
+                  onClick={() => setSelectedId(selectedId === item.id ? undefined : item.id)}
+                  onKeyDown={(event) => {
+                    if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+                      event.preventDefault();
+                      const rect = event.currentTarget.getBoundingClientRect();
+                      event.currentTarget.dispatchEvent(
+                        new MouseEvent("contextmenu", {
+                          bubbles: true,
+                          cancelable: true,
+                          clientX: rect.left + 8,
+                          clientY: rect.bottom,
+                        }),
+                      );
+                    }
+                  }}
+                  className="flex w-full min-w-0 items-center border-b border-border/60 text-start transition-colors last:border-b-0 hover:bg-accent focus-visible:bg-accent focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring disabled:cursor-wait disabled:opacity-60 data-[selected=true]:bg-accent motion-reduce:transition-none"
+                  data-selected={selectedId === item.id}
+                  style={{ height: rowHeight }}
+                >
+                  <span aria-hidden="true" className="shrink-0" style={{ width: layout.width }} />
+                  <span className="min-w-0 flex-1 space-y-0.5 pe-3">
+                    <span className="flex min-w-0 items-baseline gap-2">
+                      <span className="min-w-0 flex-1 truncate text-sm font-medium">{title}</span>
+                      {isCurrent && (
+                        <span className="hidden shrink-0 text-xs text-muted-foreground @min-[280px]:inline">
+                          {copy.branchTip}
+                        </span>
+                      )}
+                    </span>
+                    <span className="flex min-w-0 items-baseline gap-2 text-xs text-muted-foreground">
+                      <span className="min-w-0 flex-1 truncate">{preview}</span>
                       <time
-                        dateTime={item.promptCreatedAt}
-                        className="mt-3 block text-xs tabular-nums opacity-70"
+                        className="hidden shrink-0 whitespace-nowrap tabular-nums @min-[280px]:inline"
+                        dateTime={item.createdAt}
                       >
-                        {date(item.promptCreatedAt, locale)}
+                        {date(item.createdAt, locale)}
                       </time>
-                    )}
-                  </TooltipContent>
-                </Tooltip>
+                    </span>
+                  </span>
+                </button>
               );
             })}
+          </ContextMenuTrigger>
+          <ContextMenuContent aria-label={copy.actions}>
+            {contextItem && actions(contextItem)}
+          </ContextMenuContent>
+        </ContextMenu>
+      </section>
+      {copied && (
+        <p role="status" className="text-xs text-muted-foreground">
+          {copy.copiedId}
+        </p>
+      )}
+      {selected && (
+        <section aria-label={copy.details} className="min-w-0 border-t border-border pt-2">
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <h3 className="text-sm font-semibold [overflow-wrap:anywhere]">
+                {selected.label || copy.kinds[selected.kind]}
+              </h3>
+              <p className="text-xs text-muted-foreground [overflow-wrap:anywhere]">
+                {branchLabel(selected.branchId)} ·{" "}
+                <time dateTime={selected.createdAt}>{date(selected.createdAt, locale)}</time>
+              </p>
+            </div>
+            <div className="flex shrink-0 items-center gap-1">
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  render={<Button type="button" variant="ghost" size="icon-sm" />}
+                  aria-label={copy.actions}
+                  title={copy.actions}
+                >
+                  <MoreHorizontal className="size-4" aria-hidden="true" />
+                </DropdownMenuTrigger>
+                <DropdownMenuContent
+                  align="end"
+                  className="w-56 max-w-(--available-width)"
+                  aria-label={copy.actions}
+                >
+                  {actions(selected)}
+                </DropdownMenuContent>
+              </DropdownMenu>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                aria-label={copy.closeDetails}
+                title={copy.closeDetails}
+                onClick={() => setSelectedId(undefined)}
+              >
+                <X className="size-4" aria-hidden="true" />
+              </Button>
+            </div>
           </div>
+          {linkedParent && (
+            <p className="mt-1 text-xs text-muted-foreground [overflow-wrap:anywhere]">
+              {copy.linkedCheckpoint}: {linkedParent.label || copy.kinds[linkedParent.kind]} ·{" "}
+              <time dateTime={linkedParent.createdAt}>{date(linkedParent.createdAt, locale)}</time>
+            </p>
+          )}
+          <p className="my-2 max-h-28 overflow-y-auto whitespace-pre-wrap text-sm [overflow-wrap:anywhere]">
+            {selected.promptPreview?.trim() || copy.noPrompt}
+          </p>
         </section>
-      </div>
-    </TooltipProvider>
+      )}
+    </div>
   );
 }

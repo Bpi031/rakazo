@@ -34,6 +34,8 @@ describe("history compaction with real Pi", () => {
       spaceId: "fixture-space",
       userId: "fixture-user",
       nextMessageSeq: 51,
+      activeBranchId: null,
+      checkpointBlocked: false,
       historyCompactedUpToSeq: 49,
       historyCompactionGeneration: 0,
       historyCompactionSummary: "Earlier decisions.",
@@ -100,6 +102,8 @@ describe("history compaction with real Pi", () => {
     expect(updateMany).toHaveBeenCalledExactlyOnceWith({
       where: {
         id: thread.id,
+        activeBranchId: null,
+        checkpointBlocked: false,
         historyCompactedUpToSeq: 49,
         historyCompactionGeneration: 0,
       },

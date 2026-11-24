@@ -98,6 +98,20 @@ function fixture() {
       }),
     },
     checkpoint: {
+      updateMany: vi.fn(async ({ where, data }) => {
+        const row = state.checkpoints.find(
+          (item: any) =>
+            item.id === where.id &&
+            item.userId === where.userId &&
+            item.spaceId === where.spaceId &&
+            item.threadId === where.threadId &&
+            item.botId === where.botId &&
+            where.OR.some(({ workspaceKey }: any) => workspaceKey === item.workspaceKey),
+        );
+        if (!row) return { count: 0 };
+        assign(row, data);
+        return { count: 1 };
+      }),
       findFirst: vi.fn(async ({ where }) =>
         copy(
           [...state.checkpoints]
@@ -169,7 +183,7 @@ function fixture() {
     },
     task: { updateMany: vi.fn(async () => ({ count: 0 })) },
     computerExecutionLease: { updateMany: vi.fn(async () => ({ count: 0 })) },
-    computer: { updateMany: vi.fn(async () => ({ count: 0 })) },
+    computer: { updateMany: vi.fn(async ({ where }) => ({ count: where.maintenanceId ? 1 : 0 })) },
     attempt: { updateMany: vi.fn(async () => ({ count: 0 })) },
     routine: {
       count: vi.fn(async () => 0),
@@ -192,7 +206,10 @@ function fixture() {
           state.audits
             .filter(
               (row: any) =>
-                row.status === "completed" && (!where.branchId || row.branchId === where.branchId),
+                (!where.status || row.status === where.status) &&
+                (!where.branchId || row.branchId === where.branchId) &&
+                (where.generation === undefined || row.generation === where.generation) &&
+                (!where.rescueCheckpointId || row.rescueCheckpointId != null),
             )
             .at(-1) ?? null,
         ),
@@ -340,10 +357,17 @@ it("captures its own files without borrowing another Bot's checkpoint", async ()
   const f = fixture();
   await f.save();
   Object.assign(f.state.checkpoints[0], {
-    botId: "other-bot", threadId: "other-thread", branchId: "other-branch",
+    botId: "other-bot",
+    threadId: "other-thread",
+    branchId: "other-branch",
   });
   const saved = await f.save();
-  expect(f.fileStore.capture).toHaveBeenLastCalledWith(actor, "bot", { id: "computer" }, "dedicated");
+  expect(f.fileStore.capture).toHaveBeenLastCalledWith(
+    actor,
+    "bot",
+    { id: "computer" },
+    "dedicated",
+  );
   expect(saved.businessState).not.toHaveProperty("fileReuseSourceCheckpointId");
   expect(saved.businessState).toMatchObject({ parentCheckpointId: null });
 });
@@ -489,6 +513,16 @@ it("keeps the tree acyclic when an earlier state is named again after a fork", a
   expect(view.checkpoints.find((node) => node.id === b.id)?.parentCheckpointId).toBe(a.id);
 });
 
+it("keeps a manual save visible when it matches an old chat checkpoint", async () => {
+  const f = fixture();
+  const original = await f.save();
+  f.state.checkpoints[0].kind = "auto_turn_boundary";
+  await f.save();
+  const view = await f.service.list(actor, "bot");
+  expect(view.checkpoints).toHaveLength(1);
+  expect(view.checkpoints[0]).toMatchObject({ id: original.id, kind: "manual" });
+});
+
 it("polls status using checkpoint identity only and changes revision after saving", async () => {
   const f = fixture();
   const before = await f.service.status(actor, "bot");
@@ -502,6 +536,30 @@ it("polls status using checkpoint identity only and changes revision after savin
     expect.objectContaining({ select: { id: true } }),
   );
   expect((await f.service.list(actor, "bot")).revision).toBe(after.revision);
+});
+
+it("renames only display metadata, refreshes other clients, and rejects stale or foreign edits", async () => {
+  const f = fixture();
+  const before = await f.save("Original");
+  const status = await f.service.status(actor, "bot");
+  const input = {
+    botId: "bot",
+    checkpointId: before.id,
+    expectedRevision: status.revision,
+    label: "Reviewed",
+  };
+  await f.service.rename(actor, input);
+  expect(f.state.checkpoints[0]).toEqual({ ...before, customLabel: "Reviewed" });
+  expect(f.fileStore.restore).not.toHaveBeenCalled();
+  const after = await f.service.list(actor, "bot");
+  expect(after.generation).toBe(status.generation);
+  expect(after.revision).not.toBe(status.revision);
+  expect(after.revision).toBe((await f.service.status(actor, "bot")).revision);
+  expect(after.checkpoints[0]).toMatchObject({ id: before.id, label: "Reviewed" });
+  await expect(f.service.rename(actor, input)).rejects.toThrow(/Workspace changed/);
+  await expect(
+    f.service.rename({ ...actor, userId: "other" }, { ...input, expectedRevision: after.revision }),
+  ).rejects.toThrow();
 });
 
 it.each(["file", "binding", "artifact", "instructions", "answer"])(
@@ -622,4 +680,32 @@ it("records SQL failures on a fresh transaction while preserving the rescue", as
   expect(f.state.thread.checkpointBlocked).toBe(true);
   expect(f.state.checkpoints.some((row: any) => row.kind === "auto_pre_rollback")).toBe(true);
   expect(f.state.audits.at(-1).details.error).toBe("database unavailable");
+});
+
+it("chains retries back to the original rescue without publishing a partial restore", async () => {
+  const f = fixture();
+  const target = await f.save();
+  f.change();
+  f.fileStore.restore
+    .mockImplementationOnce(async () => {
+      f.files.entries[0].sha256 = "e".repeat(64);
+      f.files.digest = "e".repeat(64);
+      throw new Error("interrupted after writing one file");
+    })
+    .mockRejectedValueOnce(new Error("interrupted again"));
+  expect((await f.restore(target.id)).ok).toBe(false);
+  const original = f.state.audits.at(-1).rescueCheckpointId;
+  expect(original).toBeTruthy();
+  const saved = f.state.checkpoints.length;
+  const captures = f.fileStore.capture.mock.calls.length;
+  expect((await f.restore(target.id)).ok).toBe(false);
+  expect(f.state.audits.at(-1).rescueCheckpointId).toBe(original);
+  expect(await f.restore(target.id)).toMatchObject({ ok: true, rescueCheckpointId: original });
+  expect(f.state.checkpoints).toHaveLength(saved);
+  expect(f.fileStore.capture).toHaveBeenCalledTimes(captures);
+  expect(f.state.thread.checkpointBlocked).toBe(false);
+  expect(f.db.computer.updateMany).toHaveBeenLastCalledWith({
+    where: { id: "computer", maintenanceId: expect.stringMatching(/^checkpoint-restore:/) },
+    data: { maintenanceId: null },
+  });
 });

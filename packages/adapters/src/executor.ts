@@ -2691,8 +2691,8 @@ export interface ExecutorDeps {
   checkpoints?: {
     captureForRun(input: {
       runId: string;
-      kind: "auto_turn_boundary" | "auto_pre_solve";
-      reason: "turn_start" | "rost_watch_observed";
+      kind: "auto_pre_solve";
+      reason: "rost_watch_observed";
     }): Promise<void>;
   };
   maxUploadSizeBytes?: number;
@@ -3807,11 +3807,6 @@ export function createRunExecutor(deps: ExecutorDeps) {
         ]);
         if (typeof run.checkpointGeneration === "number")
           await assertCheckpointGeneration(deps.prisma, thread.id, run.checkpointGeneration);
-        await deps.checkpoints?.captureForRun({
-          runId,
-          kind: "auto_turn_boundary",
-          reason: "turn_start",
-        });
         const historySearchBeforeSeq =
           contextStrategy !== "current" && run.sourceMessageId
             ? (messages.find((message) => message.id === run.sourceMessageId)?.seq ??

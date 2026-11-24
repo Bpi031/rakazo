@@ -495,6 +495,69 @@ postgres("checkpoint recovery with migrated PostgreSQL", () => {
     }
   });
 
+  it("persists only label metadata and fences concurrent editors without advancing recovery", async () => {
+    const old = await service.list(actor, botId);
+    const id = old.checkpoints[0]!.id;
+    const before = await prisma.checkpoint.findUniqueOrThrow({ where: { id } });
+    const edit = (label: string) =>
+      service.rename(actor, {
+        botId,
+        checkpointId: id,
+        expectedRevision: old.revision,
+        label,
+      });
+    const outcomes = await Promise.allSettled([edit("Draft for review"), edit("Roster review")]);
+    expect(outcomes.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
+    const after = await prisma.checkpoint.findUniqueOrThrow({ where: { id } });
+    expect(["Draft for review", "Roster review"]).toContain(after.customLabel);
+    expect(after).toEqual({ ...before, customLabel: after.customLabel });
+    const refreshed = await service.list(actor, botId);
+    expect(refreshed.checkpoints[0]?.label).toBe(after.customLabel);
+    expect(refreshed.generation).toBe(old.generation);
+    expect(refreshed.revision).not.toBe(old.revision);
+    await expect(
+      service.rename(
+        { ...actor, userId: "another user" },
+        {
+          botId,
+          checkpointId: id,
+          expectedRevision: refreshed.revision,
+          label: "Not mine",
+        },
+      ),
+    ).rejects.toThrow();
+  });
+
+  it("names the active branch without moving its origin or changing the recovery generation", async () => {
+    const old = await service.list(actor, botId);
+    const branchId = old.activeBranchId!;
+    const initial = await prisma.conversationBranch.findUniqueOrThrow({ where: { id: branchId } });
+    await service.rename(actor, {
+      botId,
+      branchId,
+      expectedRevision: old.revision,
+      label: "Weekend coverage trial",
+    });
+    const next = await service.list(actor, botId);
+    expect(next.activeBranchId).toBe(branchId);
+    expect(next.generation).toBe(old.generation);
+    expect(next.revision).not.toBe(old.revision);
+    expect(next.checkpoints).toEqual(old.checkpoints);
+    expect(await prisma.conversationBranch.findUniqueOrThrow({ where: { id: branchId } })).toEqual({
+      ...initial,
+      label: "Weekend coverage trial",
+    });
+    expect(next.branches.find(({ id }) => id === branchId)?.label).toBe("Weekend coverage trial");
+    await expect(
+      service.rename(actor, {
+        botId,
+        branchId: "unknown",
+        expectedRevision: next.revision,
+        label: "Invalid attempt",
+      }),
+    ).rejects.toThrow();
+  });
+
   it("permanently deletes the bot while retaining research snapshots and referenced artifact bytes", async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "checkpoint-retention-"));
     try {

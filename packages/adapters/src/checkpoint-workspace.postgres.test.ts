@@ -37,7 +37,7 @@ import { LocalAgentHomeStore } from "./home.js";
 
 const connection = process.env.CHECKPOINT_TEST_DATABASE_URL;
 const enabled =
-  process.platform === "linux" &&
+  process.platform !== "win32" &&
   connection &&
   /^rakazo_checkpoint_[a-z0-9_]+$/.test(new URL(connection).pathname.slice(1));
 const execute = promisify(execFile);
@@ -76,7 +76,7 @@ async function usage(directory: string) {
 }
 
 describe.skipIf(!enabled).sequential.each(["dedicated", "team"] as const)(
-  "%s workspace checkpoints on Linux",
+  "%s workspace checkpoints and PostgreSQL",
   (mode) => {
     const scope = `workspace-${randomUUID()}`;
     const actor: Actor = {
@@ -118,8 +118,22 @@ describe.skipIf(!enabled).sequential.each(["dedicated", "team"] as const)(
       });
       // Execute the actual Python process helpers against isolated mount equivalents.
       sandbox = {
-        execute: async function* (computer: ComputerRef, request: CommandRequest) {
+        execute: async function* (
+          computer: ComputerRef,
+          request: CommandRequest,
+          context: AdapterContext,
+        ) {
           const home = homeByRef.get(computer.id)!;
+          // macOS has no /proc. These fixtures have no subprocess writers; the
+          // real Linux writer checks are still used on Linux.
+          if (
+            process.platform !== "linux" &&
+            ["checkpoint-idle", "checkpoint-stop"].includes(context.traceId)
+          ) {
+            yield { type: "stdout", data: "checkpoint-writers-idle checkpoint-writers-stopped" };
+            yield { type: "exit", code: 0 };
+            return;
+          }
           try {
             const result = await execute(
               "python3",
@@ -442,6 +456,64 @@ describe.skipIf(!enabled).sequential.each(["dedicated", "team"] as const)(
       }
       const snapshots = await Promise.all(ids.map(save));
       expect(new Set(snapshots.map((snapshot) => snapshot.workspaceKey)).size).toBe(4);
+    }, 30_000);
+
+    it("recovers a binary workbook and the original rescue after an interrupted restore", async () => {
+      const id = `${scope}-binary-retry`;
+      const own = await bot(id);
+      const workbook = path.join(own.workspace, "Draft Roster.xlsx");
+      const writeWorkbook = (value: string) =>
+        execute("python3", [
+          "-I",
+          "-c",
+          `
+from zipfile import ZipFile, ZIP_DEFLATED
+from xml.sax.saxutils import escape
+import sys
+with ZipFile(sys.argv[1], "w", ZIP_DEFLATED) as book:
+    book.writestr("[Content_Types].xml", '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>')
+    book.writestr("_rels/.rels", '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>')
+    book.writestr("xl/workbook.xml", '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Roster" sheetId="1" r:id="rId1"/></sheets></workbook>')
+    book.writestr("xl/_rels/workbook.xml.rels", '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>')
+    book.writestr("xl/worksheets/sheet1.xml", '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>' + escape(sys.argv[2]) + '</t></is></c></row></sheetData></worksheet>')
+`,
+          workbook,
+          value,
+        ]);
+      await writeWorkbook("Original assignment");
+      const baselineBytes = await readFile(workbook);
+      const baseline = await save(id);
+      await writeWorkbook("Changed assignment");
+      const rescueBytes = await readFile(workbook);
+      const interrupted = vi.spyOn(files, "restore").mockImplementationOnce(async () => {
+        await writeFile(workbook, Buffer.from([0, 1, 2, 255]));
+        throw new Error("interrupted after clearing part of the workspace");
+      });
+      expect((await restore(id, baseline.id)).ok).toBe(false);
+      interrupted.mockRestore();
+      const failed = await prisma.rollbackAuditLog.findFirstOrThrow({
+        where: { botId: id, status: "failed" },
+      });
+      const beforeRetry = await prisma.checkpoint.count({ where: { botId: id } });
+      expect(await restore(id, baseline.id)).toMatchObject({
+        ok: true,
+        rescueCheckpointId: failed.rescueCheckpointId,
+      });
+      expect(await readFile(workbook)).toEqual(baselineBytes);
+      expect(await prisma.checkpoint.count({ where: { botId: id } })).toBe(beforeRetry);
+      expect(
+        (await prisma.computer.findUniqueOrThrow({ where: { id: own.computer.id } })).maintenanceId,
+      ).toBeNull();
+      const rescue = failed.rescueCheckpointId!;
+      expect((await restore(id, rescue)).ok).toBe(true);
+      expect(await readFile(workbook)).toEqual(rescueBytes);
+      const decoded = await execute("python3", [
+        "-I",
+        "-c",
+        'from zipfile import ZipFile; import sys, xml.etree.ElementTree as ET; print(ET.fromstring(ZipFile(sys.argv[1]).read("xl/worksheets/sheet1.xml")).find(".//{*}t").text)',
+        workbook,
+      ]);
+      expect(decoded.stdout.trim()).toBe("Changed assignment");
     }, 30_000);
 
     it.skipIf(!process.env.CHECKPOINT_BENCHMARK_SOURCE)(
