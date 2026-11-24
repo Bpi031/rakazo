@@ -14,7 +14,7 @@ const out = 'case/job';
 const deadlineUtc = 1700000000;
 const checkpointId = teamDigest({ ...scope, binding, kind: 'rost_conflict_loop' });
 const observation = { outcome: 'proven_infeasible', status: 'completed', binding, deadlineUtc,
-  computerId: 'c', threadId: 't' } as const;
+  computerId: 'c', threadId: 't', checkpointGeneration: 0 } as const;
 let role: string;
 let deps: Parameters<typeof readRostConflictStatus>[0];
 const execute = vi.fn();
@@ -67,6 +67,16 @@ it.each(['running', 'no_candidate_unknown', 'technical_failure', 'candidate_need
 it('does not mistake a lost observation for infeasibility', async () => {
   vi.mocked(observeRostJob).mockRejectedValueOnce(new RostJobObservationError());
   expect(await readRostConflictStatus(deps, run)).toMatchObject({ status: 'observation_unavailable', solveStarted: false });
+  expect(readCheckpoint).not.toHaveBeenCalled();
+});
+
+it('does not resurrect an old conflict after the conversation is restored', async () => {
+  expect(await readRostConflictStatus(deps, { ...run, checkpointGeneration: 1 }))
+    .toMatchObject({ status: 'no_current_conflict' });
+  expect(observeRostJob).not.toHaveBeenCalled();
+  vi.mocked(observeRostJob).mockResolvedValueOnce({ ...observation, checkpointGeneration: 1 });
+  expect(await readRostConflictStatus(deps, { ...run, checkpointGeneration: 0 }))
+    .toMatchObject({ status: 'no_current_conflict' });
   expect(readCheckpoint).not.toHaveBeenCalled();
 });
 

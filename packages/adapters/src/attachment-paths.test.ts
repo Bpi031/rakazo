@@ -20,7 +20,7 @@ it("stages owned dedicated uploads directly into the report-compatible workspace
   const result = await materializeCurrentTurnFiles(f.deps as any,
     [{ kind: "file", artifactId: f.row.id, name: f.row.name, size: f.row.size, mimeType: f.row.mimeType }],
     { context: f.context, computer: {} as any, computerMode: "dedicated" });
-  expect(f.findMany).toHaveBeenCalledWith({ where: { id: { in: ["upload-1"] }, spaceId: "space", userId: "owner" } });
+  expect(f.findMany).toHaveBeenCalledWith({ where: { id: { in: ["upload-1"] }, spaceId: "space", userId: "owner", checkpointHidden: false } });
   expect(result[0]!.path).toBe("workspace/inputs/uploads/upload-1.xlsx");
   expect(f.writeFile).toHaveBeenCalledOnce();
   expect(f.writeFile.mock.calls[0]?.[1]).toMatchObject({ path: result[0]!.path, content: f.bytes });

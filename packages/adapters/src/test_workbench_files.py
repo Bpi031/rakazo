@@ -10,6 +10,21 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
 class WorkbenchFilesTests(unittest.TestCase):
+    def test_team_drafts_use_only_own_directory_and_shared(self):
+        for folder in ('bots/a', 'bots/other', 'shared'):
+            (self.root / folder).mkdir(parents=True)
+            (self.root / folder / 'policy.rost').write_text('original\n')
+        with patch.object(module, 'ROOTS', ['bots/a', 'shared']):
+            for folder in ('bots/a', 'shared'):
+                path = folder + '/policy.rost'
+                captured = module.execute({'operation': 'capture', 'path': path})
+                saved = module.execute({'operation': 'save', 'path': path, 'id': 'a1afc5c5-78f2-4bb2-8530-a2d9d98bb411',
+                                        'sourceSha256': captured['sourceSha256'], 'proposedText': 'new draft\n'})
+                self.assertEqual((self.root / saved['draftPath']).read_text(), 'new draft\n')
+                self.assertEqual((self.root / path).read_text(), 'original\n')
+            for path in ('bots/other/policy.rost', 'workspace/policy.rost', 'bots/a/../other/policy.rost'):
+                with self.subTest(path=path), self.assertRaises(ValueError): module.execute({'operation': 'capture', 'path': path})
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

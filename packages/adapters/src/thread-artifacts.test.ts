@@ -14,6 +14,50 @@ import {
 } from "./thread-artifacts.js";
 
 describe("current-turn thread files", () => {
+  it("rejects a late generated artifact from an abandoned run", async () => {
+    const run = { threadId: "thread", spaceId: "space", userId: "user", botId: "bot" };
+    const create = vi.fn();
+    const tx = {
+      artifact: { findFirst: vi.fn().mockResolvedValue(null), create },
+      $queryRaw: vi.fn().mockResolvedValue([]),
+      thread: { update: vi.fn().mockResolvedValue({ activeBranchId: "new-branch" }) },
+      run: {
+        findUnique: vi.fn().mockResolvedValue({
+          ...run,
+          status: "running",
+          checkpointGeneration: 1,
+          thread: { checkpointGeneration: 2, checkpointBlocked: false },
+        }),
+      },
+    };
+    const remove = vi.fn().mockResolvedValue(undefined);
+    const prisma = {
+      run: { findUnique: vi.fn().mockResolvedValue(run) },
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+    } as unknown as PrismaClient;
+    await expect(
+      attachWorkspaceFileToThread(
+        {
+          prisma,
+          artifacts: {
+            put: vi.fn().mockResolvedValue({ id: "late-blob" }),
+            remove,
+          } as unknown as ArtifactStore,
+        },
+        {
+          spaceId: "space",
+          userId: "user",
+          botId: "bot",
+          runId: "run",
+          filePath: "schedule.pdf",
+          bytes: new Uint8Array([1]),
+          operationId: "attach",
+        },
+      ),
+    ).rejects.toThrow("Run cannot write");
+    expect(create).not.toHaveBeenCalled();
+    expect(remove).toHaveBeenCalledWith("late-blob", expect.anything());
+  });
   it("materializes uploads above 10 MiB when allowed by the server", async () => {
     const bytes = new Uint8Array(11 * 1024 * 1024);
     const writeFile = vi.fn().mockResolvedValue(undefined);
@@ -72,13 +116,24 @@ describe("current-turn thread files", () => {
       findFirst: vi.fn().mockResolvedValue(null),
       create: vi.fn().mockRejectedValue(failure),
     };
-    const tx = { artifact, $queryRaw: vi.fn().mockResolvedValue([{ lock: "1" }]) };
+    const run = {
+      threadId: "thread-1",
+      spaceId: "workspace-1",
+      userId: "user-1",
+      botId: "bot-1",
+      status: "running",
+    };
+    const tx = { artifact, $queryRaw: vi.fn().mockResolvedValue([{ lock: "1" }]),
+      thread: { update: vi.fn().mockResolvedValue({ activeBranchId: "branch-1" }) },
+      run: { findUnique: vi.fn().mockResolvedValue(run) },
+    };
 
     await expect(
       attachWorkspaceFileToThread(
         {
           prisma: {
             artifact,
+            run: { findUnique: vi.fn().mockResolvedValue(run) },
             $transaction: async (run: (client: typeof tx) => Promise<unknown>) => run(tx),
           } as unknown as PrismaClient,
           artifacts: {

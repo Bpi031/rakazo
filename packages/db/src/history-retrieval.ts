@@ -65,6 +65,18 @@ function visible(scope: HistoryScope): Prisma.Sql {
     AND EXISTS (SELECT 1 FROM bots b WHERE b.id = ${scope.botId}
       AND b."spaceId" = ${scope.spaceId} AND b."userId" = ${scope.userId}
       AND b."archivedAt" IS NULL)
+    AND (t."activeBranchId" IS NULL OR EXISTS (
+      WITH RECURSIVE ancestry AS (
+        SELECT b.id, b."parentBranchId", b."parentCutoffMessageSeq", 2147483647 AS cutoff
+        FROM conversation_branches b WHERE b.id = t."activeBranchId" AND b."threadId" = t.id
+        UNION ALL
+        SELECT p.id, p."parentBranchId", p."parentCutoffMessageSeq",
+          LEAST(a.cutoff, a."parentCutoffMessageSeq")
+        FROM conversation_branches p JOIN ancestry a ON p.id = a."parentBranchId"
+        WHERE p."threadId" = t.id
+      )
+      SELECT 1 FROM ancestry a WHERE a.id = m."branchId" AND m.seq <= a.cutoff
+    ))
     ${
       channel
         ? Prisma.sql`AND (

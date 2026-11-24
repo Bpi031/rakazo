@@ -12,6 +12,19 @@ spec.loader.exec_module(module)
 
 
 class ObserverTests(unittest.TestCase):
+    def test_team_observer_stays_within_the_selected_own_or_shared_root(self):
+        for prefix in ('bots/a', 'shared'):
+            root = self.root / prefix
+            (root / 'job').mkdir(parents=True)
+            (root / 'job/intent.json').write_bytes(self.path.read_bytes())
+            (root / 'foreign').symlink_to(self.root / 'job', target_is_directory=True)
+            with patch.object(module.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0,
+                    json.dumps({'schema': 'rost/solve-job/v1', 'status': 'running'}).encode())) as run:
+                self.assertEqual(module.observe('job', workspace=root)['status'], 'running')
+                self.assertEqual(run.call_args.args[0][-1], str(root / 'job'))
+                with self.assertRaises(ValueError): module.observe('foreign', workspace=root)
+                self.assertEqual(run.call_count, 1)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

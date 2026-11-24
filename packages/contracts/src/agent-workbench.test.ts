@@ -17,6 +17,10 @@ it.each([
   expect(() => validateQuestionAnswer(form, JSON.stringify({ schema: "rakazo/question-answer/v1", values }))).toThrow();
 });
 it.each(["/etc/passwd", "workspace/../x.rost", "workspace/.env", "workspace/a\\b", "workspace/a\u0000b", "workspace//x"])("rejects unsafe workspace path %s", (path) => expect(WorkspacePath.safeParse(path).success).toBe(false));
+it("accepts Team path syntax without granting workspace authorization", () => {
+  for (const value of ["bots/a/policy.rost", "shared/policy.rost"]) expect(WorkspacePath.safeParse(value).success).toBe(true);
+  for (const value of ["bots/a", "bots/../policy.rost", "shared/../policy.rost", "shared/.env"]) expect(WorkspacePath.safeParse(value).success).toBe(false);
+});
 it("keeps sensitive mutations out of the agent tool schema", () => {
   for (const operation of ["save_draft", "approve", "solve", "select_skill", "goal"])
     expect(WorkbenchToolInput.safeParse({ operation }).success).toBe(false);

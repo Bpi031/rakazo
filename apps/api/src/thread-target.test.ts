@@ -5,6 +5,12 @@ import type * as MessageQuoteModule from "@rakazo/core/message-quote";
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import type { ThreadTarget } from "./thread-target.js";
+function withCheckpointThread<T extends object>(tx: T) {
+  return { $executeRaw: vi.fn().mockResolvedValue(0), thread: {
+    findUnique: vi.fn().mockResolvedValue({ checkpointGeneration: 0 }),
+    findUniqueOrThrow: vi.fn().mockResolvedValue({ activeBranchId: null, checkpointGeneration: 0, checkpointBlocked: false }),
+  }, ...tx };
+}
 import {
   cancelSupersededQueuedRuns,
   reactToThreadMessage,
@@ -99,7 +105,7 @@ describe("reaction messages", () => {
           return message;
         }),
       },
-      thread: {
+      thread: { findUnique: vi.fn().mockResolvedValue({ checkpointGeneration: 0 }), findUniqueOrThrow: vi.fn().mockResolvedValue({ activeBranchId: null, checkpointGeneration: 0, checkpointBlocked: false }),
         update: vi.fn(async ({ data }: { data: { nextMessageSeq?: unknown } }) =>
           data.nextMessageSeq ? { nextMessageSeq: ++messageSeq } : { nextEventSeq: ++eventSeq },
         ),
@@ -115,7 +121,7 @@ describe("reaction messages", () => {
       run: { create: vi.fn() },
     };
     const prisma = {
-      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(withCheckpointThread(tx))),
     } as unknown as PrismaClient;
     const actor = { spaceId: "space-1", userId: "user-1" } as Actor;
     const target = { kind: "bot", botId: "bot-1", threadId: "thread-1" } as ThreadTarget;
@@ -208,7 +214,7 @@ describe("threadSnapshot", () => {
       run: { findFirst: botRunFindFirst([run]) },
     };
     const prisma = {
-      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(withCheckpointThread(tx))),
     } as unknown as PrismaClient;
     const target = {
       kind: "bot",
@@ -274,7 +280,7 @@ describe("threadSnapshot", () => {
       run: { findFirst: findFirstRun },
     };
     const prisma = {
-      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(withCheckpointThread(tx))),
     } as unknown as PrismaClient;
     const target = {
       kind: "bot",
@@ -302,6 +308,7 @@ describe("threadSnapshot", () => {
         where: {
           botId: "bot-1",
           threadId: "thread-1",
+          checkpointGeneration: 0,
           status: { in: ["waiting_input", "waiting_takeover"] },
         },
       }),
@@ -349,7 +356,7 @@ describe("threadSnapshot", () => {
       {
         prisma: {
           $transaction: vi.fn(async (callback: (client: unknown) => unknown) =>
-            callback({
+            callback({ thread: { findUnique: vi.fn().mockResolvedValue({ checkpointGeneration: 0 }), findUniqueOrThrow: vi.fn().mockResolvedValue({ activeBranchId: null }) },
               $queryRaw: vi.fn().mockResolvedValue([{ id: "thread-1" }]),
               message: { findMany: vi.fn().mockResolvedValue([]) },
               event: {
@@ -395,7 +402,7 @@ describe("threadSnapshot", () => {
         {
           prisma: {
             $transaction: vi.fn(async (callback: (client: unknown) => unknown) =>
-              callback({
+              callback({ thread: { findUnique: vi.fn().mockResolvedValue({ checkpointGeneration: 0 }), findUniqueOrThrow: vi.fn().mockResolvedValue({ activeBranchId: null }) },
                 $queryRaw: vi.fn().mockResolvedValue([{ id: "thread-1" }]),
                 message: { findMany: vi.fn().mockResolvedValue([]) },
                 event: {
@@ -463,7 +470,7 @@ describe("threadSnapshot", () => {
       run: { findFirst: findFirstRun },
     };
     const prisma = {
-      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(withCheckpointThread(tx))),
     } as unknown as PrismaClient;
     const target = {
       kind: "bot",
@@ -499,7 +506,7 @@ describe("threadSnapshot", () => {
       run: { findFirst: findFirstRun },
     };
     const prisma = {
-      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(withCheckpointThread(tx))),
     } as unknown as PrismaClient;
     const target = {
       kind: "bot",
@@ -1019,7 +1026,7 @@ function groupPrisma(findManyRuns: ReturnType<typeof groupRunFindMany>) {
     run: { findMany: findManyRuns },
   };
   return {
-    $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+    $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(withCheckpointThread(tx))),
   } as unknown as PrismaClient;
 }
 
@@ -1037,7 +1044,7 @@ describe("sendThreadMessage", () => {
   it("answers a waiting question with a free-text chat message", async () => {
     const tx = {
       $queryRaw: vi.fn().mockResolvedValue([{ id: "thread-1" }]),
-      thread: {
+      thread: { findUnique: vi.fn().mockResolvedValue({ checkpointGeneration: 0 }), findUniqueOrThrow: vi.fn().mockResolvedValue({ activeBranchId: null, checkpointGeneration: 0, checkpointBlocked: false }),
         update: vi.fn(async ({ data }: { data: { nextMessageSeq?: unknown } }) =>
           data.nextMessageSeq ? { nextMessageSeq: 2 } : { nextEventSeq: 3 },
         ),
@@ -1082,7 +1089,7 @@ describe("sendThreadMessage", () => {
     };
     const prisma = {
       message: { findUnique: vi.fn().mockResolvedValue(null) },
-      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(withCheckpointThread(tx))),
     } as unknown as PrismaClient;
     const actor = { spaceId: "workspace-1", userId: "user-1" } as Actor;
     const target = {
@@ -1141,7 +1148,7 @@ describe("sendThreadMessage", () => {
     };
     const tx = {
       $queryRaw: vi.fn().mockResolvedValue([{ id: "thread-1" }]),
-      thread: {
+      thread: { findUnique: vi.fn().mockResolvedValue({ checkpointGeneration: 0 }), findUniqueOrThrow: vi.fn().mockResolvedValue({ activeBranchId: null, checkpointGeneration: 0, checkpointBlocked: false }),
         update: vi.fn(async ({ data }: { data: { nextMessageSeq?: unknown } }) =>
           data.nextMessageSeq ? { nextMessageSeq: 2 } : { nextEventSeq: 3 },
         ),
@@ -1177,7 +1184,7 @@ describe("sendThreadMessage", () => {
     };
     const prisma = {
       message: { findUnique: vi.fn().mockResolvedValue(null) },
-      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(withCheckpointThread(tx))),
     } as unknown as PrismaClient;
     const actor = { spaceId: "workspace-1", userId: "user-1" } as Actor;
     const target = {
@@ -1309,7 +1316,7 @@ describe("sendThreadMessage", () => {
     };
     const tx = {
       $queryRaw: vi.fn().mockResolvedValue([{ id: "group-1" }]),
-      thread: {
+      thread: { findUnique: vi.fn().mockResolvedValue({ checkpointGeneration: 0 }), findUniqueOrThrow: vi.fn().mockResolvedValue({ activeBranchId: null, checkpointGeneration: 0, checkpointBlocked: false }),
         update: vi.fn(async ({ data }: { data: { nextMessageSeq?: unknown } }) =>
           data.nextMessageSeq ? { nextMessageSeq: 2 } : { nextEventSeq: 3 },
         ),
@@ -1356,7 +1363,7 @@ describe("sendThreadMessage", () => {
     };
     const prisma = {
       message: { findUnique: vi.fn().mockResolvedValue(null) },
-      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(withCheckpointThread(tx))),
     } as unknown as PrismaClient;
     const actor = { spaceId: "workspace-1", userId: "user-1" } as Actor;
     const target = {
@@ -1409,7 +1416,7 @@ describe("sendThreadMessage", () => {
 
   it("still requires the card for a pending approval ask", async () => {
     const tx = {
-      thread: {
+      thread: { findUnique: vi.fn().mockResolvedValue({ checkpointGeneration: 0 }), findUniqueOrThrow: vi.fn().mockResolvedValue({ activeBranchId: null, checkpointGeneration: 0, checkpointBlocked: false }),
         update: vi.fn().mockResolvedValue({ nextMessageSeq: 2 }),
       },
       message: {
@@ -1454,7 +1461,7 @@ describe("sendThreadMessage", () => {
     };
     const prisma = {
       message: { findUnique: vi.fn().mockResolvedValue(null) },
-      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(withCheckpointThread(tx))),
     } as unknown as PrismaClient;
     const actor = { spaceId: "workspace-1", userId: "user-1" } as Actor;
     const target = {
@@ -1487,7 +1494,7 @@ describe("sendThreadMessage", () => {
 
   it("waits for the creation intro instead of starting a second run", async () => {
     const tx = {
-      thread: {
+      thread: { findUnique: vi.fn().mockResolvedValue({ checkpointGeneration: 0 }), findUniqueOrThrow: vi.fn().mockResolvedValue({ activeBranchId: null, checkpointGeneration: 0, checkpointBlocked: false }),
         update: vi.fn(async ({ data }: { data: { nextMessageSeq?: unknown } }) =>
           data.nextMessageSeq ? { nextMessageSeq: 2 } : { nextEventSeq: 3 },
         ),
@@ -1522,7 +1529,7 @@ describe("sendThreadMessage", () => {
     };
     const prisma = {
       message: { findUnique: vi.fn().mockResolvedValue(null) },
-      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(withCheckpointThread(tx))),
     } as unknown as PrismaClient;
     const actor = { spaceId: "workspace-1", userId: "user-1" } as Actor;
     const target = {
@@ -1565,7 +1572,7 @@ describe("sendThreadMessage", () => {
 
   it("steers a waiting-takeover run instead of refusing the message", async () => {
     const tx = {
-      thread: {
+      thread: { findUnique: vi.fn().mockResolvedValue({ checkpointGeneration: 0 }), findUniqueOrThrow: vi.fn().mockResolvedValue({ activeBranchId: null, checkpointGeneration: 0, checkpointBlocked: false }),
         update: vi
           .fn()
           .mockResolvedValueOnce({ nextMessageSeq: 2 })
@@ -1600,7 +1607,7 @@ describe("sendThreadMessage", () => {
     };
     const prisma = {
       message: { findUnique: vi.fn().mockResolvedValue(null) },
-      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(withCheckpointThread(tx))),
     } as unknown as PrismaClient;
     const actor = { spaceId: "workspace-1", userId: "user-1" } as Actor;
     const target = {
@@ -1646,7 +1653,7 @@ describe("sendThreadMessage", () => {
     let messageSeq = 0;
     let eventSeq = 0;
     const tx = {
-      thread: {
+      thread: { findUnique: vi.fn().mockResolvedValue({ checkpointGeneration: 0 }), findUniqueOrThrow: vi.fn().mockResolvedValue({ activeBranchId: null, checkpointGeneration: 0, checkpointBlocked: false }),
         update: vi.fn(async ({ data }: { data: { nextMessageSeq?: unknown } }) =>
           data.nextMessageSeq ? { nextMessageSeq: ++messageSeq } : { nextEventSeq: ++eventSeq },
         ),
@@ -1685,7 +1692,7 @@ describe("sendThreadMessage", () => {
     };
     const prisma = {
       message: { findUnique: vi.fn().mockResolvedValue(null) },
-      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(withCheckpointThread(tx))),
     } as unknown as PrismaClient;
     const actor = { spaceId: "workspace-1", userId: "user-1" } as Actor;
     const target = {
@@ -1729,7 +1736,7 @@ describe("sendThreadMessage", () => {
     let messageSeq = 0;
     let eventSeq = 0;
     const tx = {
-      thread: {
+      thread: { findUnique: vi.fn().mockResolvedValue({ checkpointGeneration: 0 }), findUniqueOrThrow: vi.fn().mockResolvedValue({ activeBranchId: null, checkpointGeneration: 0, checkpointBlocked: false }),
         update: vi.fn(async ({ data }: { data: { nextMessageSeq?: unknown } }) =>
           data.nextMessageSeq ? { nextMessageSeq: ++messageSeq } : { nextEventSeq: ++eventSeq },
         ),
@@ -1785,7 +1792,7 @@ describe("sendThreadMessage", () => {
     };
     const prisma = {
       message: { findUnique: vi.fn().mockResolvedValue(null) },
-      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(withCheckpointThread(tx))),
     } as unknown as PrismaClient;
     const actor = { spaceId: "workspace-1", userId: "user-1" } as Actor;
     const target = {
@@ -1821,7 +1828,7 @@ describe("sendThreadMessage", () => {
     };
     const tx = {
       $queryRaw: vi.fn().mockResolvedValue([{ id: "thread-1" }]),
-      thread: {
+      thread: { findUnique: vi.fn().mockResolvedValue({ checkpointGeneration: 0 }), findUniqueOrThrow: vi.fn().mockResolvedValue({ activeBranchId: null, checkpointGeneration: 0, checkpointBlocked: false }),
         update: vi.fn(async ({ data }: { data: { nextMessageSeq?: unknown } }) =>
           data.nextMessageSeq ? { nextMessageSeq: 2 } : { nextEventSeq: 3 },
         ),
@@ -1862,7 +1869,7 @@ describe("sendThreadMessage", () => {
     };
     const prisma = {
       message: { findUnique: vi.fn().mockResolvedValue(null) },
-      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(withCheckpointThread(tx))),
     } as unknown as PrismaClient;
     const actor = { spaceId: "workspace-1", userId: "user-1" } as Actor;
     const target = {
@@ -1913,7 +1920,7 @@ describe("sendThreadMessage", () => {
     };
     const tx = {
       $queryRaw: vi.fn().mockResolvedValue([{ id: "group-1" }]),
-      thread: {
+      thread: { findUnique: vi.fn().mockResolvedValue({ checkpointGeneration: 0 }), findUniqueOrThrow: vi.fn().mockResolvedValue({ activeBranchId: null, checkpointGeneration: 0, checkpointBlocked: false }),
         update: vi.fn(async ({ data }: { data: { nextMessageSeq?: unknown } }) =>
           data.nextMessageSeq ? { nextMessageSeq: 2 } : { nextEventSeq: 3 },
         ),
@@ -1965,7 +1972,7 @@ describe("sendThreadMessage", () => {
     };
     const prisma = {
       message: { findUnique: vi.fn().mockResolvedValue(null) },
-      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(withCheckpointThread(tx))),
     } as unknown as PrismaClient;
     const actor = { spaceId: "workspace-1", userId: "user-1" } as Actor;
     const target = {
@@ -2015,7 +2022,7 @@ describe("sendThreadMessage", () => {
     let messageSeq = 0;
     let eventSeq = 0;
     const tx = {
-      thread: {
+      thread: { findUnique: vi.fn().mockResolvedValue({ checkpointGeneration: 0 }), findUniqueOrThrow: vi.fn().mockResolvedValue({ activeBranchId: null, checkpointGeneration: 0, checkpointBlocked: false }),
         update: vi.fn(async ({ data }: { data: { nextMessageSeq?: unknown } }) =>
           data.nextMessageSeq ? { nextMessageSeq: ++messageSeq } : { nextEventSeq: ++eventSeq },
         ),
@@ -2059,7 +2066,7 @@ describe("sendThreadMessage", () => {
     };
     const prisma = {
       message: { findUnique: vi.fn().mockResolvedValue(null) },
-      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(withCheckpointThread(tx))),
     } as unknown as PrismaClient;
     const actor = { spaceId: "workspace-1", userId: "user-1" } as Actor;
     const target = {
@@ -2103,7 +2110,7 @@ describe("sendThreadMessage", () => {
     let messageSeq = 0;
     let eventSeq = 0;
     const tx = {
-      thread: {
+      thread: { findUnique: vi.fn().mockResolvedValue({ checkpointGeneration: 0 }), findUniqueOrThrow: vi.fn().mockResolvedValue({ activeBranchId: null, checkpointGeneration: 0, checkpointBlocked: false }),
         update: vi.fn(async ({ data }: { data: { nextMessageSeq?: unknown } }) =>
           data.nextMessageSeq ? { nextMessageSeq: ++messageSeq } : { nextEventSeq: ++eventSeq },
         ),
@@ -2165,7 +2172,7 @@ describe("sendThreadMessage", () => {
     };
     const prisma = {
       message: { findUnique: vi.fn().mockResolvedValue(null) },
-      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(withCheckpointThread(tx))),
     } as unknown as PrismaClient;
     const actor = { spaceId: "workspace-1", userId: "user-1" } as Actor;
     const target = {
@@ -2230,7 +2237,7 @@ describe("sendThreadMessage", () => {
     let messageSeq = 0;
     let eventSeq = 0;
     const tx = {
-      thread: {
+      thread: { findUnique: vi.fn().mockResolvedValue({ checkpointGeneration: 0 }), findUniqueOrThrow: vi.fn().mockResolvedValue({ activeBranchId: null, checkpointGeneration: 0, checkpointBlocked: false }),
         update: vi.fn(async ({ data }: { data: { nextMessageSeq?: unknown } }) =>
           data.nextMessageSeq ? { nextMessageSeq: ++messageSeq } : { nextEventSeq: ++eventSeq },
         ),
@@ -2268,7 +2275,7 @@ describe("sendThreadMessage", () => {
     };
     const prisma = {
       message: { findUnique: vi.fn().mockResolvedValue(null) },
-      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(withCheckpointThread(tx))),
     } as unknown as PrismaClient;
     const actor = { spaceId: "workspace-1", userId: "user-1" } as Actor;
     const target = { kind: "bot", botId: "bot-1", threadId: "thread-1" } as ThreadTarget;
@@ -2312,7 +2319,7 @@ describe("sendThreadMessage", () => {
     let eventSeq = 0;
     const clientNonce = callClientNonce("call-7");
     const tx = {
-      thread: {
+      thread: { findUnique: vi.fn().mockResolvedValue({ checkpointGeneration: 0 }), findUniqueOrThrow: vi.fn().mockResolvedValue({ activeBranchId: null, checkpointGeneration: 0, checkpointBlocked: false }),
         update: vi.fn(async ({ data }: { data: { nextMessageSeq?: unknown } }) =>
           data.nextMessageSeq ? { nextMessageSeq: ++messageSeq } : { nextEventSeq: ++eventSeq },
         ),
@@ -2345,7 +2352,7 @@ describe("sendThreadMessage", () => {
     };
     const prisma = {
       message: { findUnique: vi.fn().mockResolvedValue(null) },
-      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(withCheckpointThread(tx))),
     } as unknown as PrismaClient;
 
     await sendThreadMessage(
@@ -2373,7 +2380,7 @@ describe("sendThreadMessage", () => {
       let messageSeq = 0;
       let eventSeq = 0;
       const tx = {
-        thread: {
+        thread: { findUnique: vi.fn().mockResolvedValue({ checkpointGeneration: 0 }), findUniqueOrThrow: vi.fn().mockResolvedValue({ activeBranchId: null, checkpointGeneration: 0, checkpointBlocked: false }),
           update: vi.fn(async ({ data }: { data: { nextMessageSeq?: unknown } }) =>
             data.nextMessageSeq ? { nextMessageSeq: ++messageSeq } : { nextEventSeq: ++eventSeq },
           ),
@@ -2411,7 +2418,7 @@ describe("sendThreadMessage", () => {
       };
       const prisma = {
         message: { findUnique: vi.fn().mockResolvedValue(null) },
-        $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+        $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(withCheckpointThread(tx))),
       } as unknown as PrismaClient;
       const actor = { spaceId: "workspace-1", userId: "user-1" } as Actor;
       const target = { kind: "bot", botId: "bot-1", threadId: "thread-1" } as ThreadTarget;
@@ -2452,7 +2459,7 @@ describe("sendThreadMessage", () => {
     let messageSeq = 0;
     let eventSeq = 0;
     const tx = {
-      thread: {
+      thread: { findUnique: vi.fn().mockResolvedValue({ checkpointGeneration: 0 }), findUniqueOrThrow: vi.fn().mockResolvedValue({ activeBranchId: null, checkpointGeneration: 0, checkpointBlocked: false }),
         update: vi.fn(async ({ data }: { data: { nextMessageSeq?: unknown } }) =>
           data.nextMessageSeq ? { nextMessageSeq: ++messageSeq } : { nextEventSeq: ++eventSeq },
         ),
@@ -2487,7 +2494,7 @@ describe("sendThreadMessage", () => {
     };
     const prisma = {
       message: { findUnique: vi.fn().mockResolvedValue(null) },
-      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(withCheckpointThread(tx))),
     } as unknown as PrismaClient;
     const actor = { spaceId: "workspace-1", userId: "user-1" } as Actor;
     const target = { kind: "bot", botId: "bot-1", threadId: "thread-1" } as ThreadTarget;
@@ -2527,7 +2534,7 @@ describe("sendThreadMessage", () => {
     let messageSeq = 0;
     let eventSeq = 0;
     const tx = {
-      thread: {
+      thread: { findUnique: vi.fn().mockResolvedValue({ checkpointGeneration: 0 }), findUniqueOrThrow: vi.fn().mockResolvedValue({ activeBranchId: null, checkpointGeneration: 0, checkpointBlocked: false }),
         update: vi.fn(async ({ data }: { data: { nextMessageSeq?: unknown } }) =>
           data.nextMessageSeq ? { nextMessageSeq: ++messageSeq } : { nextEventSeq: ++eventSeq },
         ),
@@ -2566,7 +2573,7 @@ describe("sendThreadMessage", () => {
     };
     const prisma = {
       message: { findUnique: vi.fn().mockResolvedValue(null) },
-      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(withCheckpointThread(tx))),
     } as unknown as PrismaClient;
     const actor = { spaceId: "workspace-1", userId: "user-1" } as Actor;
     const target = { kind: "bot", botId: "bot-1", threadId: "thread-1" } as ThreadTarget;
@@ -2629,7 +2636,7 @@ describe("sendThreadMessage", () => {
       let messageSeq = 0;
       let eventSeq = 0;
       const tx = {
-        thread: {
+        thread: { findUnique: vi.fn().mockResolvedValue({ checkpointGeneration: 0 }), findUniqueOrThrow: vi.fn().mockResolvedValue({ activeBranchId: null, checkpointGeneration: 0, checkpointBlocked: false }),
           update: vi.fn(async ({ data }: { data: { nextMessageSeq?: unknown } }) =>
             data.nextMessageSeq ? { nextMessageSeq: ++messageSeq } : { nextEventSeq: ++eventSeq },
           ),
@@ -2672,7 +2679,7 @@ describe("sendThreadMessage", () => {
       };
       const prisma = {
         message: { findUnique: vi.fn().mockResolvedValue(null) },
-        $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+        $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(withCheckpointThread(tx))),
       } as unknown as PrismaClient;
       const actor = { spaceId: "workspace-1", userId: "user-1" } as Actor;
       const target = { kind: "bot", botId: "bot-1", threadId: "thread-1" } as ThreadTarget;
@@ -2739,7 +2746,7 @@ describe("sendThreadMessage", () => {
       let messageSeq = 0;
       let eventSeq = 0;
       const tx = {
-        thread: {
+        thread: { findUnique: vi.fn().mockResolvedValue({ checkpointGeneration: 0 }), findUniqueOrThrow: vi.fn().mockResolvedValue({ activeBranchId: null, checkpointGeneration: 0, checkpointBlocked: false }),
           update: vi.fn(async ({ data }: { data: { nextMessageSeq?: unknown } }) =>
             data.nextMessageSeq ? { nextMessageSeq: ++messageSeq } : { nextEventSeq: ++eventSeq },
           ),
@@ -2777,7 +2784,7 @@ describe("sendThreadMessage", () => {
       };
       const prisma = {
         message: { findUnique: vi.fn().mockResolvedValue(null) },
-        $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+        $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(withCheckpointThread(tx))),
       } as unknown as PrismaClient;
       const actor = { spaceId: "workspace-1", userId: "user-1" } as Actor;
       const target = { kind: "bot", botId: "bot-1", threadId: "thread-1" } as ThreadTarget;
@@ -2824,7 +2831,7 @@ describe("sendThreadMessage", () => {
     let messageSeq = 0;
     let eventSeq = 0;
     const tx = {
-      thread: {
+      thread: { findUnique: vi.fn().mockResolvedValue({ checkpointGeneration: 0 }), findUniqueOrThrow: vi.fn().mockResolvedValue({ activeBranchId: null, checkpointGeneration: 0, checkpointBlocked: false }),
         update: vi.fn(async ({ data }: { data: { nextMessageSeq?: unknown } }) =>
           data.nextMessageSeq ? { nextMessageSeq: ++messageSeq } : { nextEventSeq: ++eventSeq },
         ),
@@ -2867,7 +2874,7 @@ describe("sendThreadMessage", () => {
     };
     const prisma = {
       message: { findUnique: vi.fn().mockResolvedValue(null) },
-      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(withCheckpointThread(tx))),
     } as unknown as PrismaClient;
     const actor = { spaceId: "workspace-1", userId: "user-1" } as Actor;
     const target = { kind: "bot", botId: "bot-1", threadId: "thread-1" } as ThreadTarget;
@@ -2912,7 +2919,7 @@ describe("sendThreadMessage", () => {
     let messageSeq = 0;
     let eventSeq = 0;
     const tx = {
-      thread: {
+      thread: { findUnique: vi.fn().mockResolvedValue({ checkpointGeneration: 0 }), findUniqueOrThrow: vi.fn().mockResolvedValue({ activeBranchId: null, checkpointGeneration: 0, checkpointBlocked: false }),
         update: vi.fn(async ({ data }: { data: { nextMessageSeq?: unknown } }) =>
           data.nextMessageSeq ? { nextMessageSeq: ++messageSeq } : { nextEventSeq: ++eventSeq },
         ),
@@ -2950,7 +2957,7 @@ describe("sendThreadMessage", () => {
     };
     const prisma = {
       message: { findUnique: vi.fn().mockResolvedValue(null) },
-      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(withCheckpointThread(tx))),
     } as unknown as PrismaClient;
     const actor = { spaceId: "workspace-1", userId: "user-1" } as Actor;
     const target = { kind: "bot", botId: "bot-1", threadId: "thread-1" } as ThreadTarget;
@@ -2982,7 +2989,7 @@ describe("sendThreadMessage", () => {
     let messageSeq = 0;
     let eventSeq = 0;
     const tx = {
-      thread: {
+      thread: { findUnique: vi.fn().mockResolvedValue({ checkpointGeneration: 0 }), findUniqueOrThrow: vi.fn().mockResolvedValue({ activeBranchId: null, checkpointGeneration: 0, checkpointBlocked: false }),
         update: vi.fn(async ({ data }: { data: { nextMessageSeq?: unknown } }) =>
           data.nextMessageSeq ? { nextMessageSeq: ++messageSeq } : { nextEventSeq: ++eventSeq },
         ),
@@ -3033,7 +3040,7 @@ describe("sendThreadMessage", () => {
     };
     const prisma = {
       message: { findUnique: vi.fn().mockResolvedValue(null) },
-      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(withCheckpointThread(tx))),
     } as unknown as PrismaClient;
     const actor = { spaceId: "workspace-1", userId: "user-1" } as Actor;
     const target = {
@@ -3085,7 +3092,7 @@ describe("stopThreadRuns", () => {
     let nextEventSeq = 0;
     const transaction = {
       $queryRaw: vi.fn(),
-      thread: {
+      thread: { findUnique: vi.fn().mockResolvedValue({ checkpointGeneration: 0 }), findUniqueOrThrow: vi.fn().mockResolvedValue({ activeBranchId: null, checkpointGeneration: 0, checkpointBlocked: false }),
         update: vi.fn(async () => ({ nextEventSeq: ++nextEventSeq })),
       },
       run: {
@@ -3224,7 +3231,7 @@ describe("stopThreadRuns", () => {
     });
     const transaction = {
       $queryRaw: vi.fn(),
-      thread: {
+      thread: { findUnique: vi.fn().mockResolvedValue({ checkpointGeneration: 0 }), findUniqueOrThrow: vi.fn().mockResolvedValue({ activeBranchId: null, checkpointGeneration: 0, checkpointBlocked: false }),
         update: vi.fn().mockResolvedValue({ nextEventSeq: 5 }),
       },
       run: {
@@ -3331,7 +3338,7 @@ describe("stopThreadRuns", () => {
     const created: Array<Record<string, unknown>> = [];
     const transaction = {
       $queryRaw: vi.fn(),
-      thread: {
+      thread: { findUnique: vi.fn().mockResolvedValue({ checkpointGeneration: 0 }), findUniqueOrThrow: vi.fn().mockResolvedValue({ activeBranchId: null, checkpointGeneration: 0, checkpointBlocked: false }),
         update: vi.fn(async () => ({ nextEventSeq: ++nextEventSeq })),
       },
       run: {
@@ -3422,7 +3429,7 @@ describe("stopThreadRuns", () => {
   it("emits no event and skips the wake when nothing was running", async () => {
     const transaction = {
       $queryRaw: vi.fn(),
-      thread: { update: vi.fn() },
+      thread: { findUnique: vi.fn().mockResolvedValue({ checkpointGeneration: 0 }), findUniqueOrThrow: vi.fn().mockResolvedValue({ activeBranchId: null, checkpointGeneration: 0, checkpointBlocked: false }), update: vi.fn() },
       run: {
         updateManyAndReturn: vi.fn().mockResolvedValue([]),
         findUnique: vi.fn(),

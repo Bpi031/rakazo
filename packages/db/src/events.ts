@@ -2,10 +2,10 @@ import type { RealtimeFanout } from "@rakazo/adapter-kit";
 import type { BotSecretDestination, MessageBlock, ProductEvent } from "@rakazo/contracts";
 import {
   BOT_INSTRUCTIONS_MAX_LENGTH,
-  validateQuestionAnswer,
   encodeLoginSecret,
   LoginSecretValue,
   MessageBlock as MessageBlockSchema,
+  validateQuestionAnswer,
 } from "@rakazo/contracts";
 import {
   blocksToAgentHistoryText,
@@ -21,6 +21,7 @@ import {
 import { approvalEffectKey } from "@rakazo/core/node/approval-effect-key";
 import { getLogger } from "@rakazo/logging";
 import { cancelRunsInTransaction } from "./cancel-runs.js";
+import { CheckpointConflictError, checkpointEventWhere } from "./checkpoints.js";
 import type { Prisma, PrismaClient } from "./client.js";
 import { expireComputerExecutionLeases } from "./computers.js";
 import {
@@ -298,7 +299,7 @@ export async function clearThread(
         ...(input.groupId ? { groupId: input.groupId } : { botId: input.botId }),
       },
       data: { unread: false },
-      select: { nextMessageSeq: true, historyCompactionGeneration: true },
+      select: { nextMessageSeq: true, historyCompactionGeneration: true, activeBranchId: true },
     });
     const activeRuns = await tx.run.findMany({
       where: {
@@ -322,8 +323,19 @@ export async function clearThread(
         executionLeaseExpiresAt: null,
       },
     });
-    await tx.message.deleteMany({ where: { threadId: input.threadId } });
-    await tx.event.deleteMany({ where: { threadId: input.threadId } });
+    if (thread.activeBranchId) {
+      const branch = await tx.conversationBranch.create({ data: { threadId: input.threadId } });
+      await tx.thread.update({
+        where: { id: input.threadId },
+        data: {
+          activeBranchId: branch.id,
+          checkpointGeneration: { increment: 1 },
+        },
+      });
+    } else {
+      await tx.message.deleteMany({ where: { threadId: input.threadId } });
+      await tx.event.deleteMany({ where: { threadId: input.threadId } });
+    }
     if (thread.nextMessageSeq > 0) {
       // nextMessageSeq is not reset, so mark every deleted message as already compacted.
       // Leaving the cursor behind would let compaction re-summarize deleted history (or, reset
@@ -452,6 +464,14 @@ export async function sendUserMessage(
         });
         run = await tx.run.create({
           data: {
+            branchId: message.branchId,
+            checkpointGeneration: (
+              await tx.thread.update({
+                where: { id: input.threadId },
+                data: { checkpointGeneration: { increment: 0 } },
+                select: { checkpointGeneration: true },
+              })
+            ).checkpointGeneration,
             spaceId: input.spaceId,
             botId: input.botId,
             threadId: input.threadId,
@@ -539,17 +559,26 @@ export async function deferSteering(
   if (!input.ids.length || input.ids.length > 1000) return;
   await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM threads WHERE id = ${input.threadId} FOR UPDATE`;
-    const run = await tx.run.findFirst({ where: {
-      id: input.runId, threadId: input.threadId, botId: input.botId,
-      leaseFence: input.leaseFence,
-      OR: [
-        { status: "running", leaseOwner: input.leaseOwner },
-        { status: "waiting_input", leaseOwner: null },
-      ],
-    } });
+    const run = await tx.run.findFirst({
+      where: {
+        id: input.runId,
+        threadId: input.threadId,
+        botId: input.botId,
+        leaseFence: input.leaseFence,
+        OR: [
+          { status: "running", leaseOwner: input.leaseOwner },
+          { status: "waiting_input", leaseOwner: null },
+        ],
+      },
+    });
     if (!run) return;
     await tx.steeringMessage.updateMany({
-      where: { id: { in: input.ids }, runId: input.runId, botId: input.botId, message: { threadId: input.threadId } },
+      where: {
+        id: { in: input.ids },
+        runId: input.runId,
+        botId: input.botId,
+        message: { threadId: input.threadId },
+      },
       data: { runId: null, claimedAt: null },
     });
   });
@@ -703,9 +732,18 @@ async function commitAnswerRunInput(
   );
   if (pendingAsk?.kind !== "ask") return null;
   if (pendingAsk.form) {
-    if (run.userId !== input.answeredByUserId || pendingAsk.approvalEffectId || pendingAsk.credential || pendingAsk.instructionUpdate) return null;
-    try { input = { ...input, answer: validateQuestionAnswer(pendingAsk.form, input.answer) }; }
-    catch { return null; }
+    if (
+      run.userId !== input.answeredByUserId ||
+      pendingAsk.approvalEffectId ||
+      pendingAsk.credential ||
+      pendingAsk.instructionUpdate
+    )
+      return null;
+    try {
+      input = { ...input, answer: validateQuestionAnswer(pendingAsk.form, input.answer) };
+    } catch {
+      return null;
+    }
   }
   const approvalAsk = isApprovalAskBlock(pendingAsk);
   const secretAsk = isSecretAskBlock(pendingAsk);
@@ -1442,6 +1480,12 @@ export async function createPendingSteeringRun(
   tx: Prisma.TransactionClient,
   input: { spaceId: string; threadId: string; botId: string },
 ): Promise<string | null> {
+  const checkpointThread = await tx.thread.update({
+    where: { id: input.threadId },
+    data: { checkpointGeneration: { increment: 0 } },
+    select: { activeBranchId: true, checkpointGeneration: true, checkpointBlocked: true },
+  });
+  if (checkpointThread.checkpointBlocked) return null;
   const active = await tx.run.findFirst({
     where: {
       threadId: input.threadId,
@@ -1455,7 +1499,7 @@ export async function createPendingSteeringRun(
     where: {
       botId: input.botId,
       runId: null,
-      message: { threadId: input.threadId },
+      message: { threadId: input.threadId, branchId: checkpointThread.activeBranchId },
     },
     include: { message: { select: { id: true, blocks: true, seq: true } } },
     orderBy: [{ message: { seq: "asc" } }, { id: "asc" }],
@@ -1481,6 +1525,8 @@ export async function createPendingSteeringRun(
   });
   const run = await tx.run.create({
     data: {
+      branchId: checkpointThread.activeBranchId,
+      checkpointGeneration: checkpointThread.checkpointGeneration,
       spaceId: input.spaceId,
       botId: input.botId,
       threadId: input.threadId,
@@ -1540,8 +1586,9 @@ export async function appendEventInTransaction(
   const thread = await tx.thread.update({
     where: { id: input.threadId },
     data: { nextEventSeq: { increment: 1 } },
-    select: { nextEventSeq: true },
+    select: { nextEventSeq: true, activeBranchId: true, checkpointBlocked: true },
   });
+  if (thread.checkpointBlocked) throw new CheckpointConflictError();
   // run.cancelled is appended after the run row already reads cancelled, so it
   // asserts the terminal status where every other event needs a writable run.
   if (input.type === "run.cancelled") {
@@ -1557,6 +1604,7 @@ export async function appendEventInTransaction(
       threadId: input.threadId,
       botId: input.botId,
       seq: thread.nextEventSeq - 1,
+      branchId: thread.activeBranchId,
       type: input.type,
       payload: payload as Prisma.InputJsonValue,
       runId: input.runId,
@@ -1579,7 +1627,7 @@ export async function eventsAfter(
   limit?: number,
 ) {
   return prisma.event.findMany({
-    where: { threadId, seq: { gt: cursor } },
+    where: { AND: [await checkpointEventWhere(prisma, threadId)], seq: { gt: cursor } },
     orderBy: { seq: "asc" },
     ...(limit ? { take: limit } : {}),
   });

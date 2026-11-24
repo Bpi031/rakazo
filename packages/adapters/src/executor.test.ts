@@ -1406,6 +1406,31 @@ describe("persistentComputerInstruction", () => {
 });
 
 describe("createRunExecutor", () => {
+  it("does not cancel a live run when the checkpoint lookup temporarily fails", async () => {
+    const error = new Error("database temporarily unavailable");
+    const updateMany = vi.fn();
+    const deps = {
+      prisma: {
+        run: {
+          findUnique: vi.fn(async () => ({
+            id: "run-1",
+            threadId: "thread-1",
+            status: "queued",
+            checkpointGeneration: 0,
+          })),
+          updateMany,
+        },
+        thread: {
+          findUnique: vi.fn(async () => {
+            throw error;
+          }),
+        },
+      },
+    } as unknown as Parameters<typeof createRunExecutor>[0];
+    await expect(createRunExecutor(deps).continueRun("run-1", "worker-1")).rejects.toBe(error);
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+
   it("excludes private summaries and memory tools from group messaging runs", () => {
     const messages = [{ role: "user", content: "Group request" }];
     expect(
@@ -1517,6 +1542,7 @@ describe("createRunExecutor", () => {
       },
       $transaction: vi.fn(async (callback: (tx: unknown) => Promise<unknown>) =>
         callback({
+          ...checkpointTxFields(),
           routine: {
             updateMany,
             findUnique: vi.fn(async () => ({
@@ -1596,6 +1622,7 @@ describe("createRunExecutor", () => {
         agentSkill: { findMany: vi.fn(async () => []) },
         $transaction: vi.fn(async (callback: (tx: unknown) => Promise<unknown>) =>
           callback({
+            ...checkpointTxFields(),
             routine: {
               updateMany: vi.fn(async () => ({ count: 1 })),
               findUnique: vi.fn(async () => claimedModel),
@@ -1742,6 +1769,7 @@ describe("createRunExecutor", () => {
       agentSkill: { findMany: vi.fn(async () => []) },
       $transaction: vi.fn(async (callback: (tx: unknown) => Promise<unknown>) =>
         callback({
+          ...checkpointTxFields(),
           routine: {
             updateMany: vi.fn(async () => ({ count: 1 })),
             findUnique: vi.fn(async () => ({
@@ -1814,6 +1842,7 @@ describe("createRunExecutor", () => {
       agentSkill: { findMany: vi.fn(async () => []) },
       $transaction: vi.fn(async (callback: (tx: unknown) => Promise<unknown>) =>
         callback({
+          ...checkpointTxFields(),
           routine: {
             updateMany: vi.fn(async () => ({ count: 1 })),
             findUnique: vi.fn(async () => ({
@@ -1903,6 +1932,7 @@ description: Prepare standup notes
       },
       $transaction: vi.fn(async (callback: (tx: unknown) => Promise<unknown>) =>
         callback({
+          ...checkpointTxFields(),
           routine: {
             updateMany: vi.fn(async () => ({ count: 1 })),
             findUnique: vi.fn(async () => ({
@@ -1963,6 +1993,7 @@ description: Prepare standup notes
       },
       $transaction: vi.fn(async (callback: (tx: unknown) => Promise<unknown>) =>
         callback({
+          ...checkpointTxFields(),
           routine: {
             updateMany,
             findUnique: vi.fn(async () => ({
@@ -2028,6 +2059,7 @@ description: Prepare standup notes
         transactionCalls += 1;
         if (transactionCalls === 1) {
           return callback({
+            ...checkpointTxFields(),
             routine: {
               updateMany: claimUpdateMany,
               findUnique: vi.fn(async () => ({
@@ -2041,6 +2073,7 @@ description: Prepare standup notes
           });
         }
         return callback({
+          ...checkpointTxFields(),
           routine: { updateMany: restoreUpdateMany },
           task: { deleteMany: deleteTaskMany },
           run: { deleteMany: deleteRunMany },
@@ -3117,3 +3150,16 @@ describe("ticket board tool capability", () => {
       expect(backgroundNames).not.toContain(name);
   });
 });
+
+function checkpointTxFields() {
+  return {
+    $executeRaw: vi.fn(async () => 1),
+    thread: {
+      findUniqueOrThrow: vi.fn(async () => ({
+        activeBranchId: null,
+        checkpointGeneration: 0,
+        checkpointBlocked: false,
+      })),
+    },
+  };
+}

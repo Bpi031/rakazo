@@ -12,7 +12,10 @@ function fixture(status = "running") {
   const routine: any = { id: "routine", ...scope, prompt: "Validate and export the existing result", crons: ["* * * * *"], timezone: "UTC",
     active: true, nextRunAt: due, updatedAt: due, lastRunAt: null, threadId: "thread", jobWatch: {...watch} };
   const bot = { id: "bot", userId: "user", spaceId: "space", archivedAt: null, computerId: "computer",
-    thread: {id: "thread"}, computer: {id: "computer", userId: "user", spaceId: "space", scope: "dedicated", state: "running", providerRef: "private"} };
+    thread: {id: "thread",
+      checkpointGeneration: 0,
+      checkpointBlocked: false,
+      activeBranchId: null}, computer: {id: "computer", userId: "user", spaceId: "space", scope: "dedicated", state: "running", providerRef: "private"} };
   const taskCreate = vi.fn(async (_input: any) => ({ id: "task" }));
   const runCreate = vi.fn(async () => ({ id: "run", taskId: "task" }));
   const update = vi.fn(async ({where, data}) => {
@@ -26,8 +29,11 @@ function fixture(status = "running") {
     teamMemberControl: {findUnique: vi.fn(async () => null)},
     routine: {findUnique: vi.fn(async () => ({...routine})), updateMany: update,
       create: vi.fn(async ({data}: any) => ({...data,id:'new-watch'}))},
-    bot: { findUnique: vi.fn(async () => bot), findFirstOrThrow: vi.fn(async () => bot) },
-    thread: {findFirst: vi.fn(async () => ({id: "thread"}))},
+    bot: { count: vi.fn(async () => 0), findUnique: vi.fn(async () => bot), findFirstOrThrow: vi.fn(async () => bot) },
+    thread: {findFirst: vi.fn(async () => bot.thread),
+      findUnique: vi.fn (async () => bot.thread),
+      findUniqueOrThrow: vi.fn(async () => bot.thread)},
+    $executeRaw: vi.fn(async () => 1),
     agentSkill: {findMany: vi.fn(async () => [])},
     task: {create: taskCreate, deleteMany: vi.fn(async () => ({}))},
     run: {create: runCreate, deleteMany: vi.fn(async () => ({}))},
@@ -42,6 +48,19 @@ function fixture(status = "running") {
 }
 
 describe("token-free owned Rost watch", () => {
+  it("observes Team own outputs and shared outputs, rejects another Bot and account", async () => {
+    const f = fixture();
+    const bot = await f.db.bot.findFirstOrThrow();
+    bot.computer.scope = "team";
+    await createRostJobWatch(f.deps, scope, "case/job");
+    expect((f.execute.mock.calls[0] as any)[1].argv.slice(4)).toEqual(["case/job", "bots/bot"]);
+    await createRostJobWatch(f.deps, scope, "shared/case/job");
+    expect((f.execute.mock.calls[1] as any)[1].argv.slice(4)).toEqual(["case/job", "shared"]);
+    await expect(createRostJobWatch(f.deps, scope, "bots/other/job")).rejects.toThrow("outside");
+    f.db.bot.count.mockResolvedValue(1);
+    await expect(createRostJobWatch(f.deps, scope, "case/job")).rejects.toThrow("exclusively");
+    expect(f.execute).toHaveBeenCalledTimes(2);
+  });
   it("rejects absolute, traversal, control and ambiguous paths and non-timer triggers", () => {
     for (const path of ["/tmp/job", "../job", "a//b", "a/./b", "a/../b", "a\0b", "a\\b", "", "workspace", "workspace/case/job"]) expect(RostJobOut.safeParse(path).success).toBe(false);
     expect(RostJobOut.parse("case/job")).toBe("case/job");
@@ -144,6 +163,39 @@ describe("token-free owned Rost watch", () => {
     expect(args[1].argv[4]).toBe(watch.out);
     expect(args[1].timeoutMs).toBe(15000);
   });
+  it("rejects a late completion after checkpoint generation changes without waking a model", async () => {
+    const f=fixture("completed");
+    f.execute.mockImplementation(async function* () {
+      f.db.thread.findUnique.mockResolvedValue({
+        checkpointGeneration: 1,
+        checkpointBlocked: false,
+      });
+      yield {type:"stdout",data:JSON.stringify({...observation,status:"completed",outcome:"proven_infeasible"})};
+      yield {type:"exit",code:0};
+    });
+    await createRunExecutor(f.deps).wakeRoutine("routine",f.due.toISOString());
+    expect(f.runCreate).not.toHaveBeenCalled();
+    expect(f.taskCreate).not.toHaveBeenCalled();
+    expect(f.routine.active).toBe(false);
+  });
+  it("rejects an old watch before reading the sandbox", async () => {
+    const f=fixture();
+    f.db.thread.findUnique.mockResolvedValue({ checkpointGeneration: 1, checkpointBlocked: false });
+    await expect(pollRostJobWatch(f.deps, scope, watch)).rejects.toThrow(/inactive checkpoint/);
+    expect(f.execute).not.toHaveBeenCalled();
+  });
+  it("retries database failures without disabling the watch", async () => {
+    const f=fixture();
+    const error = new Error("database temporarily unavailable");
+    f.db.thread.findUnique.mockRejectedValue(error);
+    await expect(
+      createRunExecutor(f.deps).wakeRoutine("routine", f.due.toISOString()),
+    ).rejects.toBe(error);
+    expect(f.routine.active).toBe(true);
+    expect(f.execute).not.toHaveBeenCalled();
+    expect(f.runCreate).not.toHaveBeenCalled();
+    expect(f.deps.jobs.enqueue).not.toHaveBeenCalled();
+  });
   it("executor reschedules running observations without task, run, event or model resolution", async () => {
     const f=fixture();
     await createRunExecutor(f.deps).wakeRoutine("routine",f.due.toISOString());
@@ -155,10 +207,15 @@ describe("token-free owned Rost watch", () => {
   });
   it("duplicate terminal wakeups fence one queued continuation and consume the watch", async () => {
     const f=fixture("completed"), executor=createRunExecutor(f.deps);
+    f.execute.mockImplementation(async function* () {
+      yield {type:"stdout",data:JSON.stringify({...observation,status:"completed",outcome:"candidate_needs_validation"})};
+      yield {type:"exit",code:0};
+    });
     await Promise.all([executor.wakeRoutine("routine",f.due.toISOString()),executor.wakeRoutine("routine",f.due.toISOString())]);
     expect(f.runCreate).toHaveBeenCalledTimes(1); expect(f.taskCreate).toHaveBeenCalledTimes(1);
     expect(f.routine.active).toBe(false); expect(f.routine.nextRunAt).toBe(null);
     expect(f.taskCreate.mock.calls[0]?.[0]).toEqual(expect.objectContaining({data:expect.objectContaining({prompt:expect.stringContaining('"reason":"completion"')})}));
+    expect(f.taskCreate.mock.calls[0]?.[0].data.prompt).toContain('"outcome":"candidate_needs_validation"');
     expect(f.deps.jobs.enqueue).toHaveBeenCalledTimes(1);
   });
   it("a routine edit or cancellation during observation wins the claim", async () => {

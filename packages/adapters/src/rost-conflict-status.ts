@@ -1,12 +1,12 @@
 import { Prisma, type PrismaClient } from '@rakazo/db';
 import type { SandboxProvider } from '@rakazo/adapter-kit';
-import { observeRostJob, RostJobOut, RostJobObservationError } from './rost-job-watch.js';
+import { observeRostJob, RostJobOut, RostJobObservationError, StaleRostWatchError } from './rost-job-watch.js';
 import { memberScope } from './team-storage.js';
 import { managerRole, teamDigest } from './team-policy.js';
 
 type Deps = { prisma: PrismaClient; sandbox: SandboxProvider };
 type Run = { botId: string; userId: string; spaceId: string; threadId: string;
-  trigger: string; routineId: string | null };
+  trigger: string; routineId: string | null; checkpointGeneration?: number | null };
 type Data = Record<string, any>;
 
 /** Read an owned result or legacy checkpoint; never reserve or start diagnosis. */
@@ -23,15 +23,19 @@ export async function readRostConflictStatus(deps: Deps, run: Run) {
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] });
   const watch = routine?.jobWatch as Data | null;
   if (!watch || watch.schema !== 'rost/job-watch/v1') return inactive;
+  const generation = watch.checkpointGeneration ?? 0;
+  if (run.checkpointGeneration != null && generation !== run.checkpointGeneration) return inactive;
   const out = RostJobOut.parse(watch.out);
   let observation;
   try {
     observation = await observeRostJob(deps, scope, out);
   } catch (error) {
+    if (error instanceof StaleRostWatchError) return inactive;
     if (!(error instanceof RostJobObservationError)) throw error;
     return { status: 'observation_unavailable', solveStarted: false, computeAllowanceGranted: false,
       action: 'Could not read the exact owned result. This status check starts no new numerical work.' };
   }
+  if (observation.checkpointGeneration !== generation) return inactive;
   if (observation.binding !== watch.binding || observation.computerId !== watch.computerId
       || observation.deadlineUtc !== watch.deadlineUtc || observation.threadId !== run.threadId)
     throw new Error('Conflict job identity changed');

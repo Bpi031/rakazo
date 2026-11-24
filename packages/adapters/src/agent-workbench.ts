@@ -14,6 +14,7 @@ import { teamDigest } from "./team-policy.js";
 import { toComputerRef } from "./computer-support.js";
 import { workflowText } from "./workflow-text.js";
 import { z } from "zod";
+import { assertManagedTeamComputer, workspaceRelativeRoots } from "./managed-workspace.js";
 
 const files = readFileSync(new URL("./workbench-files.py", import.meta.url), "utf8");
 const filesDigest = createHash("sha256").update(files).digest("hex");
@@ -70,7 +71,7 @@ export class AgentWorkbench {
       where: { id: botId, spaceId: actor.spaceId, userId: actor.userId, archivedAt: null },
       include: { computer: true, thread: true },
     });
-    if (bot.computer?.scope === "team") throw new Error("A private bot is required");
+    if (bot.computer) await assertManagedTeamComputer(db, bot.computer, actor);
     return bot;
   }
   private where(actor: Actor, botId: string) {
@@ -235,7 +236,7 @@ export class AgentWorkbench {
     for await (const event of this.deps.sandbox.execute(
       toComputerRef(bot.computer),
       {
-        argv: ["/opt/office-python/bin/python3", "-I", "-c", files, encoded],
+        argv: ["/opt/office-python/bin/python3", "-I", "-c", files, encoded, JSON.stringify(workspaceRelativeRoots(bot.computer!.scope, botId))],
         cwd: "/home/rakazo",
         timeoutMs: 15000,
         unsetEnv: ["PYTHONPATH", "PYTHONHOME", "LD_PRELOAD"],

@@ -508,6 +508,8 @@ describe("compactHistory", () => {
     expect(harness.prisma.thread.updateMany).toHaveBeenCalledWith({
       where: {
         id: "thread-1",
+        activeBranchId: undefined,
+        checkpointBlocked: false,
         historyCompactedUpToSeq: null,
         historyCompactionGeneration: 0,
       },

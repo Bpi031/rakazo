@@ -35,6 +35,26 @@ IDENTITY = "e375d057-e532-4416-b617-3a6d2ab5a7c1"
 
 
 class PureTests(unittest.TestCase):
+    def test_team_policy_paths_and_import_pins_are_scoped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for folder in ('bots/a', 'bots/other', 'shared'):
+                (root / folder).mkdir(parents=True)
+                (root / folder / 'input.csv').write_text(folder)
+            allowed = ('bots/a', 'shared')
+            for path in ('bots/a/input.csv', 'shared/input.csv'):
+                self.assertEqual(P.checked_path(root, path, allowed_roots=allowed), root / path)
+            for path in ('bots/other/input.csv', 'workspace/input.csv', 'bots/a/../other/input.csv'):
+                with self.subTest(path=path), self.assertRaises(ValueError):
+                    P.checked_path(root, path, allowed_roots=allowed)
+            work = P.Workbench.__new__(P.Workbench)
+            work.root = root; work.allowed_roots = allowed
+            for folder in ('bots/a', 'shared'):
+                pins = work.inputs({'imports': [{'path': 'input.csv'}]}, root / folder)
+                self.assertEqual(pins[0]['path'], folder + '/input.csv')
+            (root / 'bots/a/link').symlink_to(root / 'bots/other', target_is_directory=True)
+            with self.assertRaises(ValueError): work.inputs({'imports': [{'path': 'link/input.csv'}]}, root / 'bots/a')
+
     def test_path_escape_and_links(self):
         with tempfile.TemporaryDirectory() as root:
             root = Path(root); (root / "workspace").mkdir(); (root / "workspace/link").symlink_to(root)

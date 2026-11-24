@@ -247,7 +247,12 @@ describe("deleteArtifactFamily", () => {
     const deferRootDeletes = { count: 0 };
     const prisma = {
       artifact: {
-        findFirst: vi.fn(async () => ({ id: "root", rootArtifactId: null, botId: "bot-1" })),
+        findFirst: vi.fn(async () => ({
+          id: "root",
+          rootArtifactId: null,
+          botId: "bot-1",
+          groupId: "group-1",
+        })),
         findMany: vi.fn(async () => {
           const page = listings[Math.min(read, listings.length - 1)] ?? [];
           read += 1;
@@ -386,7 +391,7 @@ describe("configured artifact upload limit", () => {
     const stored = new Error("reached storage");
     const put = vi.fn().mockRejectedValue(stored);
     const deps = {
-      prisma: {} as PrismaClient,
+      prisma: { thread: { findFirst: vi.fn().mockResolvedValue(null) } } as unknown as PrismaClient,
       artifacts: { put } as unknown as ArtifactStore,
       maxUploadSizeBytes: 12 * 1024 * 1024,
     };
@@ -401,5 +406,75 @@ describe("configured artifact upload limit", () => {
     expect(put).not.toHaveBeenCalled();
     await expect(upload(deps.maxUploadSizeBytes)).rejects.toBe(stored);
     expect(put).toHaveBeenCalledOnce();
+  });
+});
+
+describe("checkpoint artifact isolation", () => {
+  it("rejects an upload completed after rollback and removes its unreferenced blob", async () => {
+    const artifact = { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn() };
+    const tx = {
+      artifact,
+      $queryRaw: vi.fn().mockResolvedValue([]),
+      thread: {
+        update: vi.fn().mockResolvedValue({ activeBranchId: "new-branch" }),
+        findUnique: vi
+          .fn()
+          .mockResolvedValue({ checkpointGeneration: 2, checkpointBlocked: false }),
+      },
+    };
+    const remove = vi.fn().mockResolvedValue(undefined);
+    const prisma = {
+      artifact,
+      thread: {
+        findFirst: vi
+          .fn()
+          .mockResolvedValue({ id: "thread", checkpointGeneration: 1, checkpointBlocked: false }),
+      },
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+    } as unknown as PrismaClient;
+    await expect(
+      createOwnedArtifact(
+        {
+          prisma,
+          artifacts: {
+            put: vi.fn().mockResolvedValue({ id: "orphan" }),
+            remove,
+          } as unknown as ArtifactStore,
+        },
+        actor,
+        { botId: "bot-1", name: "schedule.txt", mimeType: "text/plain", contentBase64: "aGk=" },
+      ),
+    ).rejects.toThrow("Workspace changed");
+    expect(artifact.create).not.toHaveBeenCalled();
+    expect(remove).toHaveBeenCalledWith("orphan", expect.anything());
+  });
+
+  it("soft deletes personal artifacts while keeping checkpoint blobs intact", async () => {
+    const updateMany = vi.fn().mockResolvedValue({ count: 2 });
+    const tx = {
+      thread: {
+        findFirst: vi.fn().mockResolvedValue({ id: "thread" }),
+        update: vi.fn().mockResolvedValue({ checkpointBlocked: false }),
+      },
+      artifact: { updateMany },
+    };
+    const remove = vi.fn();
+    const prisma = {
+      artifact: {
+        findFirst: vi
+          .fn()
+          .mockResolvedValue({ id: "root", rootArtifactId: null, botId: "bot-1", groupId: null }),
+      },
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+    } as unknown as PrismaClient;
+    await expect(
+      deleteArtifactFamily({ prisma, artifacts: { remove } as unknown as ArtifactStore }, actor, {
+        familyId: "root",
+      }),
+    ).resolves.toEqual({ ok: true });
+    expect(updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { checkpointHidden: true } }),
+    );
+    expect(remove).not.toHaveBeenCalled();
   });
 });

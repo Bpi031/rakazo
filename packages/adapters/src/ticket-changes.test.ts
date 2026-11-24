@@ -27,6 +27,7 @@ function setup(ticketBoardEnabled: boolean, status = "todo") {
     bot: {
       findFirst: vi.fn(async () => ({ id: "bot-1", userId: "user-1", thread: { id: "thread-1" } })),
     },
+    thread: { update: vi.fn(async () => ({ activeBranchId: "restored-branch", checkpointGeneration: 2, checkpointBlocked: false })) },
     task: { create: createTask },
     run: { create: createRun },
   };
@@ -55,7 +56,7 @@ describe("ticket changes", () => {
       await s.changes(change);
       expect(s.createRun).toHaveBeenCalledTimes(1);
       expect(s.createRun).toHaveBeenCalledWith({
-        data: expect.objectContaining({ trigger: "tickets", status: "queued" }),
+        data: expect.objectContaining({ trigger: "tickets", status: "queued", branchId: "restored-branch", checkpointGeneration: 2 }),
       });
       expect(s.enqueue).toHaveBeenCalledTimes(1);
       expect(s.enqueue).toHaveBeenCalledWith(

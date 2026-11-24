@@ -3,6 +3,7 @@ import { MessageBlock } from "@rakazo/contracts";
 import { botMessageHopExhausted, nextBotMessageHop, renderGroupMembersContext } from "@rakazo/core";
 import {
   appendEventInTransaction,
+  checkpointRunFields,
   createThreadMessageInTransaction,
   IsolationError,
   lockOwnedGroup,
@@ -145,6 +146,7 @@ export async function handoffToGroupBot(
     });
     const nextRun = await tx.run.create({
       data: {
+        ...(await checkpointRunFields(tx, run.threadId)),
         spaceId: run.spaceId,
         botId: targetId,
         threadId: run.threadId,

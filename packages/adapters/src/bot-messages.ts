@@ -11,6 +11,7 @@ import {
 } from "@rakazo/core";
 import {
   appendEventInTransaction,
+  checkpointRunFields,
   createThreadMessageInTransaction,
   type PrismaClient,
   withTransactionRetry,
@@ -250,6 +251,7 @@ export async function messageBot(
         });
         const nextRun = await tx.run.create({
           data: {
+            ...(await checkpointRunFields(tx, targetThreadId)),
             spaceId: run.spaceId,
             botId: target.id,
             threadId: targetThreadId,

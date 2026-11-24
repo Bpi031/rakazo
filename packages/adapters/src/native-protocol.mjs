@@ -10,12 +10,12 @@ export function boundedCapabilities(models, skills, requirements) {
     requirementsPresent: requirements?.requirements != null,
     qualifiedByOperator: false };
 }
-export function safeNativeDiff(value) {
+export function safeNativeDiff(value, roots = ['workspace']) {
   if (typeof value !== 'string') throw new Error('Invalid native diff');
   const sha256=digestNative(value);
   if(Buffer.byteLength(value)>64000 || /(?:^|\n)(?:diff --git|---|\+\+\+) .*?(?:\.env|\.lic|secret|credential|\/\.\.)/i.test(value)) return {sha256,redacted:true,diff:null};
   const headers=[...value.matchAll(/^(?:---|\+\+\+) (.+)$/gm)].map(m=>m[1]);
-  if(!headers.length || headers.some(p=>p!=='/dev/null'&&(!/^[ab]\/workspace\//.test(p)||p.slice(2).split('/').some(s=>!s||s==='..'||s.startsWith('.')))))return {sha256,redacted:true,diff:null};
+  if(!headers.length || headers.some(p=>p!=='/dev/null'&&(!/^[ab]\//.test(p)||!roots.some(root=>p.slice(2).startsWith(root+'/'))||p.slice(2).split('/').some(s=>!s||s==='..'||s.startsWith('.')))))return {sha256,redacted:true,diff:null};
   return {sha256,redacted:false,diff:value,policyApprovalGranted:false};
 }
 export function usageDelta(current, previous) {

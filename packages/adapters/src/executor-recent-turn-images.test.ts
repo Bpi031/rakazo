@@ -30,6 +30,7 @@ const VISION_MODEL = "openai/gpt-4o";
 type Deferred<T> = { promise: Promise<T>; resolve: (value: T) => void };
 type Gate = { reached: Deferred<void>; release: Deferred<void> };
 type RunHooks = {
+  checkpointRestored?: boolean;
   runtimeGate?: Gate;
   notificationGate?: Gate;
   computerLeaseRenewal?: () => Promise<boolean>;
@@ -102,9 +103,16 @@ async function runWithModel(
     status: "queued",
     trigger: "user",
     leaseFence: 0,
+    ...(hooks?.checkpointRestored ? { checkpointGeneration: 1, branchId: "restored" } : {}),
   };
   const get = vi.fn(async () => new Uint8Array([1, 2, 3, 4]));
   const releaseScreen = vi.fn(async (..._args: unknown[]) => undefined);
+  const memoryRead = vi.fn(async () => ({
+    documents: hooks?.checkpointRestored
+      ? [{ path: "MEMORY.md", content: "FAILED_BRANCH_SENTINEL", revision: 1 }]
+      : [],
+  }));
+  const recall = vi.fn(async () => ({ ok: true, value: [{ content: "FAILED_BRANCH_SENTINEL" }] }));
   let request: AgentRunRequest | undefined;
   const runtimeRun = vi.fn(async function* (next: AgentRunRequest) {
     request = next;
@@ -154,17 +162,34 @@ async function runWithModel(
       updateMany: vi.fn(async () => ({ count: 1 })),
     },
     thread: {
+      findUnique: vi.fn(async () => ({
+        checkpointGeneration: hooks?.checkpointRestored ? 1 : 0,
+        checkpointBlocked: false,
+      })),
       findUniqueOrThrow: vi.fn(async () => ({
         id: run.threadId,
         groupId: null,
         historyCompactionSummary: null,
         historyCompactedUpToSeq: null,
         nextMessageSeq: 3,
+        ...(hooks?.checkpointRestored
+          ? { activeBranchId: "restored", checkpointGeneration: 1, historyCompactionGeneration: 1 }
+          : {}),
       })),
     },
+    conversationBranch: {
+      findMany: vi.fn(async () => [
+        {
+          id: "restored",
+          parentBranchId: null,
+          parentCutoffMessageSeq: null,
+          parentCutoffEventSeq: null,
+        },
+      ]),
+    },
     message: {
-      findMany: vi.fn(async (args: { where?: { threadId?: string } }) =>
-        args.where?.threadId ? historyMessages() : [],
+      findMany: vi.fn(async (args: { where?: { threadId?: string; AND?: unknown[] } }) =>
+        args.where?.threadId || args.where?.AND ? historyMessages() : [],
       ),
       findUnique: vi.fn(async () => null),
     },
@@ -226,8 +251,11 @@ async function runWithModel(
       },
     },
     home: { commit: vi.fn(async () => "fixture-revision") },
-    memory: { read: async () => ({ documents: [] }) },
-    memoryProviders: { resolve: async () => null },
+    memory: { read: memoryRead },
+    memoryProviders: {
+      resolve: async () =>
+        hooks?.checkpointRestored ? { provider: { recall }, defaultScope: "isolated" } : null,
+    },
     artifacts: { get },
     events: { append: vi.fn(async () => undefined), finalizeRun },
     jobs: { enqueue: vi.fn(async () => undefined) },
@@ -242,8 +270,23 @@ async function runWithModel(
   expect(runtimeRun).toHaveBeenCalled();
   expect(finalizeRun).not.toHaveBeenCalledWith(expect.objectContaining({ outcome: "failed" }));
   if (!request) throw new Error("runtime was not called");
-  return { request, get, prisma, run, releaseScreen, execution, notificationSend };
+  return { request, get, prisma, run, releaseScreen, execution, notificationSend, memoryRead, recall };
 }
+
+it("A4 sends a reconstructed model request without discarded durable or semantic memory", async () => {
+  const f = await runWithModel(TEXT_ONLY_MODEL, undefined, false, false, true, {
+    checkpointRestored: true,
+  });
+  expect(f.request.history.some((entry) => entry.id === "current")).toBe(true);
+  expect(JSON.stringify(f.request)).not.toContain("FAILED_BRANCH_SENTINEL");
+  expect(f.memoryRead).not.toHaveBeenCalled();
+  expect(f.recall).not.toHaveBeenCalled();
+  expect(
+    f.request.tools.some(
+      (tool) => tool.name === "recall_memory" || tool.name.startsWith("scratchpad_"),
+    ),
+  ).toBe(false);
+});
 
 describe("recent turn images follow model vision", () => {
   it("does not send history images to a text-only model", async () => {
