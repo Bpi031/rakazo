@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { pollRostJobWatch } from "./rost-job-watch.js";
+import { StaleRostWatchError, pollRostJobWatch } from "./rost-job-watch.js";
 import { TeamService } from "./team-service.js";
 import { TeamWorkflowService } from "./team-workflows.js";
 import { TeamLeadershipService } from "./team-leadership.js";
@@ -126,6 +126,9 @@ import {
 } from "@rakazo/core/node/approval-effect-key";
 import type { McpServer, Prisma, PrismaClient, ThreadEvents } from "@rakazo/db";
 import {
+  assertCheckpointGeneration,
+  CheckpointConflictError,
+  checkpointThreadLock,
   appendEventInTransaction,
   deferSteering,
   createSpaceForMember,
@@ -252,7 +255,6 @@ import {
   displayBotWorkspacePath,
   resolveBotWorkspaceCwd,
   resolveBotWorkspacePath,
-  teamBotWorkspaceDirectory,
 } from "./computer-support.js";
 import type { UnchangedVisualStreak } from "./computer-tools.js";
 import {
@@ -416,6 +418,8 @@ import {
 } from "./user-progress.js";
 import { createWebProvider } from "./web-provider-factory.js";
 import { webFetchFromTool, webSearchFromTool } from "./web-tools.js";
+
+import { assertManagedTeamComputer, managedWorkspace, managedWorkspaceInstruction } from "./managed-workspace.js";
 
 const READ_ONLY_AGENT_TOOLS = new Set([
   "computer_observe",
@@ -2684,6 +2688,13 @@ function runtimeFallbackModel(runtime: AgentRuntime) {
 }
 
 export interface ExecutorDeps {
+  checkpoints?: {
+    captureForRun(input: {
+      runId: string;
+      kind: "auto_turn_boundary" | "auto_pre_solve";
+      reason: "turn_start" | "rost_watch_observed";
+    }): Promise<void>;
+  };
   maxUploadSizeBytes?: number;
   contextStrategy?: AgentContextStrategy;
   prisma: PrismaClient;
@@ -3192,15 +3203,44 @@ export function createRunExecutor(deps: ExecutorDeps) {
       const previousLastRunAt = routine.lastRunAt;
       let jobWatch: Awaited<ReturnType<typeof pollRostJobWatch>> | undefined;
       if (routine.jobWatch) {
-        if (bot.userId !== routine.userId || bot.spaceId !== routine.spaceId
-            || thread.id !== bot.thread.id) throw new Error("Owned private watch required");
-        jobWatch = await pollRostJobWatch(deps, {
-          userId: routine.userId, spaceId: routine.spaceId, botId: bot.id,
-        }, routine.jobWatch);
+        if (
+          bot.userId !== routine.userId ||
+          bot.spaceId !== routine.spaceId ||
+          thread.id !== bot.thread.id
+        )
+          throw new Error("Owned private watch required");
+        try {
+          jobWatch = await pollRostJobWatch(
+            deps,
+            {
+              userId: routine.userId,
+              spaceId: routine.spaceId,
+              botId: bot.id,
+            },
+            routine.jobWatch,
+          );
+        } catch (error) {
+          if (!(error instanceof StaleRostWatchError)) throw error;
+          await deps.prisma.routine.updateMany({
+            where: {
+              id: routine.id,
+              active: true,
+              nextRunAt: scheduledAt,
+              updatedAt: routine.updatedAt,
+            },
+            data: { active: false, nextRunAt: null },
+          });
+          return;
+        }
         if (!jobWatch.wakeReason) {
           const advanced = await deps.prisma.routine.updateMany({
-            where: { id: routine.id, active: true, nextRunAt: scheduledAt,
-              updatedAt: routine.updatedAt, bot: { archivedAt: null } },
+            where: {
+              id: routine.id,
+              active: true,
+              nextRunAt: scheduledAt,
+              updatedAt: routine.updatedAt,
+              bot: { archivedAt: null },
+            },
             data: { nextRunAt, jobWatch },
           });
           if (advanced.count === 1 && nextRunAt)
@@ -3213,13 +3253,28 @@ export function createRunExecutor(deps: ExecutorDeps) {
         spaceId: routine.spaceId,
         userId: routine.userId,
       });
-      const routinePrompt = expandSkillReferencesInPrompt(routine.prompt, skillRecords)
-        + (jobWatch ? "\n\nToken-free Rost watch: " + JSON.stringify({
-          out: jobWatch.out, reason: jobWatch.wakeReason, status: jobWatch.lastStatus, outcome: jobWatch.outcome,
-          checkedAt: jobWatch.lastCheckedAt,
-        }) + "\nInspect this existing job only. Never restart, extend, duplicate or change policy. "
-          + "Completion is not approval or workbook validation. Observation failure requires attention, not a new solve." : "");
+      const routinePrompt =
+        expandSkillReferencesInPrompt(routine.prompt, skillRecords) +
+        (jobWatch
+          ? "\n\nToken-free Rost watch: " +
+            JSON.stringify({
+              out: jobWatch.out,
+              reason: jobWatch.wakeReason,
+              status: jobWatch.lastStatus,
+               outcome: jobWatch.outcome,
+              checkedAt: jobWatch.lastCheckedAt,
+            }) +
+            "\nInspect this existing job only. Never restart, extend, duplicate or change policy. " +
+            "Completion is not approval or workbook validation. Observation failure requires attention, not a new solve."
+           : "");
       const claimed = await deps.prisma.$transaction(async (tx) => {
+        await checkpointThreadLock(tx, thread.id);
+        const branch = await tx.thread.findUniqueOrThrow({ where: { id: thread.id } });
+        if (
+          branch.checkpointBlocked ||
+          (routine.checkpointGeneration ?? 0) !== (branch.checkpointGeneration ?? 0)
+        )
+          return null;
         const updated = await tx.routine.updateMany({
           where: {
             id: routine.id,
@@ -3262,6 +3317,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
             status: "queued",
             trigger: "routine",
             routineId: routine.id,
+            branchId: branch.activeBranchId,
+            checkpointGeneration: branch.checkpointGeneration ?? 0,
             ...routineRunModelPin(currentModel),
           },
         });
@@ -3427,6 +3484,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
             select: { id: true },
           });
           if (!targetThread) return null;
+          await checkpointThreadLock(tx, failed.threadId);
+          const branch = await tx.thread.findUniqueOrThrow({ where: { id: failed.threadId } });
+          if (
+            branch.checkpointBlocked ||
+            (failed.checkpointGeneration ?? 0) !== (branch.checkpointGeneration ?? 0)
+          )
+            return null;
           const retryTask = await tx.task.create({
             data: {
               spaceId: failed.spaceId,
@@ -3448,6 +3512,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
               trigger: "routine",
               routineId: failed.routineId,
               retryOfRunId: failed.id,
+              branchId: branch.activeBranchId,
+              checkpointGeneration: branch.checkpointGeneration ?? 0,
               ...(failed.modelPinned
                 ? {
                     modelProvider: failed.modelProvider,
@@ -3494,6 +3560,22 @@ export function createRunExecutor(deps: ExecutorDeps) {
       const run = await deps.prisma.run.findUnique({ where: { id: runId } });
       if (!run) return;
       if (isTerminal(run.status as RunStatus)) return;
+      if (typeof run.checkpointGeneration === "number") {
+        try {
+          await assertCheckpointGeneration(deps.prisma, run.threadId, run.checkpointGeneration);
+        } catch (error) {
+          if (!(error instanceof CheckpointConflictError)) throw error;
+          await deps.prisma.run.updateMany({
+            where: { id: runId, status: { notIn: ["completed", "failed", "cancelled"] } },
+            data: {
+              status: "cancelled",
+              completedAt: new Date(),
+              error: "Checkpoint branch changed",
+            },
+          });
+          return;
+        }
+      }
       if (run.trigger === "team_workflow") {
         await new TeamWorkflowService(deps.prisma, deps.jobs).continueRun(runId);
         return;
@@ -3723,6 +3805,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
           }),
           loadBotCommandEnvironment(deps.prisma, deps.secretStore, run),
         ]);
+        if (typeof run.checkpointGeneration === "number")
+          await assertCheckpointGeneration(deps.prisma, thread.id, run.checkpointGeneration);
+        await deps.checkpoints?.captureForRun({
+          runId,
+          kind: "auto_turn_boundary",
+          reason: "turn_start",
+        });
         const historySearchBeforeSeq =
           contextStrategy !== "current" && run.sourceMessageId
             ? (messages.find((message) => message.id === run.sourceMessageId)?.seq ??
@@ -3799,7 +3888,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const memoryScope = configuredMemory
           ? effectiveMemoryScope(bot.memoryScope, configuredMemory.defaultScope)
           : null;
-        const semanticMemory: SemanticMemoryProvider | null = configuredMemory?.provider ?? null;
+        // V1 reconstructs from branch-owned history. External recall and unsnapshotted
+        // persistent notes must not reintroduce a discarded branch after restoration.
+        const reconstructedBranch = (thread.checkpointGeneration ?? 0) > 0;
+        const semanticMemory: SemanticMemoryProvider | null = reconstructedBranch
+          ? null
+          : (configuredMemory?.provider ?? null);
 
         await deps.events.append({
           spaceId: run.spaceId,
@@ -3895,16 +3989,16 @@ export function createRunExecutor(deps: ExecutorDeps) {
         ] = await Promise.all([
           discoveredPromise,
           loadCurrentTurnImages(deps, turnBlocks, context),
-          messagingChannelRun
+          messagingChannelRun || reconstructedBranch
             ? Promise.resolve("")
             : loadAgentMemoryContext(deps.memory, bot.id, context),
-          messagingChannelRun
+          messagingChannelRun || reconstructedBranch
             ? Promise.resolve("")
             : loadAgentScratchpadContext(deps, {
                 spaceId: run.spaceId,
                 botId: bot.id,
               }),
-          messagingChannelRun || !deps.ticketBoardEnabled
+          messagingChannelRun || reconstructedBranch || !deps.ticketBoardEnabled
             ? Promise.resolve(undefined)
             : loadAgentTicketContext(deps, {
                 spaceId: run.spaceId,
@@ -4126,6 +4220,21 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const pageBrowserAllowed =
           graphical && browser.describe().capabilities.page && !heldForTakeover;
         const disabledBuiltinTools = disabledBuiltinToolSet(bot.disabledBuiltinTools);
+        if (reconstructedBranch) {
+          for (const tool of builtinAgentTools) {
+            if (
+              tool.name.startsWith("scratchpad_") ||
+              [
+                "remember",
+                "save_shared_memory",
+                "save_memory",
+                "recall_memory",
+                "forget_memory",
+              ].includes(tool.name)
+            )
+              disabledBuiltinTools.add(tool.name);
+          }
+        }
         const builtins = [
           ...(teamMessagingEnabled() ? [...teamTools, ...workflowTools, ...leadershipTools] : []),
           ...(deps.runtime.describe().id === "codex"
@@ -4150,7 +4259,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             cloudAgentEnabled: cloudAgentsEnabled(cloudAgent, run.spaceId),
             messagingChannelRun,
             voiceCall,
-            disabledBuiltinTools: bot.disabledBuiltinTools,
+            disabledBuiltinTools: [...disabledBuiltinTools],
           }),
           // Cross-owner agent connections only exist for chat-linked bots.
           ...(hasMessagingIdentity && !isBackgroundRunTrigger(run.trigger)
@@ -4214,10 +4323,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const computerInstruction = dockerToolInstruction
           ? `${baseComputerInstruction} ${dockerToolInstruction}`
           : baseComputerInstruction;
-        const workspaceInstruction =
-          computerMode === "team"
-            ? `Your Team Computer home is ${teamBotWorkspaceDirectory(bot.id)}. Relative file paths and shell working directories start there. Put intentionally shared work under shared/. Other bots' folders are visible under bots/; treat them as their working areas.`
-            : "This entire computer workspace is your private home. Relative file paths and shell working directories start at its root.";
+        const workspaceInstruction = managedWorkspaceInstruction(computerMode, bot.id);
 
         let assembled = "";
         let currentTextSegment = "";
@@ -4390,6 +4496,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
           observer?: AgentToolExecutionObserver,
         ) => {
           context.signal.throwIfAborted();
+          if (typeof run.checkpointGeneration === "number")
+            await assertCheckpointGeneration(deps.prisma, thread.id, run.checkpointGeneration);
           if (handedOff) {
             return {
               error: "This stage was handed off. End the turn without more tool calls.",
@@ -5777,11 +5885,19 @@ export function createRunExecutor(deps: ExecutorDeps) {
             );
           }
           if (name === "schedule_create") {
+            if (args.rostJobOut)
+              await deps.checkpoints?.captureForRun({
+                runId,
+                kind: "auto_pre_solve",
+                reason: "rost_watch_observed",
+              });
             const created = await createScheduleFromTool(deps, {
               spaceId: run.spaceId,
               botId: bot.id,
               userId: run.userId,
               threadId: thread.id,
+              runId,
+              checkpointGeneration: thread.checkpointGeneration ?? 0,
               name: String(args.name ?? ""),
               prompt: String(args.prompt ?? ""),
               timezone: args.timezone ? String(args.timezone) : undefined,
@@ -6564,7 +6680,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               loadArtifact: async (id) => {
                 if (!deps.artifacts) return null;
                 const row = await deps.prisma.artifact.findFirst({
-                  where: { id, spaceId: run.spaceId, userId: run.userId },
+                  where: { id, spaceId: run.spaceId, userId: run.userId, checkpointHidden: false },
                   select: { mimeType: true, storageKey: true },
                 });
                 if (!row || !isAttachmentImageMimeType(row.mimeType)) return null;
@@ -7045,6 +7161,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
         );
 
         try {
+          if (deps.runtime.describe().id === "codex")
+            await assertManagedTeamComputer(deps.prisma, storedComputer, context);
           const workbench =
             deps.runtime.describe().id === "codex" && workbenchEnabled()
               ? new AgentWorkbench({ prisma: deps.prisma, sandbox: deps.sandbox })
@@ -7064,6 +7182,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               botId: bot.id,
               threadId: thread.id,
               runId,
+              workspace: managedWorkspace(computerMode, bot.id),
               routineId: run.routineId,
               selectedSkill: workspaceState?.selectedSkill,
               runHelper:
@@ -7090,10 +7209,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     tool: (name, args) => native.tool(runId, name, args),
                   }
                 : undefined,
-              openRuntimeSession:
-                computerMode !== "team" && deps.sandbox.openRuntimeSession
-                  ? (request) => deps.sandbox.openRuntimeSession!(computer, request, context)
-                  : undefined,
+              openRuntimeSession: deps.sandbox.openRuntimeSession
+                ? (request) => deps.sandbox.openRuntimeSession!(computer, request, context)
+                : undefined,
               sourceMessageId: run.sourceMessageId,
               onUsage: async (event) => {
                 await recordUsage(deps.prisma, event, {
@@ -7309,6 +7427,20 @@ export function createRunExecutor(deps: ExecutorDeps) {
               ) {
                 leaseValid = false;
                 return;
+              }
+              if (typeof run.checkpointGeneration === "number") {
+                try {
+                  await assertCheckpointGeneration(
+                    deps.prisma,
+                    thread.id,
+                    run.checkpointGeneration,
+                  );
+                } catch (error) {
+                  if (!(error instanceof CheckpointConflictError)) throw error;
+                  leaseValid = false;
+                  runAbortController?.abort();
+                  return;
+                }
               }
               const releasedHold = takeoverCheckpointOf(still.checkpoint);
               if (heldForTakeover && releasedHold) {
@@ -9409,6 +9541,7 @@ export async function loadCurrentTurnImages(
   const rows = await deps.prisma.artifact.findMany({
     where: {
       id: { in: imageBlocks.map((block) => block.artifactId) },
+      checkpointHidden: false,
       spaceId: context.spaceId,
       userId: context.userId,
     },
@@ -9490,6 +9623,7 @@ async function loadTurnImagesWithinBudget(
   const rows = await deps.prisma.artifact.findMany({
     where: {
       id: { in: imageBlocks.map((block) => block.artifactId) },
+      checkpointHidden: false,
       spaceId: context.spaceId,
       userId: context.userId,
     },

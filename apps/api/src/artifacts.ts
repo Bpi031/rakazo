@@ -11,7 +11,13 @@ import {
   validateAttachmentMimeType,
 } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
-import { IsolationError, Prisma, withResolvedArtifactVersion } from "@rakazo/db";
+import {
+  assertCheckpointGeneration,
+  CheckpointConflictError,
+  IsolationError,
+  Prisma,
+  withResolvedArtifactVersion,
+} from "@rakazo/db";
 
 function adapterContext(actor: Actor, botId: string, operationId: string) {
   return {
@@ -49,6 +55,13 @@ export async function createOwnedArtifact(
       : input.mimeType;
   validateAttachmentMimeType(mimeType);
   const bytes = decodeAttachmentBase64(input.contentBase64, deps.maxUploadSizeBytes);
+  const checkpoint = input.groupId
+    ? null
+    : await deps.prisma.thread.findFirst({
+        where: { botId: input.botId, spaceId: actor.spaceId, userId: actor.userId },
+        select: { id: true, checkpointGeneration: true, checkpointBlocked: true },
+      });
+  if (checkpoint?.checkpointBlocked) throw new CheckpointConflictError();
   const context = adapterContext(actor, input.botId, `artifact-create:${input.botId}`);
   const stored = await deps.artifacts.put({ name: input.name, mimeType, bytes }, context);
   const hash = createHash("sha256").update(bytes).digest("hex");
@@ -62,11 +75,21 @@ export async function createOwnedArtifact(
       name: input.name,
     },
     async (tx, { rootArtifactId, version }) => {
+      const branch = checkpoint
+        ? await tx.thread.update({
+            where: { id: checkpoint.id },
+            data: { checkpointGeneration: { increment: 0 } },
+            select: { activeBranchId: true },
+          })
+        : null;
+      if (checkpoint)
+        await assertCheckpointGeneration(tx, checkpoint.id, checkpoint.checkpointGeneration);
       // A retry of the same upload has the same name and target, so it waits on the same lock.
       const raced = await findReplayedArtifact(tx, actor, input);
       if (raced) return { row: raced, replay: true };
       const created = await tx.artifact.create({
         data: {
+          branchId: branch?.activeBranchId,
           spaceId: actor.spaceId,
           userId: actor.userId,
           botId: input.botId,
@@ -103,6 +126,8 @@ async function findReplayedArtifact(
     where: { spaceId: actor.spaceId, userId: actor.userId, clientNonce: input.clientNonce },
   });
   if (!row) return null;
+  if (row.checkpointHidden)
+    throw new CheckpointConflictError("Upload belongs to an archived checkpoint branch");
   // A group upload is stored under whichever member bot was first, which can change between retries.
   const sameTarget = input.groupId
     ? row.groupId === input.groupId
@@ -137,6 +162,7 @@ export async function getOwnedArtifact(
   const row = await deps.prisma.artifact.findFirst({
     where: {
       id: input.artifactId,
+      checkpointHidden: false,
       botId: input.botId,
       groupId: null,
       spaceId: actor.spaceId,
@@ -158,6 +184,7 @@ export async function getSpaceArtifact(
   const row = await deps.prisma.artifact.findFirst({
     where: {
       id: input.artifactId,
+      checkpointHidden: false,
       groupId: input.groupId,
       spaceId: actor.spaceId,
       userId: actor.userId,
@@ -179,6 +206,7 @@ export async function getSpaceArtifactById(
   const row = await deps.prisma.artifact.findFirst({
     where: {
       id: input.artifactId,
+      checkpointHidden: false,
       spaceId: actor.spaceId,
       userId: actor.userId,
     },
@@ -319,6 +347,7 @@ export async function listSpaceArtifacts(
     WITH scoped AS (
       SELECT * FROM "artifacts"
       WHERE "spaceId" = ${actor.spaceId} AND "userId" = ${actor.userId} ${botFilter}
+        AND "checkpointHidden" = false
         AND "createdAt" <= ${asOf}
     ),
     latest AS (
@@ -389,10 +418,12 @@ export async function listArtifactVersions(
     where: {
       spaceId: actor.spaceId,
       userId: actor.userId,
+      checkpointHidden: false,
       OR: [{ id: rootId }, { rootArtifactId: rootId }],
     },
     orderBy: { version: "desc" },
   });
+  if (rows.length === 0) throw new IsolationError();
   return rows.map((row) => ({
     id: row.id,
     version: row.version,
@@ -411,10 +442,35 @@ export async function deleteArtifactFamily(
 ) {
   const anchor = await deps.prisma.artifact.findFirst({
     where: { id: input.familyId, spaceId: actor.spaceId, userId: actor.userId },
-    select: { id: true, rootArtifactId: true, botId: true },
+    select: { id: true, rootArtifactId: true, botId: true, groupId: true },
   });
   if (!anchor) throw new IsolationError();
   const rootId = anchor.rootArtifactId ?? anchor.id;
+  if (anchor.botId && !anchor.groupId) {
+    await deps.prisma.$transaction(async (tx) => {
+      const thread = await tx.thread.findFirst({
+        where: { botId: anchor.botId },
+        select: { id: true },
+      });
+      if (thread) {
+        const locked = await tx.thread.update({
+          where: { id: thread.id },
+          data: { checkpointGeneration: { increment: 0 } },
+          select: { checkpointBlocked: true },
+        });
+        if (locked.checkpointBlocked) throw new CheckpointConflictError();
+      }
+      await tx.artifact.updateMany({
+        where: {
+          spaceId: actor.spaceId,
+          userId: actor.userId,
+          OR: [{ id: rootId }, { rootArtifactId: rootId }],
+        },
+        data: { checkpointHidden: true },
+      });
+    });
+    return { ok: true as const };
+  }
 
   for (;;) {
     const members = await deps.prisma.artifact.findMany({
@@ -561,6 +617,7 @@ export async function resolveSendAttachments(
   const rows = await deps.prisma.artifact.findMany({
     where: {
       id: { in: ids },
+      checkpointHidden: false,
       botId,
       groupId: null,
       spaceId: actor.spaceId,
@@ -583,6 +640,7 @@ export async function resolveGroupSendAttachments(
   const rows = await deps.prisma.artifact.findMany({
     where: {
       id: { in: ids },
+      checkpointHidden: false,
       spaceId: actor.spaceId,
       userId: actor.userId,
       OR: [

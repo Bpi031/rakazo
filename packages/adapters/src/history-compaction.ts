@@ -3,7 +3,7 @@ import { historyCompactJob } from "@rakazo/adapter-kit";
 import type { MessageBlock } from "@rakazo/contracts";
 import { blocksToAgentHistoryText } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
-import { recordUsage } from "@rakazo/db";
+import { checkpointMessageWhere, recordUsage } from "@rakazo/db";
 import { getLogger, unwrapJobPayload } from "@rakazo/logging";
 import { formatCurrentTimeInstruction } from "./current-time.js";
 import { resolveDeploymentModel } from "./deployment-model.js";
@@ -222,6 +222,8 @@ export interface CompactHistoryDeps {
 export async function compactHistory(deps: CompactHistoryDeps, threadId: string): Promise<void> {
   const thread = await deps.prisma.thread.findUniqueOrThrow({ where: { id: threadId } });
   if (!thread.botId) return;
+  if (thread.checkpointBlocked) return;
+  const branchWhere = await checkpointMessageWhere(deps.prisma, threadId);
   const previousCursor = thread.historyCompactedUpToSeq;
   const previousGeneration = thread.historyCompactionGeneration;
   const previousSummary = thread.historyCompactionSummary?.trim() || null;
@@ -249,7 +251,7 @@ export async function compactHistory(deps: CompactHistoryDeps, threadId: string)
       return;
     }
     const bootstrapCandidates = await deps.prisma.message.findMany({
-      where: { threadId, seq: { lte: previousCursor } },
+      where: { ...branchWhere, seq: { lte: previousCursor } },
       orderBy: { seq: "desc" },
       take: LEGACY_HISTORY_WINDOW_SIZE + 1,
       select: { seq: true, role: true, blocks: true },
@@ -278,12 +280,16 @@ export async function compactHistory(deps: CompactHistoryDeps, threadId: string)
     const range = nextCompactionBatchRange(previousCursor, COMPACTION_BATCH_SIZE);
     fromSeqExclusive = range.fromSeqExclusive;
     batch = await deps.prisma.message.findMany({
-      where: { threadId, seq: { gt: range.fromSeqExclusive } },
+      where: { ...branchWhere, seq: { gt: range.fromSeqExclusive } },
       orderBy: { seq: "asc" },
       take: range.take,
       select: { seq: true, role: true, blocks: true },
     });
-    if (batch.some((message, index) => message.seq !== fromSeqExclusive + index + 1)) {
+    // Global sequences stay monotone across branches; gaps after a fork are legitimate.
+    if (
+      !thread.activeBranchId &&
+      batch.some((message, index) => message.seq !== fromSeqExclusive + index + 1)
+    ) {
       logHistoryCompactPermanentFailure(threadId, "message_coverage_gap");
       return;
     }
@@ -430,6 +436,8 @@ export async function compactHistory(deps: CompactHistoryDeps, threadId: string)
       id: threadId,
       historyCompactedUpToSeq: previousCursor,
       historyCompactionGeneration: previousGeneration,
+      activeBranchId: thread.activeBranchId,
+      checkpointBlocked: false,
     },
     data: {
       historyCompactedUpToSeq: lastSeq,
@@ -442,7 +450,8 @@ export async function compactHistory(deps: CompactHistoryDeps, threadId: string)
   // Saving only after the compare-and-set also prevents losing workers from creating duplicates.
   let semanticMemory: ConfiguredMemoryProvider | null = null;
   try {
-    semanticMemory = await deps.memoryProviders.resolve(thread.spaceId);
+    if ((thread.checkpointGeneration ?? 0) === 0)
+      semanticMemory = await deps.memoryProviders.resolve(thread.spaceId);
   } catch (error) {
     getLogger().error("Failed to load semantic memory provider for history compaction", error);
   }

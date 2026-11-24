@@ -6,6 +6,7 @@ import { NativeControl } from "./native-control.js";
 import { teamDigest } from "./team-policy.js";
 import type { PrismaClient } from "@rakazo/db";
 import type { AdapterContext, SandboxProvider, RuntimeSessionRequest } from "@rakazo/adapter-kit";
+import { managedWorkspace } from "./managed-workspace.js";
 
 export async function nativeHelper(
   deps: { prisma: PrismaClient; sandbox: SandboxProvider },
@@ -16,7 +17,8 @@ export async function nativeHelper(
   context: AdapterContext,
 ) {
   const control = new NativeControl(deps.prisma, deps.sandbox);
-  const { actor, run } = await control.actor(runId);
+  const { actor, run, bot } = await control.actor(runId);
+  const workspace = managedWorkspace(bot?.computer?.scope ?? "dedicated", run.botId);
   const key = teamDigest({
     userId: actor.userId,
     spaceId: actor.spaceId,
@@ -57,6 +59,7 @@ export async function nativeHelper(
               sessionKey: key,
               persistent: false,
               previous: null,
+              workspace,
             }),
             observe: async () => {},
             finish: async () => {},

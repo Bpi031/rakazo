@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { lstat, realpath, rm, unlink } from "node:fs/promises";
 import path from "node:path";
 import type {
@@ -8,16 +9,18 @@ import type {
   SandboxProvider,
 } from "@rakazo/adapter-kit";
 import { routineJobKey, runContinueJob, runJobKey } from "@rakazo/adapter-kit";
-import { type Actor, type Bot, type ComputerMode, GROUP_MEMBER_MIN } from "@rakazo/contracts";
+import type { Actor, Bot, ComputerMode } from "@rakazo/contracts";
+import { GROUP_MEMBER_MIN } from "@rakazo/contracts";
 import { ACTIVE_RUN_STATUSES } from "@rakazo/core";
+import type { Prisma, PrismaClient } from "@rakazo/db";
 import {
   cancelRunsInTransaction,
+  checkpointArtifactIds,
+  checkpointRunFields,
   computerScopeKey,
   createRepos,
   createThreadMessageInTransaction,
   expireComputerExecutionLeases,
-  type Prisma,
-  type PrismaClient,
   withTransactionRetry,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
@@ -180,6 +183,7 @@ async function ensureSpawnRun(
       });
       return tx.run.create({
         data: {
+          ...(await checkpointRunFields(tx, input.threadId)),
           spaceId: input.spaceId,
           botId: input.botId,
           threadId: input.threadId,
@@ -216,6 +220,73 @@ type LifecycleBot = {
   computerId?: string | null;
   webhookSecretId?: string | null;
 };
+
+type LifecycleComputer = Prisma.ComputerGetPayload<Record<string, never>> & {
+  lifecycleClaim: string;
+};
+
+async function claimLifecycleComputer(
+  deps: BotLifecycleDeps,
+  bot: LifecycleBot,
+): Promise<LifecycleComputer | null> {
+  const assigned = await deps.prisma.computer.findUnique({
+    where: bot.computerId
+      ? { id: bot.computerId }
+      : { scopeKey: computerScopeKey("dedicated", bot.spaceId, bot.id) },
+  });
+  if (!assigned || (assigned.scope !== "dedicated" && assigned.scope !== "team")) return null;
+  return deps.prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM computers WHERE id = ${assigned.id} FOR UPDATE`;
+    const current = await tx.computer.findUniqueOrThrow({ where: { id: assigned.id } });
+    if (current.maintenanceId) throw new Error("Workspace is busy");
+    if (bot.computerId) {
+      const linked = await tx.bot.findUnique({
+        where: { id: bot.id },
+        select: { computerId: true },
+      });
+      if (!linked || linked.computerId !== current.id)
+        throw new Error("Workspace assignment changed");
+    }
+    const lifecycleClaim = `bot-lifecycle:${randomUUID()}`;
+    await tx.computer.update({
+      where: { id: current.id },
+      data: { maintenanceId: lifecycleClaim },
+    });
+    return { ...current, lifecycleClaim };
+  });
+}
+
+async function releaseLifecycleComputer(
+  deps: BotLifecycleDeps,
+  computer: LifecycleComputer | null,
+) {
+  if (computer)
+    await deps.prisma.computer.updateMany({
+      where: { id: computer.id, maintenanceId: computer.lifecycleClaim },
+      data: { maintenanceId: null },
+    });
+}
+
+async function releaseTeamBotLeases(tx: Prisma.TransactionClient, botId: string) {
+  await tx.computer.updateMany({
+    where: { controlBotId: botId },
+    data: {
+      controlHolder: "none",
+      controlLeaseId: null,
+      controlLeaseExpiresAt: null,
+      controlBotId: null,
+      controlRunId: null,
+    },
+  });
+  await tx.computer.updateMany({
+    where: { executionBotId: botId },
+    data: {
+      executionRunId: null,
+      executionBotId: null,
+      executionLeaseExpiresAt: null,
+    },
+  });
+}
 
 export async function archiveSpawnedBot(
   deps: BotLifecycleDeps,
@@ -272,10 +343,21 @@ export async function archiveBot(
   bot: LifecycleBot,
   context: AdapterContext,
 ) {
-  const [dedicated, activeRuns, activeRoutines] = await Promise.all([
-    deps.prisma.computer.findUnique({
-      where: { scopeKey: computerScopeKey("dedicated", bot.spaceId, bot.id) },
-    }),
+  const dedicated = await claimLifecycleComputer(deps, bot);
+  try {
+    return await archiveBotWithComputer(deps, bot, context, dedicated);
+  } finally {
+    await releaseLifecycleComputer(deps, dedicated);
+  }
+}
+
+async function archiveBotWithComputer(
+  deps: BotLifecycleDeps,
+  bot: LifecycleBot,
+  context: AdapterContext,
+  dedicated: LifecycleComputer | null,
+) {
+  const [activeRuns, activeRoutines] = await Promise.all([
     deps.prisma.run.findMany({
       where: { botId: bot.id, status: { in: [...ACTIVE_RUN_STATUSES] } },
       select: { id: true },
@@ -301,13 +383,15 @@ export async function archiveBot(
       data: { active: false, nextRunAt: null },
     });
     await expireComputerExecutionLeases(tx, { botId: bot.id });
-    await tx.computer.updateMany({
-      where: {
-        OR: [{ controlBotId: bot.id }, { executionBotId: bot.id }],
-      },
-      data: releasedComputerLease(),
-    });
-    if (dedicated) {
+    if (dedicated?.scope === "team") await releaseTeamBotLeases(tx, bot.id);
+    else
+      await tx.computer.updateMany({
+        where: {
+          OR: [{ controlBotId: bot.id }, { executionBotId: bot.id }],
+        },
+        data: releasedComputerLease(),
+      });
+    if (dedicated?.scope === "dedicated") {
       await tx.computer.updateMany({
         where: { id: dedicated.id, state: { not: "running" } },
         data: { state: "stopped" },
@@ -322,11 +406,16 @@ export async function archiveBot(
     ...activeRuns.map((run) => deps.jobs.cancel(runJobKey(run.id))),
     ...activeRoutines.map((routine) => deps.jobs.cancel(routineJobKey(routine.id))),
   ]);
-  await releaseTeamComputerScreen(deps, bot, dedicated?.id, context);
+  await releaseTeamComputerScreen(
+    deps,
+    bot,
+    dedicated?.scope === "dedicated" ? dedicated.id : undefined,
+    context,
+  );
   const currentDedicated = dedicated
     ? await deps.prisma.computer.findUnique({ where: { id: dedicated.id } })
     : null;
-  if (currentDedicated?.providerRef && currentDedicated.state === "running") {
+  if (dedicated?.scope !== "team" && currentDedicated?.providerRef && currentDedicated.state === "running") {
     const ref = toComputerRef(currentDedicated);
     await checkpointAndRecordComputerWorkspace(deps, currentDedicated, ref, context);
     await deps.sandbox.stop(ref, context);
@@ -347,10 +436,22 @@ export async function destroyBot(
   context: AdapterContext,
   options: { deleteMemories: boolean },
 ) {
-  const [dedicated, activeRuns, routines] = await Promise.all([
-    deps.prisma.computer.findUnique({
-      where: { scopeKey: computerScopeKey("dedicated", bot.spaceId, bot.id) },
-    }),
+  const dedicated = await claimLifecycleComputer(deps, bot);
+  try {
+    return await destroyBotWithComputer(deps, bot, context, options, dedicated);
+  } finally {
+    await releaseLifecycleComputer(deps, dedicated);
+  }
+}
+
+async function destroyBotWithComputer(
+  deps: BotLifecycleDeps,
+  bot: LifecycleBot,
+  context: AdapterContext,
+  options: { deleteMemories: boolean },
+  dedicated: LifecycleComputer | null,
+) {
+  const [activeRuns, routines] = await Promise.all([
     deps.prisma.run.findMany({
       where: { botId: bot.id, status: { in: [...ACTIVE_RUN_STATUSES] } },
       select: { id: true },
@@ -366,16 +467,28 @@ export async function destroyBot(
     ...activeRuns.map((run) => deps.jobs.cancel(runJobKey(run.id))),
     ...routines.map((routine) => deps.jobs.cancel(routineJobKey(routine.id))),
   ]);
-  const sharedComputer = await releaseTeamComputerScreen(deps, bot, dedicated?.id, context, {
-    cancelRunWork: true,
-  });
-  if (dedicated?.providerRef) {
+  const sharedComputer = await releaseTeamComputerScreen(
+    deps,
+    bot,
+    dedicated?.scope === "dedicated" ? dedicated.id : undefined,
+    context,
+    {
+      cancelRunWork: true,
+    },
+  );
+  if (dedicated?.scope !== "team" && dedicated?.providerRef) {
     await deps.sandbox.destroy(toComputerRef(dedicated), context).catch(() => undefined);
   }
   // Keep the bot deletion transaction from committing if raw transcript cleanup fails.
   await removePiBotSessions(deps.dataDir, bot.userId, bot.id);
   const deletion = await withTransactionRetry(() =>
     deps.prisma.$transaction(async (tx) => {
+      // Match snapshot/restore lock order so no snapshot can land after retention is decided.
+      await tx.$queryRaw`
+        SELECT id FROM threads
+        WHERE "botId" = ${bot.id} AND "spaceId" = ${bot.spaceId}
+        ORDER BY id FOR UPDATE
+      `;
       const locked = await tx.$queryRaw<Array<{ id: string; webhookSecretId: string | null }>>`
         SELECT id, "webhookSecretId"
         FROM bots
@@ -383,22 +496,52 @@ export async function destroyBot(
         FOR UPDATE
       `;
       const webhookSecretId = locked[0]?.webhookSecretId ?? bot.webhookSecretId ?? null;
-      const botArtifacts = await tx.artifact.findMany({
-        where: { botId: bot.id, groupId: null, spaceId: bot.spaceId },
-        select: { storageKey: true },
+      const artifactScope = {
+        botId: bot.id,
+        groupId: null,
+        spaceId: bot.spaceId,
+        userId: bot.userId ?? context.userId,
+      };
+      const checkpoints = await tx.checkpoint.findMany({
+        where: { botId: bot.id, spaceId: bot.spaceId, userId: artifactScope.userId },
+        select: { businessState: true },
       });
+      const referenced = new Set(checkpointArtifactIds(checkpoints));
+      const botArtifacts = await tx.artifact.findMany({
+        where: artifactScope,
+        select: { id: true, rootArtifactId: true, storageKey: true },
+      });
+      // Keep complete referenced families: deleting their root cascades to every version.
+      const retainedFamilies = new Set(
+        botArtifacts
+          .filter((artifact) => referenced.has(artifact.id))
+          .map((artifact) => artifact.rootArtifactId ?? artifact.id),
+      );
+      const retained = botArtifacts.filter((artifact) =>
+        retainedFamilies.has(artifact.rootArtifactId ?? artifact.id),
+      );
+      const retainedIds = retained.map((artifact) => artifact.id);
+      const retainedKeys = new Set(retained.map((artifact) => artifact.storageKey));
+      if (retainedIds.length) {
+        await tx.artifact.updateMany({
+          where: { ...artifactScope, id: { in: retainedIds } },
+          data: { checkpointHidden: true },
+        });
+      }
       await tx.artifact.deleteMany({
-        where: { botId: bot.id, groupId: null, spaceId: bot.spaceId },
+        where: { ...artifactScope, ...(retainedIds.length ? { id: { notIn: retainedIds } } : {}) },
       });
       const groupCleanup = await detachBotFromGroups(tx, bot.id);
       await tx.computerExecutionLease.deleteMany({ where: { botId: bot.id } });
-      await tx.computer.updateMany({
-        where: {
-          ...(dedicated ? { id: { not: dedicated.id } } : {}),
-          OR: [{ controlBotId: bot.id }, { executionBotId: bot.id }],
-        },
-        data: releasedComputerLease(),
-      });
+      if (dedicated?.scope === "team") await releaseTeamBotLeases(tx, bot.id);
+      else
+        await tx.computer.updateMany({
+          where: {
+            ...(dedicated ? { id: { not: dedicated.id } } : {}),
+            OR: [{ controlBotId: bot.id }, { executionBotId: bot.id }],
+          },
+          data: releasedComputerLease(),
+        });
       if (!options.deleteMemories) {
         const directory = archivedMemoryDirectory(bot.name, bot.id);
         await tx.$executeRaw`
@@ -425,12 +568,14 @@ export async function destroyBot(
           where: { id: webhookSecretId, kind: "webhook", spaceId: bot.spaceId },
         });
       }
-      if (dedicated) await tx.computer.delete({ where: { id: dedicated.id } });
+      if (dedicated?.scope === "dedicated") await tx.computer.delete({ where: { id: dedicated.id } });
       return {
         artifactKeys: [
-          ...botArtifacts.map((artifact) => artifact.storageKey),
+          ...botArtifacts
+            .filter((artifact) => !retainedFamilies.has(artifact.rootArtifactId ?? artifact.id))
+            .map((artifact) => artifact.storageKey),
           ...groupCleanup.artifactKeys,
-        ],
+        ].filter((key) => !retainedKeys.has(key)),
         cancelledGroupRuns: groupCleanup.cancelledRuns,
       };
     }),
@@ -458,7 +603,7 @@ export async function destroyBot(
         .catch(() => undefined);
     }),
   );
-  if (dedicated) {
+  if (dedicated?.scope === "dedicated") {
     await rm(resolveAgentHomePath(deps.home, dedicated.homeKey, deps.dataDir ?? "./data"), {
       recursive: true,
       force: true,

@@ -9,7 +9,11 @@ import {
   sanitizeMessagingLabel,
 } from "@rakazo/core";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
-import { appendEventInTransaction, createThreadMessageInTransaction } from "@rakazo/db";
+import {
+  appendEventInTransaction,
+  checkpointRunFields,
+  createThreadMessageInTransaction,
+} from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { currentBotMessageHop } from "./bot-messages.js";
 
@@ -323,6 +327,7 @@ export async function messageConnectedAgent(
       });
       const nextRun = await tx.run.create({
         data: {
+          ...(await checkpointRunFields(tx, targetThreadId)),
           spaceId: targetIdentity.spaceId,
           botId: target.id,
           threadId: targetThreadId,

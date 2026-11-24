@@ -34,6 +34,7 @@ import { isSandboxGoneError } from "./e2b-sandbox.js";
 import { resolveAgentHomePath } from "./home.js";
 import { memberScope, prepareMemberHome, managerComputerEligible } from "./team-storage.js";
 import { teamEnabled } from "./team-policy.js";
+import { assertManagedTeamComputer } from "./managed-workspace.js";
 
 type ComputerUpdateProgress = (
   stage: Exclude<ComputerUpdate["stage"], "preparing">,
@@ -177,8 +178,9 @@ export async function provisionComputer(
   const managed = process.env.AGENT_RUNTIME === "codex";
   const team = teamEnabled() || managed ? await memberScope(deps.prisma, existing.userId, existing.spaceId) : null;
   const managerComputer = team ? await managerComputerEligible(deps.prisma, team, existing.userId) : false;
-  if (team && (existing.userId !== context.userId || existing.spaceId !== context.spaceId || existing.scope !== "dedicated"))
-    throw new Error("Team execution requires the actor's private dedicated computer");
+  if (team && (existing.userId !== context.userId || existing.spaceId !== context.spaceId || !["dedicated", "team"].includes(existing.scope)))
+    throw new Error("Managed execution requires an owned Computer in the current Space");
+  if (managed) await assertManagedTeamComputer(deps.prisma, existing, context);
   await prepareMemberHome(deps.prisma, existing.homeKey, { userId: existing.userId, spaceId: existing.spaceId });
   const homePath = resolveAgentHomePath(deps.home, existing.homeKey, deps.dataDir ?? "./data");
   await mkdir(homePath, { recursive: true });
@@ -514,7 +516,9 @@ export async function acquireDedicatedScreenLeaseFence(
     if (assignedBot.length !== 1) throw new ComputerBusyError();
 
     const computer = await tx.$queryRaw<Array<{ id: string; scope: string }>>`
-      SELECT id, scope FROM computers WHERE id = ${input.computerId} FOR UPDATE SKIP LOCKED`;
+      SELECT id, scope FROM computers WHERE id = ${input.computerId}
+        AND ("maintenanceId" IS NULL OR "maintenanceId" = ${input.runId})
+      FOR UPDATE SKIP LOCKED`;
     if (computer.length !== 1 || computer[0]?.scope !== "dedicated") {
       throw new ComputerBusyError();
     }
@@ -592,6 +596,25 @@ export async function acquireComputerExecutionLease(
   if (computer.maintenanceId && computer.maintenanceId !== input.runId)
     throw new ComputerBusyError();
   if (computer.scope !== "team") return null;
+  // Checkpoint claims take an exclusive lock on this row. Publish the lease
+  // while holding its shared lock, so a claim cannot miss an in-flight run.
+  return prisma.$transaction(async (tx) => {
+    const rows = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT id FROM computers WHERE id = ${input.computerId}
+        AND ("maintenanceId" IS NULL OR "maintenanceId" = ${input.runId})
+      FOR SHARE SKIP LOCKED`;
+    if (rows.length !== 1) throw new ComputerBusyError();
+    return acquireTeamComputerExecutionLease(tx as PrismaClient, input);
+  });
+}
+
+async function acquireTeamComputerExecutionLease(
+  prisma: PrismaClient,
+  input: { computerId: string; runId: string; botId: string; resumeHeldLease?: boolean },
+): Promise<ComputerExecutionLease> {
+  const computer = await prisma.computer.findUniqueOrThrow({ where: { id: input.computerId } });
+  if (computer.scope !== "team" || (computer.maintenanceId && computer.maintenanceId !== input.runId))
+    throw new ComputerBusyError();
   if (isLiveSuspending(computer)) throw new ComputerBusyError();
   const now = new Date();
   const expiresAt = new Date(now.getTime() + EXECUTION_LEASE_MS);

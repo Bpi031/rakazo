@@ -47,6 +47,7 @@ function fixture() {
     },
   ]);
   const prisma = {
+    thread: { findUnique: vi.fn(async () => ({ checkpointGeneration: 0 })), findUniqueOrThrow: vi.fn(async () => ({ activeBranchId: null })) },
     bot: { findFirst: findBot },
     spaceModelPreference: { findFirst: vi.fn(async () => null) },
     deploymentSettings: { findUnique: vi.fn(async () => null) },

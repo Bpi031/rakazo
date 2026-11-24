@@ -290,6 +290,7 @@ function retryHarness(scenario: RetryScenario = {}) {
     error: overloaded().message,
   };
   const tx = {
+    $executeRaw: vi.fn(async () => 1),
     routine: {
       updateMany: vi.fn(async () => ({
         count: scenario.pausedBeforeCreate || scenario.archivedBeforeCreate ? 0 : 1,
@@ -297,6 +298,11 @@ function retryHarness(scenario: RetryScenario = {}) {
     },
     thread: {
       findFirst: vi.fn(async () => (scenario.invalidDestination ? null : { id: "thread-1" })),
+      findUniqueOrThrow: vi.fn(async () => ({
+        activeBranchId: null,
+        checkpointGeneration: 0,
+        checkpointBlocked: false,
+    })),
     },
     task: {
       create: vi.fn(async () => ({ id: "task-2" })),
@@ -540,6 +546,8 @@ describe("running a routine retry", () => {
         trigger: "routine",
         routineId: "routine-1",
         retryOfRunId: "run-1",
+        branchId: null,
+        checkpointGeneration: 0,
         modelProvider: "routine-provider",
         modelId: "routine-model",
         thinkingLevel: "low",

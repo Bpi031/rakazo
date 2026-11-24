@@ -30,6 +30,9 @@ import {
   createGroupRepos,
   createRepos,
   createThreadMessageInTransaction,
+  checkpointMessageWhere,
+  checkpointRunFields,
+  checkpointThreadLock,
   expireComputerExecutionLeases,
   IsolationError,
   lockOwnedGroup,
@@ -166,6 +169,9 @@ async function replayExistingSend(
   if (!clientNonce) return null;
   const message = await findSendReceipt(deps.prisma, threadId, clientNonce);
   if (!message) return null;
+  if (message.branchId && !await deps.prisma.message.findFirst({ where: { ...await checkpointMessageWhere(deps.prisma, threadId), id: message.id }, select: { id: true } })) {
+    throw new ORPCError("CONFLICT", { message: "This send belongs to a previous checkpoint branch." });
+  }
   const receiptEvent = await deps.prisma.event.findFirst({
     where: {
       threadId,
@@ -354,6 +360,7 @@ export async function threadSnapshot(
       deps.prisma.$transaction(
         async (tx) => {
           await tx.$queryRaw`SELECT id FROM threads WHERE id = ${target.threadId} FOR SHARE`;
+          const checkpoint = await tx.thread.findUnique({ where: { id: target.threadId }, select: { checkpointGeneration: true } });
           const [messagePage, last, waitingRun, busyOrFailed] = await Promise.all([
             loadMessagePage(tx, target.threadId, undefined, THREAD_MESSAGE_PAGE_SIZE),
             tx.event.findFirst({
@@ -365,6 +372,7 @@ export async function threadSnapshot(
             // and ticket runs. Busy ticket work stays off the transcript below.
             tx.run.findFirst({
               where: {
+                checkpointGeneration: checkpoint?.checkpointGeneration ?? 0,
                 botId: target.botId,
                 threadId: target.threadId,
                 status: { in: ["waiting_input", "waiting_takeover"] },
@@ -373,6 +381,7 @@ export async function threadSnapshot(
             }),
             tx.run.findFirst({
               where: {
+                checkpointGeneration: checkpoint?.checkpointGeneration ?? 0,
                 botId: target.botId,
                 threadId: target.threadId,
                 // Hide peer bot_message and background ticket busy/failed noise; waiting is handled above.
@@ -644,12 +653,13 @@ export async function sendThreadMessage(
 
   const commit = () =>
     deps.prisma.$transaction(async (tx) => {
+      await checkpointThreadLock(tx, target.threadId);
       let replyToMessageId: string | undefined;
       let replyQuote: string | undefined;
       let replyPreview: ReplyPreview | null | undefined;
       if (input.replyToMessageId) {
         const reply = await tx.message.findFirst({
-          where: { id: input.replyToMessageId, threadId: target.threadId },
+          where: { ...await checkpointMessageWhere(tx, target.threadId), id: input.replyToMessageId, threadId: target.threadId },
           select: { id: true, blocks: true, role: true, botId: true },
         });
         // A missing target must not lose the send or retain an unverified id.
@@ -816,6 +826,7 @@ export async function sendThreadMessage(
         });
         const run = await tx.run.create({
           data: {
+            ...(await checkpointRunFields(tx, target.threadId)),
             spaceId: actor.spaceId,
             botId: target.botId,
             threadId: target.threadId,
@@ -965,6 +976,7 @@ export async function sendThreadMessage(
         });
         const run = await tx.run.create({
           data: {
+            ...(await checkpointRunFields(tx, target.threadId)),
             spaceId: actor.spaceId,
             botId,
             threadId: target.threadId,

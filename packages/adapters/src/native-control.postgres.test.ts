@@ -13,14 +13,17 @@ describe.skipIf(!url)('Native session contention with isolated PostgreSQL', () =
     const id = 'native-smoke-' + randomUUID();
     const actor = { userId:id, spaceId:id };
     const states = new Map([[id+'-user','running'], [id+'-routine','running']]);
+    let generation = 0;
     // Identity/run lookups are synthetic. Reservations and advisory locks use
     // real independent transactions, so concurrent callers cannot both win.
     const service = new NativeControl({$transaction: (fn:any) => prisma.$transaction(tx => fn({
       $executeRaw: tx.$executeRaw.bind(tx), agentWorkbenchRecord: tx.agentWorkbenchRecord,
-      thread:{findFirstOrThrow:async()=>({historyCompactionGeneration:0})},
+      thread:{findFirstOrThrow:async()=>({historyCompactionGeneration:generation,
+        checkpointGeneration:generation, checkpointBlocked:false, activeBranchId:`branch-${generation}`})},
       run:{findUniqueOrThrow:async({where}:any)=>({status:states.get(where.id)})},
     }))} as any);
-    vi.spyOn(service,'actor').mockImplementation(async runId => ({actor,run:{id:runId,botId:id,threadId:id,leaseFence:1}}) as any);
+    vi.spyOn(service,'actor').mockImplementation(async runId => ({actor,bot:{computer:{scope:'team'}},
+      run:{id:runId,botId:id,threadId:id,leaseFence:1,checkpointGeneration:generation}}) as any);
     vi.spyOn(service,'view').mockResolvedValue({preferences:{mode:'execute',persistence:true,action:'none',revision:0}} as any);
     try {
       const runs = [...states.keys()];
@@ -31,10 +34,19 @@ describe.skipIf(!url)('Native session contention with isolated PostgreSQL', () =
       const row = await prisma.agentWorkbenchRecord.findFirstOrThrow({where:{botId:id,kind:'native_session'}});
       expect(row.runId).toBe(runs[1-loser]); expect(row.status).toBe('running');
       states.set(row.runId!,'completed');
-      const payload = {...row.payload as object,threadId:'native-thread',turnId:'native-turn',completed:true};
+      const payload = {...row.payload as { fingerprint: string },threadId:'native-thread',turnId:'native-turn',completed:true};
       await prisma.agentWorkbenchRecord.update({where:{id:row.id},data:{status:'completed',payload,digest:teamDigest(payload)}});
       expect((await service.prepare(runs[loser]!, 'same-runtime')).previous?.threadId).toBe('native-thread');
-      expect((await prisma.agentWorkbenchRecord.findUniqueOrThrow({where:{id:row.id}})).runId).toBe(runs[loser]);
+      const continued = await prisma.agentWorkbenchRecord.findUniqueOrThrow({where:{id:row.id}});
+      expect(continued.runId).toBe(runs[loser]);
+      states.set(continued.runId!, 'completed');
+      const continuedPayload = { fingerprint: payload.fingerprint,
+        threadId: 'native-thread-continued', turnId: 'native-turn-continued', completed: true };
+      await prisma.agentWorkbenchRecord.update({where:{id:row.id},data:{status:'completed',
+        payload:continuedPayload,digest:teamDigest(continuedPayload)}});
+      generation++;
+      expect(await service.prepare(id+'-restored', 'same-runtime')).toMatchObject({ previous:null,
+        workspace:{cwd:`/home/rakazo/bots/${id}`,roots:[`/home/rakazo/bots/${id}`,'/home/rakazo/shared']} });
     } finally {
       await prisma.agentWorkbenchRecord.deleteMany({where:{botId:id}});
       vi.restoreAllMocks(); await prisma.$disconnect(); await pool.end();

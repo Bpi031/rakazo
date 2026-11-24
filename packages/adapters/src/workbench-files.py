@@ -9,6 +9,7 @@ import stat
 import sys
 
 HOME = Path('/home/rakazo')
+ROOTS = ['workspace']
 EXTENSIONS = {'.rost', '.cnl', '.md', '.txt', '.json', '.csv', '.py'}
 
 def digest(data):
@@ -16,7 +17,7 @@ def digest(data):
 
 def source(path):
     parts = path.split('/')
-    if (len(parts) < 2 or parts[0] != 'workspace' or len(path) > 500
+    if (not any(path.startswith(root + '/') for root in ROOTS) or len(path) > 500
             or any(not p or p in ('.', '..', 'frozen', 'inputs', 'checked', 'checkpoints') or p.startswith('.') or re.search(r'[\\\x00-\x1f]', p) for p in parts)
             or Path(parts[-1]).suffix.lower() not in EXTENSIONS):
         raise ValueError('Unapproved draft source')
@@ -111,6 +112,7 @@ def execute(value):
 
 if __name__ == '__main__':
     try:
+        if len(sys.argv) > 2: ROOTS = json.loads(sys.argv[2])
         raw = base64.b64decode(sys.argv[1], validate=True)
         if len(raw) > 200000:
             raise ValueError('Input too large')

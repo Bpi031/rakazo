@@ -22,13 +22,18 @@ describe("right panel preferences", () => {
     writeRightPanelState("user-a:space-a:bot-a", null, "routine-a");
     expect(readRightPanelState("user-a:space-a:bot-a")).toEqual({ panel: null });
   });
-  it.each(["not json", "null", "[]", '{"panel":"unknown"}', '{"panel":{}}', '{"panel":"create"}', '{"panel":"priorities"}'])(
-    "ignores malformed preference %s",
-    (value) => {
-      vi.stubGlobal("localStorage", { getItem: () => value });
-      expect(readRightPanelState("state")).toEqual({ panel: null });
-    },
-  );
+  it.each([
+    "not json",
+    "null",
+    "[]",
+    '{"panel":"unknown"}',
+    '{"panel":{}}',
+    '{"panel":"create"}',
+    '{"panel":"priorities"}',
+  ])("ignores malformed preference %s", (value) => {
+    vi.stubGlobal("localStorage", { getItem: () => value });
+    expect(readRightPanelState("state")).toEqual({ panel: null });
+  });
   it("keeps working when browser storage is unavailable", () => {
     vi.stubGlobal("localStorage", {
       getItem: () => {
@@ -52,7 +57,9 @@ describe("right panel preferences", () => {
     writeRightPanelState(key, "computer");
     writeRightPanelState(key, "create");
     expect(readRightPanelState(key)).toEqual({ panel: "computer" });
+    writeRightPanelState(key, "checkpoints");
+    expect(readRightPanelState(key)).toEqual({ panel: "checkpoints" });
     writeRightPanelState(key, "create-group");
-    expect(readRightPanelState(key)).toEqual({ panel: "computer" });
+    expect(readRightPanelState(key)).toEqual({ panel: "checkpoints" });
   });
 });

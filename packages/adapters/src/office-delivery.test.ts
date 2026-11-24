@@ -21,9 +21,13 @@ describe("office artifact delivery", () => {
     const put = vi.fn().mockResolvedValue({ id: "stored" });
     const create = vi.fn().mockImplementation(async ({ data }) => ({ id: "artifact", ...data }));
     const artifact = { findFirst: vi.fn().mockResolvedValue(null), create };
-    const tx = { artifact, $queryRaw: vi.fn().mockResolvedValue([{ lock: "1" }]) };
+    const run = { findUnique: vi.fn().mockResolvedValue({ threadId: "thread", spaceId: "space",
+      userId: "owner", botId: "bot", status: "running", checkpointGeneration: 2,
+      thread: { checkpointGeneration: 2, checkpointBlocked: false } }) };
+    const tx = { artifact, run, $queryRaw: vi.fn().mockResolvedValue([{ lock: "1" }]),
+      thread: { update: vi.fn().mockResolvedValue({ activeBranchId: "restored-branch" }) } };
     const result = await attachWorkspaceFileToThread({
-      prisma: { artifact, $transaction: async (run: (client: typeof tx) => Promise<unknown>) => run(tx) } as unknown as PrismaClient,
+      prisma: { artifact, run, $transaction: async (operation: (client: typeof tx) => Promise<unknown>) => operation(tx) } as unknown as PrismaClient,
       artifacts: { put } as unknown as ArtifactStore,
     }, {
       spaceId: "space", userId: "owner", botId: "bot", runId: "run",
@@ -33,7 +37,7 @@ describe("office artifact delivery", () => {
       expect.objectContaining({ spaceId: "space", userId: "owner", botId: "bot" }));
     expect(create).toHaveBeenCalledWith({ data: expect.objectContaining({
       spaceId: "space", userId: "owner", botId: "bot", runId: "run", mimeType,
-      size: bytes.byteLength, storageKey: "stored",
+      size: bytes.byteLength, storageKey: "stored", branchId: "restored-branch",
     }) });
     expect(result.block).toEqual({ kind: "file", artifactId: "artifact",
       name: `roster.${extension}`, mimeType, size: bytes.byteLength });

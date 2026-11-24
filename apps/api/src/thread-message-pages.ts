@@ -9,6 +9,7 @@ import {
 } from "@rakazo/core";
 import { messageReplyPreview } from "@rakazo/core/message-quote";
 import type { Prisma, PrismaClient } from "@rakazo/db";
+import { checkpointMessageWhere } from "@rakazo/db";
 
 type MessageDb = PrismaClient | Prisma.TransactionClient;
 
@@ -28,11 +29,12 @@ export async function loadMessagePage(
   includePeerRuns = false,
   includePeerReceipts = false,
 ): Promise<ThreadMessagePage> {
+  const visible = await checkpointMessageWhere(prisma, threadId);
   if (around) {
     let targetSeq = around.seq;
     if (targetSeq === undefined && around.messageId) {
       const row = await prisma.message.findFirst({
-        where: { id: around.messageId, threadId },
+        where: { ...visible, id: around.messageId, threadId },
         select: { seq: true },
       });
       targetSeq = row?.seq;
@@ -42,7 +44,7 @@ export async function loadMessagePage(
       const minSeq = Math.max(0, targetSeq - half);
       const maxSeq = targetSeq + half;
       const rows = await prisma.message.findMany({
-        where: { threadId, seq: { gte: minSeq, lte: maxSeq } },
+        where: { ...visible, threadId, seq: { gte: minSeq, lte: maxSeq } },
         orderBy: { seq: "asc" },
         take: pageSize,
         include: { replyTo: { select: replySelection } },
@@ -51,7 +53,7 @@ export async function loadMessagePage(
       const coveredThroughSeq = truncated ? (rows[rows.length - 1]?.seq ?? maxSeq) : maxSeq;
       const first = rows[0];
       const hasOlder = first
-        ? (await prisma.message.count({ where: { threadId, seq: { lt: first.seq } } })) > 0
+        ? (await prisma.message.count({ where: { ...visible, threadId, seq: { lt: first.seq } } })) > 0
         : false;
       // Peer text/activity stays out of the normal transcript (including the
       // around target). Receipts remain via withoutPeerRunMessages; full peer
@@ -70,6 +72,7 @@ export async function loadMessagePage(
   while (true) {
     const rows = await prisma.message.findMany({
       where: {
+        ...visible,
         threadId,
         ...(cursor === undefined ? {} : { seq: { lt: cursor } }),
       },

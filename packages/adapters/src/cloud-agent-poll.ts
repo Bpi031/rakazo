@@ -7,7 +7,7 @@ import type {
 import { CloudAgentRequestRejected, runContinueJob } from "@rakazo/adapter-kit";
 import type { MessageBlock } from "@rakazo/contracts";
 import { cloudAgentHttpsUrl } from "@rakazo/core";
-import { appendEventInTransaction, type CloudAgent, Prisma } from "@rakazo/db";
+import { appendEventInTransaction, checkpointRunFields, type CloudAgent, Prisma } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { cloudAgentsEnabled } from "./cloud-agent-factory.js";
 import { type CloudAgentDeps, cloudAgentBlock, enqueueCloudAgent } from "./cloud-agent-service.js";
@@ -307,6 +307,7 @@ async function finishPoll(
         });
         const run = await tx.run.create({
           data: {
+            ...(await checkpointRunFields(tx, agent.threadId)),
             spaceId: agent.spaceId,
             botId: agent.botId,
             threadId: agent.threadId,
