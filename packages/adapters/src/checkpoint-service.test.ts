@@ -497,6 +497,46 @@ it("shows the latest optional name when equivalent checkpoints are merged", asyn
   expect(named.id).not.toBe(original.id);
 });
 
+it("uses the latest explicit naming action across saves and renames without moving an equivalent node", async () => {
+  const f = fixture();
+  const first = await f.save("First label");
+  const rename = async (checkpointId: string, label: string) =>
+    f.service.rename(actor, {
+      botId: "bot",
+      checkpointId,
+      label,
+      expectedRevision: (await f.service.status(actor, "bot")).revision,
+    });
+  await rename(first.id, "Renamed label");
+  const namedAgain = await f.save("Explicit save after rename");
+  expect((await f.service.list(actor, "bot")).checkpoints).toEqual([
+    expect.objectContaining({
+      id: first.id,
+      label: "Explicit save after rename",
+      parentCheckpointId: null,
+    }),
+  ]);
+  await rename(namedAgain.id, "Alias renamed later");
+  expect((await f.service.list(actor, "bot")).checkpoints).toEqual([
+    expect.objectContaining({
+      id: first.id,
+      label: "Alias renamed later",
+      parentCheckpointId: null,
+    }),
+  ]);
+});
+
+it("preserves an existing unsequenced custom name until the next explicit naming action", async () => {
+  const f = fixture();
+  await f.save("Old capture label");
+  await f.save("Old duplicate label");
+  for (const row of f.state.checkpoints) row.labelRevision = 0;
+  f.state.checkpoints[0].customLabel = "Old custom label";
+  expect((await f.service.list(actor, "bot")).checkpoints[0]?.label).toBe("Old custom label");
+  await f.save("New explicit label");
+  expect((await f.service.list(actor, "bot")).checkpoints[0]?.label).toBe("New explicit label");
+});
+
 it("keeps the tree acyclic when an earlier state is named again after a fork", async () => {
   const f = fixture();
   const a = await f.save();
@@ -549,7 +589,11 @@ it("renames only display metadata, refreshes other clients, and rejects stale or
     label: "Reviewed",
   };
   await f.service.rename(actor, input);
-  expect(f.state.checkpoints[0]).toEqual({ ...before, customLabel: "Reviewed" });
+  expect(f.state.checkpoints[0]).toEqual({
+    ...before,
+    customLabel: "Reviewed",
+    labelRevision: before.labelRevision + 1,
+  });
   expect(f.fileStore.restore).not.toHaveBeenCalled();
   const after = await f.service.list(actor, "bot");
   expect(after.generation).toBe(status.generation);

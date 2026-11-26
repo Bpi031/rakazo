@@ -711,6 +711,7 @@ model Checkpoint {
   kind             String
   label            String?
   customLabel      String?
+  labelRevision    Int      @default(0)
   cutoffMessageSeq Int
   cutoffEventSeq   Int
   generation       Int

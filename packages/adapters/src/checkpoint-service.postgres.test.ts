@@ -510,7 +510,12 @@ postgres("checkpoint recovery with migrated PostgreSQL", () => {
     expect(outcomes.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
     const after = await prisma.checkpoint.findUniqueOrThrow({ where: { id } });
     expect(["Draft for review", "Roster review"]).toContain(after.customLabel);
-    expect(after).toEqual({ ...before, customLabel: after.customLabel });
+    expect(after.labelRevision).toBeGreaterThan(before.labelRevision);
+    expect(after).toEqual({
+      ...before,
+      customLabel: after.customLabel,
+      labelRevision: after.labelRevision,
+    });
     const refreshed = await service.list(actor, botId);
     expect(refreshed.checkpoints[0]?.label).toBe(after.customLabel);
     expect(refreshed.generation).toBe(old.generation);

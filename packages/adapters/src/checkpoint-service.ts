@@ -238,6 +238,7 @@ export class CheckpointService {
       const status = checkpointStatus(current, workspaceBlocked, latest?.id);
       if (current.id !== thread.id || status.blocked || status.revision !== input.expectedRevision)
         throw new Error("Workspace changed; refresh checkpoints");
+      const labelRevision = await this.advanceLabelRevision(tx, current.id);
       const updated =
         "branchId" in input
           ? await tx.conversationBranch.updateMany({
@@ -253,15 +254,20 @@ export class CheckpointService {
                 userId: actor.userId,
                 OR: [{ workspaceKey }, { workspaceKey: null }],
               },
-              data: { customLabel: input.label },
+              data: { customLabel: input.label, labelRevision },
             });
       if (updated.count !== 1) throw new IsolationError();
-      await tx.thread.update({
-        where: { id: current.id },
-        data: { checkpointLabelRevision: { increment: 1 } },
-      });
       return { ok: true };
     }, txOptions);
+  }
+
+  private async advanceLabelRevision(tx: Prisma.TransactionClient, threadId: string) {
+    const updated = await tx.thread.update({
+      where: { id: threadId },
+      data: { checkpointLabelRevision: { increment: 1 } },
+      select: { checkpointLabelRevision: true },
+    });
+    return updated.checkpointLabelRevision;
   }
 
   async list(actor: Actor, botId: string): Promise<CheckpointView> {
@@ -288,7 +294,7 @@ export class CheckpointService {
     );
     const states = new Map<string, (typeof rows)[number]>();
     const visibleKinds = new Map<string, string>();
-    const names = new Map<string, string>();
+    const names = new Map<string, { text: string; revision: number; renamed: boolean }>();
     const signatures = new Map<string, string>();
     for (const row of ordered) {
       const digest = stateDigest(
@@ -301,7 +307,19 @@ export class CheckpointService {
       const kind = visibleKinds.get(digest);
       if (!kind || kind === "auto_turn_boundary" || row.kind === "manual")
         visibleKinds.set(digest, row.kind);
-      if (row.label?.trim()) names.set(digest, row.label);
+      const text = row.customLabel ?? row.label;
+      if (text?.trim()) {
+        const revision = row.labelRevision ?? 0;
+        const renamed = row.customLabel != null;
+        const prior = names.get(digest);
+        // Legacy records have no sequence; preserve their rename preference.
+        if (
+          !prior ||
+          revision > prior.revision ||
+          (revision === prior.revision && (renamed || !prior.renamed))
+        )
+          names.set(digest, { text, revision, renamed });
+      }
     }
     for (const row of ordered) aliases.set(row.id, states.get(signatures.get(row.id)!)!.id);
     const parents = new Map<string, string | null>();
@@ -320,7 +338,7 @@ export class CheckpointService {
         {
           id: row.id,
           kind: visibleKinds.get(signature) as CheckpointView["checkpoints"][number]["kind"],
-          label: row.customLabel ?? names.get(signature) ?? row.label,
+          label: names.get(signature)?.text ?? row.label,
           branchId: row.branchId,
           createdAt: row.createdAt.toISOString(),
           parentCheckpointId,
@@ -445,6 +463,8 @@ export class CheckpointService {
         stateDigest(anchor.fileManifest, anchor.businessState as unknown as CheckpointBusiness)
     )
       return anchor;
+    const labelRevision =
+      kind === "manual" && label?.trim() ? await this.advanceLabelRevision(tx, threadId) : 0;
     return tx.checkpoint.create({
       data: {
         threadId,
@@ -455,6 +475,7 @@ export class CheckpointService {
         branchId: thread.activeBranchId,
         kind,
         label,
+        labelRevision,
         generation: thread.checkpointGeneration,
         cutoffMessageSeq: thread.nextMessageSeq - 1,
         cutoffEventSeq: thread.nextEventSeq - 1,
