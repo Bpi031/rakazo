@@ -187,7 +187,9 @@ it("rejects checkpoint blobs with hard links before restoring", async () => {
   await link(blob, path.join(state.directory, "legacy-reference"));
   expect((await lstat(blob)).nlink).toBe(2);
   state.files.clear();
-  await expect(state.service.restore(actor, "bot", computer, snapshot)).rejects.toThrow("Invalid checkpoint blob");
+  await expect(state.service.restore(actor, "bot", computer, snapshot)).rejects.toThrow(
+    "Invalid checkpoint blob",
+  );
 });
 
 it("captures and restores only a Team bot's directory, preserving shared files", async () => {
@@ -278,9 +280,19 @@ it("rejects foreign Team roots, unmanaged entries and legacy scope mismatch befo
   );
   if (source.version !== 2) throw new Error("Expected Team manifest");
   const roots = ["bots/source", "shared"];
-  await expect(state.service.restore(actor, "source", computer, {
-    ...source, roots, digest: hash(JSON.stringify({ roots, entries: source.entries })),
-  }, "team")).rejects.toThrow();
+  await expect(
+    state.service.restore(
+      actor,
+      "source",
+      computer,
+      {
+        ...source,
+        roots,
+        digest: hash(JSON.stringify({ roots, entries: source.entries })),
+      },
+      "team",
+    ),
+  ).rejects.toThrow();
   const entries = [{ path: "bots/recipient", type: "directory", mode: 0o700 }];
   await expect(
     state.service.restore(
@@ -511,6 +523,25 @@ it("verifies every blob before clearing the active workspace", async () => {
   );
   expect(state.execute).not.toHaveBeenCalled();
   expect(state.inventory()).toEqual(before);
+});
+
+it("rejects a manifest that assigns different sizes to the same blob before touching the workspace", async () => {
+  const state = await fixture();
+  const snapshot = await state.service.capture(actor, "bot", computer);
+  const original = snapshot.entries.find((entry) => entry.type === "file")!;
+  const entries = [
+    ...snapshot.entries,
+    { ...original, path: "impossible.xlsx", size: original.size + 1 },
+  ];
+  state.execute.mockClear();
+  await expect(
+    state.service.restore(actor, "bot", computer, {
+      ...snapshot,
+      entries,
+      digest: hash(JSON.stringify(entries)),
+    }),
+  ).rejects.toThrow("Inconsistent sizes for a checkpoint blob");
+  expect(state.execute).not.toHaveBeenCalled();
 });
 
 it("rejects traversal and missing parent manifests before executing the helper", async () => {

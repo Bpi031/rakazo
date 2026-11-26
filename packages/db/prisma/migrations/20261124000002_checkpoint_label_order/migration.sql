@@ -1,0 +1,1 @@
+ALTER TABLE "checkpoints" ADD COLUMN "labelRevision" INTEGER NOT NULL DEFAULT 0;

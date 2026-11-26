@@ -49,9 +49,17 @@ const view = {
   ],
 };
 function button(text: string) {
-  return [...host.querySelectorAll<HTMLButtonElement>("button")].find(
+  return [...document.body.querySelectorAll<HTMLButtonElement>("button")].find(
     (element) => element.textContent === text,
   )!;
+}
+async function openRestore() {
+  await act(async () =>
+    host
+      .querySelector<HTMLButtonElement>('[aria-label="Inspect checkpoint 人员已确认"]')!
+      .dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })),
+  );
+  await act(async () => (document.querySelector('[role="menuitem"]') as HTMLElement).click());
 }
 async function render(
   options: { blocked?: boolean; failure?: boolean; workspaceBusy?: boolean } = {},
@@ -78,15 +86,16 @@ async function render(
 
 it("requires a target confirmation and submits the current generation", async () => {
   const { restored, fetcher } = await render();
-  expect(host.querySelector('[aria-label="Restore checkpoint 人员已确认"]')).toBeTruthy();
-  expect(host.textContent).not.toContain("人员已确认");
+  expect(host.querySelector('[aria-label="Inspect checkpoint 人员已确认"]')).toBeTruthy();
+  expect(host.textContent).toContain("人员已确认");
   expect(host.querySelector('[aria-label="Checkpoint name"]')).toBeTruthy();
-  await act(async () =>
-    host.querySelector<HTMLButtonElement>('[aria-label="Restore checkpoint 人员已确认"]')!.click(),
+  await openRestore();
+  const dialog = document.body.querySelector('[role="alertdialog"]');
+  expect(dialog?.textContent).toContain("Running tasks will stop");
+  expect(dialog?.querySelector('[data-testid="checkpoint-confirm-target"]')?.textContent).toBe(
+    "人员已确认",
   );
-  expect(host.querySelector('[role="alertdialog"]')?.textContent).toContain(
-    "Running tasks will stop",
-  );
+  expect(host.contains(dialog)).toBe(false);
   expect(fetcher.mock.calls.filter((call) => call[1].method === "POST")).toHaveLength(0);
   await act(async () => button("Restore").click());
   expect(fetcher).toHaveBeenCalledWith(
@@ -103,16 +112,16 @@ it("requires a target confirmation and submits the current generation", async ()
 it("shows a branching tree without an Undo action", async () => {
   await render();
   expect(button("撤销上次回滚")).toBeUndefined();
-  expect(host.querySelector('[aria-label="Checkpoint tree, drag to pan"]')).toBeTruthy();
+  expect(host.querySelector('[aria-label="Checkpoint history"]')).toBeTruthy();
 });
 
 it("does not reload on a failed restore and refreshes stale state for retry", async () => {
   const { restored, fetcher } = await render({ failure: true });
-  await act(async () =>
-    host.querySelector<HTMLButtonElement>('[aria-label="Restore checkpoint 人员已确认"]')!.click(),
-  );
+  await openRestore();
   await act(async () => button("Restore").click());
-  expect(host.querySelector('[role="alert"]')?.textContent).toContain("Workspace changed");
+  expect(document.body.querySelector('[role="alertdialog"] [role="alert"]')?.textContent).toContain(
+    "Workspace changed",
+  );
   expect(restored).not.toHaveBeenCalled();
   expect(fetcher.mock.calls.filter((call) => call[1].method === "GET")).toHaveLength(2);
   expect(button("Restore").disabled).toBe(false);
@@ -122,7 +131,7 @@ it("blocks saving an incomplete workspace while allowing recovery", async () => 
   await render({ blocked: true });
   expect(button("Set a checkpoint").disabled).toBe(true);
   expect(
-    host.querySelector<HTMLButtonElement>('[aria-label="Restore checkpoint 人员已确认"]')!.disabled,
+    host.querySelector<HTMLButtonElement>('[aria-label="Inspect checkpoint 人员已确认"]')!.disabled,
   ).toBe(false);
   expect(host.textContent).toContain("Workspace recovery is incomplete");
 });
@@ -132,7 +141,7 @@ it("keeps a reopened panel disabled while a workspace operation is still running
   expect(button("Set a checkpoint").disabled).toBe(true);
   expect(host.querySelector<HTMLInputElement>("input")!.disabled).toBe(true);
   expect(
-    host.querySelector<HTMLButtonElement>('[aria-label="Restore checkpoint 人员已确认"]')!.disabled,
+    host.querySelector<HTMLButtonElement>('[aria-label="Inspect checkpoint 人员已确认"]')!.disabled,
   ).toBe(true);
 });
 
@@ -154,9 +163,7 @@ it("does not reload a different chat when an unmounted restore completes", async
   await act(async () =>
     root!.render(<CheckpointsPanel botId="bot" onRestored={restored} onBusyChange={busy} />),
   );
-  await act(async () =>
-    host.querySelector<HTMLButtonElement>('[aria-label="Restore checkpoint 人员已确认"]')!.click(),
-  );
+  await openRestore();
   await act(async () => button("Restore").click());
   expect(busy).toHaveBeenLastCalledWith(true);
   await act(async () => root!.unmount());
@@ -248,6 +255,28 @@ it("reloads another tab only after recovery completes", async () => {
   expect(fetcher.mock.calls.every((call) => call[0] === "/api/checkpoints/status?botId=bot")).toBe(
     true,
   );
+});
+
+it("requires a fresh restore confirmation when the displayed generation changes", async () => {
+  vi.useFakeTimers();
+  let current = view;
+  const fetcher = vi.fn(async () => Response.json(current));
+  vi.stubGlobal("fetch", fetcher);
+  host = document.createElement("div");
+  document.body.append(host);
+  root = createRoot(host);
+  await act(async () => root!.render(<CheckpointsPanel botId="bot" />));
+  await openRestore();
+  expect(button("Restore").disabled).toBe(false);
+  current = { ...view, generation: 4, revision: "revision-4" };
+  await act(async () => vi.advanceTimersByTimeAsync(4000));
+  expect(button("Restore").disabled).toBe(true);
+  expect(document.body.querySelector('[role="alertdialog"] [role="alert"]')?.textContent).toContain(
+    "Workspace changed",
+  );
+  await act(async () => button("Cancel").click());
+  await openRestore();
+  expect(button("Restore").disabled).toBe(false);
 });
 
 it("polls cheap status and refreshes the tree only when its revision changes", async () => {

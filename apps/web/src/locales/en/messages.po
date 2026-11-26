@@ -5135,7 +5135,84 @@ msgstr "No checkpoints yet."
 #. js-lingui-explicit-id
 #: src/lib/checkpoint-i18n.ts
 msgid "checkpoint.tree"
-msgstr "Checkpoint tree, drag to pan"
+msgstr "Checkpoint history"
+
+msgid "checkpoint.details"
+msgstr "Checkpoint details"
+
+msgid "checkpoint.linkedCheckpoint"
+msgstr "Previous checkpoint"
+
+msgid "checkpoint.actions"
+msgstr "Checkpoint actions"
+
+msgid "checkpoint.rename"
+msgstr "Rename checkpoint"
+
+msgid "checkpoint.renameDescription"
+msgstr "Only the checkpoint name will change."
+
+msgid "checkpoint.saveName"
+msgstr "Save name"
+
+msgid "checkpoint.navigateParent"
+msgstr "Go to previous checkpoint"
+
+msgid "checkpoint.focusBranch"
+msgstr "Focus branch"
+
+msgid "checkpoint.copyId"
+msgstr "Copy checkpoint ID"
+
+msgid "checkpoint.copiedId"
+msgstr "Checkpoint ID copied."
+
+msgid "checkpoint.closeDetails"
+msgstr "Close checkpoint details"
+
+msgid "checkpoint.inspectNode"
+msgstr "Inspect checkpoint"
+
+msgid "checkpoint.allBranches"
+msgstr "All branches"
+
+msgid "checkpoint.branchFilter"
+msgstr "Filter by branch"
+
+msgid "checkpoint.renameBranch"
+msgstr "Rename branch"
+
+msgid "checkpoint.branchNameField"
+msgstr "Branch name"
+
+msgid "checkpoint.renameBranchDescription"
+msgstr "Only the branch name will change."
+
+msgid "checkpoint.originalBranch"
+msgstr "Original history"
+
+msgid "checkpoint.restoredBranch"
+msgstr "Restored branch"
+
+msgid "checkpoint.branchFrom"
+msgstr "From {checkpoint}"
+
+msgid "checkpoint.branchRestoredAt"
+msgstr "Restored {date}"
+
+msgid "checkpoint.currentBranch"
+msgstr "current"
+
+msgid "checkpoint.showTurns"
+msgstr "Show old chat checkpoints"
+
+msgid "checkpoint.emptyFiltered"
+msgstr "No checkpoints match these filters."
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.branchTip"
+msgstr "Branch tip"
 
 #. js-lingui-explicit-id
 #: src/lib/checkpoint-i18n.ts

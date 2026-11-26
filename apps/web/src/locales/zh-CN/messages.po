@@ -5135,7 +5135,84 @@ msgstr "还没有保存的节点。"
 #. js-lingui-explicit-id
 #: src/lib/checkpoint-i18n.ts
 msgid "checkpoint.tree"
-msgstr "节点分支树，可拖拽浏览"
+msgstr "节点历史"
+
+msgid "checkpoint.details"
+msgstr "节点详情"
+
+msgid "checkpoint.linkedCheckpoint"
+msgstr "上一个节点"
+
+msgid "checkpoint.actions"
+msgstr "节点操作"
+
+msgid "checkpoint.rename"
+msgstr "重命名节点"
+
+msgid "checkpoint.renameDescription"
+msgstr "仅更改节点名称。"
+
+msgid "checkpoint.saveName"
+msgstr "保存名称"
+
+msgid "checkpoint.navigateParent"
+msgstr "转到上一个节点"
+
+msgid "checkpoint.focusBranch"
+msgstr "仅查看此分支"
+
+msgid "checkpoint.copyId"
+msgstr "复制节点 ID"
+
+msgid "checkpoint.copiedId"
+msgstr "已复制节点 ID。"
+
+msgid "checkpoint.closeDetails"
+msgstr "关闭节点详情"
+
+msgid "checkpoint.inspectNode"
+msgstr "查看节点"
+
+msgid "checkpoint.allBranches"
+msgstr "所有分支"
+
+msgid "checkpoint.branchFilter"
+msgstr "按分支筛选"
+
+msgid "checkpoint.renameBranch"
+msgstr "重命名分支"
+
+msgid "checkpoint.branchNameField"
+msgstr "分支名称"
+
+msgid "checkpoint.renameBranchDescription"
+msgstr "仅更改分支名称。"
+
+msgid "checkpoint.originalBranch"
+msgstr "原始历史"
+
+msgid "checkpoint.restoredBranch"
+msgstr "恢复的分支"
+
+msgid "checkpoint.branchFrom"
+msgstr "来自{checkpoint}"
+
+msgid "checkpoint.branchRestoredAt"
+msgstr "恢复于 {date}"
+
+msgid "checkpoint.currentBranch"
+msgstr "当前"
+
+msgid "checkpoint.showTurns"
+msgstr "显示旧的聊天节点"
+
+msgid "checkpoint.emptyFiltered"
+msgstr "没有符合筛选条件的节点。"
+
+#. js-lingui-explicit-id
+#: src/lib/checkpoint-i18n.ts
+msgid "checkpoint.branchTip"
+msgstr "当前分支节点"
 
 #. js-lingui-explicit-id
 #: src/lib/checkpoint-i18n.ts

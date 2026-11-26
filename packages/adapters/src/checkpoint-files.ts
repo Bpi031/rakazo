@@ -84,6 +84,7 @@ export type CheckpointFileScope = "dedicated" | "team";
 export function parseCheckpointFileManifest(raw: unknown): CheckpointFileManifest {
   const manifest = manifestSchema.parse(raw);
   const names = new Map(manifest.entries.map((item) => [item.path, item.type]));
+  const blobSizes = new Map<string, number>();
   if (
     names.size !== manifest.entries.length ||
     manifest.digest !==
@@ -97,6 +98,12 @@ export function parseCheckpointFileManifest(raw: unknown): CheckpointFileManifes
   )
     throw new Error("Invalid checkpoint manifest");
   for (const item of manifest.entries) {
+    if (item.type === "file") {
+      const prior = blobSizes.get(item.sha256);
+      if (prior !== undefined && prior !== item.size)
+        throw new Error("Inconsistent sizes for a checkpoint blob");
+      blobSizes.set(item.sha256, item.size);
+    }
     if (
       manifest.version === 2 &&
       !manifest.roots.some((root) => item.path === root || item.path.startsWith(`${root}/`))
@@ -453,7 +460,11 @@ export class CheckpointFiles {
       if (rawHash.digest("hex") === hash) compressed = false;
     }
     const input = createReadStream(file, compressed ? { start: MAGIC.length } : {});
-    const stream = compressed ? input.pipe(createInflate()) : input;
+    const decoder = compressed ? createInflate() : undefined;
+    const transfer = decoder ? pipeline(input, decoder) : undefined;
+    // Keep source I/O failures attached to the consumer instead of crashing the process.
+    void transfer?.catch(() => undefined);
+    const stream = decoder ?? input;
     const digest = createHash("sha256");
     let count = 0;
     try {
@@ -464,6 +475,7 @@ export class CheckpointFiles {
         digest.update(bytes);
         yield bytes;
       }
+      await transfer;
       if (count !== size || digest.digest("hex") !== hash)
         throw new Error("Checkpoint blob integrity check failed");
     } catch {
@@ -471,6 +483,7 @@ export class CheckpointFiles {
     } finally {
       input.destroy();
       stream.destroy();
+      await transfer?.catch(() => undefined);
     }
   }
 

@@ -672,6 +672,7 @@ model Thread {
   historyCompactionGeneration Int        @default(0)
   activeBranchId              String?
   checkpointGeneration        Int        @default(0)
+  checkpointLabelRevision     Int        @default(0)
   checkpointBlocked           Boolean    @default(false)
   unread                      Boolean    @default(false)
   messages                    Message[]
@@ -691,6 +692,7 @@ model ConversationBranch {
   parentBranchId         String?
   parentCutoffMessageSeq Int?
   parentCutoffEventSeq   Int?
+  label                  String?
   createdAt              DateTime @default(now())
 
   @@index([threadId])
@@ -708,6 +710,8 @@ model Checkpoint {
   branchId         String
   kind             String
   label            String?
+  customLabel      String?
+  labelRevision    Int      @default(0)
   cutoffMessageSeq Int
   cutoffEventSeq   Int
   generation       Int

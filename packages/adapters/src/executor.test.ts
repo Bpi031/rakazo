@@ -2354,6 +2354,7 @@ description: Prepare standup notes
   it("fails a run clearly without calling the real runtime when no model is configured", async () => {
     let status = "queued";
     const runtimeRun = vi.fn();
+    const captureForRun = vi.fn(async () => undefined);
     const finalizeRun = vi.fn(async () => {
       status = "failed";
       return { continuationRunId: null };
@@ -2422,6 +2423,7 @@ description: Prepare standup notes
     } as unknown as PrismaClient;
     const executor = createRunExecutor({
       prisma,
+      checkpoints: { captureForRun },
       runtime: {
         describe: () => ({ capabilities: { scripted: false } }),
         run: runtimeRun,
@@ -2443,6 +2445,7 @@ description: Prepare standup notes
       }),
     );
     expect(runtimeRun).not.toHaveBeenCalled();
+    expect(captureForRun).not.toHaveBeenCalled();
   });
 
   it("fails a pinned routine run instead of falling back to the space default", async () => {
