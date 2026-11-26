@@ -294,14 +294,15 @@ export async function checkpointComputerWorkspace(
   }
 }
 
-/** Remote exports quiesce browsers, so a run must not checkpoint while peers are driving them. */
+/** Run-end export must not race recovery or quiesce a remote workspace used by peers. */
 export async function checkpointRunComputerWorkspace(
   deps: { home: AgentHomeStore; sandbox: SandboxProvider; prisma: PrismaClient },
   computerRecord: { id: string; homeKey: string; scope: string },
   computer: ComputerRef,
   context: AdapterContext,
 ): Promise<string | undefined> {
-  if (computerRecord.scope !== "team" || computer.kind === "docker") {
+  if (computer.kind === "docker" && deps.home instanceof LocalAgentHomeStore) {
+    // A bind-mounted local workspace only advances its revision marker.
     return checkpointAndRecordComputerWorkspace(deps, computerRecord, computer, context);
   }
   const now = new Date();
@@ -311,19 +312,24 @@ export async function checkpointRunComputerWorkspace(
       id: computerRecord.id,
       state: "running",
       providerRef: computer.providerRef,
-      executionLeases: {
-        none: {
-          expiresAt: { gt: now },
-          ...(ownLease ? { NOT: { runId: ownLease.ownerId, fence: ownLease.fence } } : {}),
-        },
-      },
-      OR: [
-        { controlHolder: { not: "user" } },
-        { controlLeaseId: null },
-        { controlLeaseExpiresAt: null },
-        { controlLeaseExpiresAt: { lte: now } },
-        ...(context.botId ? [{ controlBotId: context.botId }] : []),
-      ],
+      maintenanceId: null,
+      ...(computerRecord.scope === "team"
+        ? {
+            executionLeases: {
+              none: {
+                expiresAt: { gt: now },
+                ...(ownLease ? { NOT: { runId: ownLease.ownerId, fence: ownLease.fence } } : {}),
+              },
+            },
+            OR: [
+              { controlHolder: { not: "user" } },
+              { controlLeaseId: null },
+              { controlLeaseExpiresAt: null },
+              { controlLeaseExpiresAt: { lte: now } },
+              ...(context.botId ? [{ controlBotId: context.botId }] : []),
+            ],
+          }
+        : {}),
     },
     data: { state: "suspending", updatedAt: now },
   });
@@ -333,7 +339,12 @@ export async function checkpointRunComputerWorkspace(
     return await checkpointAndRecordComputerWorkspace(deps, computerRecord, computer, context);
   } finally {
     await deps.prisma.computer.updateMany({
-      where: { id: computerRecord.id, state: "suspending", providerRef: computer.providerRef },
+      where: {
+        id: computerRecord.id,
+        state: "suspending",
+        providerRef: computer.providerRef,
+        maintenanceId: null,
+      },
       data: { state: "running" },
     });
   }

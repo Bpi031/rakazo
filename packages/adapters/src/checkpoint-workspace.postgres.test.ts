@@ -33,6 +33,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { CheckpointFiles } from "./checkpoint-files.js";
 import { CheckpointService } from "./checkpoint-service.js";
 import { destroyBot } from "./child-bots.js";
+import { checkpointRunComputerWorkspace } from "./computer-workspace.js";
 import { LocalAgentHomeStore } from "./home.js";
 
 const connection = process.env.CHECKPOINT_TEST_DATABASE_URL;
@@ -447,6 +448,40 @@ describe.skipIf(!enabled).sequential.each(["dedicated", "team"] as const)(
       },
       120_000,
     );
+
+    it("fences a cancelled run's remote export while restore owns maintenance", async () => {
+      const id = `${scope}-restore-export`;
+      const target = await bot(id);
+      await writeFile(path.join(target.workspace, "state.txt"), "checkpoint version");
+      const saved = await save(id);
+      await writeFile(path.join(target.workspace, "state.txt"), "working version");
+      const exportWorkspace = vi.fn();
+      const original = files.restore.bind(files);
+      const probe = vi.spyOn(files, "restore").mockImplementationOnce(async (...args) => {
+        const revision = await checkpointRunComputerWorkspace(
+          {
+            prisma,
+            sandbox: { exportWorkspace } as unknown as SandboxProvider,
+            home: new LocalAgentHomeStore(root),
+          },
+          target.computer,
+          { ...args[2], kind: "e2b" },
+          { ...context(), botId: id },
+        );
+        expect(revision).toBeUndefined();
+        expect(exportWorkspace).not.toHaveBeenCalled();
+        return original(...args);
+      });
+      try {
+        expect((await restore(id, saved.id)).ok).toBe(true);
+        expect(probe).toHaveBeenCalledOnce();
+        expect(await readFile(path.join(target.workspace, "state.txt"), "utf8")).toBe(
+          "checkpoint version",
+        );
+      } finally {
+        probe.mockRestore();
+      }
+    });
 
     it("captures four unrelated workspaces concurrently with the standard four-connection pool", async () => {
       const ids = [0, 1, 2, 3].map((index) => `${scope}-parallel-${index}`);

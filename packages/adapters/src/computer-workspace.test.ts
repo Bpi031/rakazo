@@ -83,7 +83,28 @@ describe("provider-neutral computer workspace", () => {
   });
 });
 
-describe("Team run checkpoints", () => {
+describe("run-end workspace checkpoints", () => {
+  it.each(["dedicated", "team"])(
+    "skips a cancelled %s run's remote export during recovery",
+    async (scope) => {
+      const { checkpointRunComputerWorkspace } = await import("./computer-workspace.js");
+      const exportWorkspace = vi.fn();
+      const updateMany = vi.fn().mockResolvedValue({ count: 0 });
+      const deps = { sandbox: { exportWorkspace }, home: {}, prisma: { computer: { updateMany } } };
+      const result = await checkpointRunComputerWorkspace(
+        deps as never,
+        { id: "workspace", homeKey: "workspace", scope },
+        { id: "remote", providerRef: "remote", kind: "e2b", botId: "workspace" },
+        context,
+      );
+      expect(result).toBeUndefined();
+      expect(exportWorkspace).not.toHaveBeenCalled();
+      expect(updateMany).toHaveBeenCalledExactlyOnceWith({
+        where: expect.objectContaining({ id: "workspace", state: "running", maintenanceId: null }),
+        data: expect.objectContaining({ state: "suspending" }),
+      });
+    },
+  );
   it("defers a remote export when another run prevents an exclusive checkpoint", async () => {
     const { checkpointRunComputerWorkspace } = await import("./computer-workspace.js");
     const exportWorkspace = vi.fn();
@@ -130,7 +151,7 @@ describe("Team run checkpoints", () => {
       exportWorkspace.mock.invocationCallOrder[0]!,
     );
     expect(updateMany).toHaveBeenLastCalledWith({
-      where: { id: "team", providerRef: "remote", state: "suspending" },
+      where: { id: "team", providerRef: "remote", state: "suspending", maintenanceId: null },
       data: { state: "running" },
     });
   });
