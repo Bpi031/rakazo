@@ -1,4 +1,3 @@
-import { deferred } from "@rakazo/core/test-async";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -23,6 +22,7 @@ import type {
   SandboxProvider,
 } from "@rakazo/adapter-kit";
 import type { Actor } from "@rakazo/contracts";
+import { deferred } from "@rakazo/core/test-async";
 import type { PrismaClient } from "@rakazo/db";
 import {
   checkpointMessageWhere,
@@ -31,9 +31,9 @@ import {
   withCheckpointWorkspaceWrite,
 } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { destroyBot } from "./bots/child-bots.js";
 import { CheckpointFiles } from "./checkpoints/checkpoint-files.js";
 import { CheckpointService } from "./checkpoints/checkpoint-service.js";
-import { destroyBot } from "./bots/child-bots.js";
 import { LocalAgentHomeStore } from "./storage/home.js";
 
 const connection = process.env.CHECKPOINT_TEST_DATABASE_URL;

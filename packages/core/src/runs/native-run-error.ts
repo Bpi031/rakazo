@@ -13,12 +13,18 @@ export function nativeRunError(details: string): { summary: string; details: str
   if (summary) {
     return {
       summary,
-      details: "No automatic retry or model change was made. Check any existing roster job before continuing.",
+      details:
+        "No automatic retry or model change was made. Check any existing roster job before continuing.",
     };
   }
-  if (details.trim() !== 'Native session already owned' && !details.trim().startsWith('ROST_NATIVE_SESSION_BUSY:')) return null;
+  if (
+    details.trim() !== "Native session already owned" &&
+    !details.trim().startsWith("ROST_NATIVE_SESSION_BUSY:")
+  )
+    return null;
   return {
-    summary: 'Another agent turn was using this private session.',
-    details: 'ROST_NATIVE_SESSION_BUSY: Rakazo prevented overlapping agent turns. Check the current chat and owned job before continuing. This is not a model-provider failure and does not mean the roster solve failed.',
+    summary: "Another agent turn was using this private session.",
+    details:
+      "ROST_NATIVE_SESSION_BUSY: Rakazo prevented overlapping agent turns. Check the current chat and owned job before continuing. This is not a model-provider failure and does not mean the roster solve failed.",
   };
 }

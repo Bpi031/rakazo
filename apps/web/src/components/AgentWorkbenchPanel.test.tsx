@@ -1,10 +1,15 @@
 // @vitest-environment jsdom
+import { WorkbenchBrowserInput } from "@rakazo/contracts";
 import { act } from "react";
-import { createQueryRoot } from "../lib/query/query-root.test-support";
 import { afterEach, expect, it, vi } from "vitest";
+import type { z } from "zod";
+import { createQueryRoot } from "../lib/query/query-root.test-support";
+
 vi.mock("../lib/rpc", () => ({ withSpaceHeaders: (headers = {}) => headers }));
+
 import { AgentWorkbenchPanel } from "./AgentWorkbenchPanel";
-(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: ReturnType<typeof createQueryRoot>, host: HTMLDivElement;
 afterEach(async () => {
   if (root) await act(async () => root.unmount());
@@ -25,7 +30,7 @@ async function change(selector: string, value: string) {
   });
 }
 async function fixture(initialTab = "goals", initialReview?: string) {
-  const calls: any[] = [];
+  const calls: z.infer<typeof WorkbenchBrowserInput>[] = [];
   const view = {
     goal: { objective: "Review draft", status: "active", revision: 0 },
     selectedSkill: null,
@@ -48,7 +53,7 @@ async function fixture(initialTab = "goals", initialReview?: string) {
       },
     ],
   };
-  const fetcher = vi.fn(async (raw: any, init: any) => {
+  const fetcher = vi.fn<typeof fetch>(async (raw, init) => {
     const url = new URL(String(raw), "https://app.test");
     if (url.pathname.endsWith("/view")) return Response.json(view);
     if (url.pathname.endsWith("/detail")) {
@@ -66,7 +71,7 @@ async function fixture(initialTab = "goals", initialReview?: string) {
         },
       });
     }
-    const body = JSON.parse(init.body);
+    const body = WorkbenchBrowserInput.parse(JSON.parse(String(init?.body)));
     calls.push(body);
     if (body.operation === "goal") view.goal = { ...body.goal, revision: 1 };
     return Response.json(

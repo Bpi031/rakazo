@@ -1,9 +1,9 @@
 // Requires an empty, disposable, migrated database. No external email, model or solver.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { createDb, requireMembership } from "@rakazo/db";
-import { createAuth, resolveSignupPolicy } from "@rakazo/auth";
 import { TeamService } from "@rakazo/adapters";
+import { createAuth, resolveSignupPolicy } from "@rakazo/auth";
+import { createDb, requireMembership } from "@rakazo/db";
 import { AccountAdminService } from "./account-admin.js";
 
 const url = new URL(process.env.DATABASE_URL ?? "http://missing");
@@ -16,7 +16,12 @@ if (
 const { prisma: db, pool } = createDb(url.href);
 let checks = 0;
 function enrollmentToken(value: unknown): string {
-  assert.ok(value && typeof value === "object" && "enrollmentToken" in value && typeof value.enrollmentToken === "string");
+  assert.ok(
+    value &&
+      typeof value === "object" &&
+      "enrollmentToken" in value &&
+      typeof value.enrollmentToken === "string",
+  );
   return value.enrollmentToken;
 }
 try {
@@ -58,7 +63,10 @@ try {
   checks++;
   const member = await db.member.findFirstOrThrow({ where: { userId: actor.userId } });
   const organizationId = member.organizationId;
-  const team = new TeamService({ prisma: db, jobs: { enqueue: async () => {} } } as any);
+  const team = new TeamService({
+    prisma: db,
+    jobs: { enqueue: async () => {} },
+  } as unknown as ConstructorParameters<typeof TeamService>[0]);
   const service = new AccountAdminService(db, team, { enabled: false, allowlist: [] });
   const changeRegistration = async (enabled: boolean) =>
     service.registration(actor, {
@@ -242,12 +250,9 @@ try {
   checks++;
   assert.equal(await db.computer.count(), 0);
   checks++;
-  assert.equal(
-    JSON.stringify(await service.view(actor)).includes(enrollmentToken(revoke)),
-    false,
-  );
+  assert.equal(JSON.stringify(await service.view(actor)).includes(enrollmentToken(revoke)), false);
   checks++;
-  console.log(
+  process.stdout.write(
     JSON.stringify({
       status: "passed",
       checks,
@@ -257,7 +262,7 @@ try {
       provider_request_sent: false,
       solver_started: false,
       license_read: false,
-    }),
+    }) + "\n",
   );
 } finally {
   await db.$disconnect();

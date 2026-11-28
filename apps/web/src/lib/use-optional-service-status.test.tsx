@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
-import { deferred } from "@rakazo/core/test-async";
+
 import type { SpaceMemoryConfig, VoiceStatus } from "@rakazo/contracts";
+import { deferred } from "@rakazo/core/test-async";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
@@ -8,6 +9,7 @@ import { afterEach, expect, it, vi } from "vitest";
 vi.mock("./rpc", () => ({
   rpc: { memory: { providerConfig: vi.fn() }, voice: { status: vi.fn() } },
 }));
+
 import { rpc } from "./rpc";
 import { useOptionalServiceStatus } from "./use-optional-service-status";
 

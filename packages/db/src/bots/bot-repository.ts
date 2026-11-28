@@ -25,8 +25,8 @@ import {
   teamComputerUserId,
   usesManagedComputers,
 } from "../computers/computers.js";
-import { Prisma } from "../database/client.js";
 import type { PrismaClient } from "../database/client.js";
+import { Prisma } from "../database/client.js";
 import { isUniqueViolation } from "../database/prisma-errors.js";
 import { BotSectionNameConflictError, IsolationError } from "../database/scope.js";
 import { withTransactionRetry } from "../database/transaction-retry.js";
@@ -768,9 +768,7 @@ export function createRepos(
             }))
           )
             throw new IsolationError("Managed Team Computer contains another account's bots");
-          await tx.$queryRaw(
-            Prisma.sql`SELECT id FROM bots WHERE id = ${botId} FOR UPDATE`,
-          );
+          await tx.$queryRaw(Prisma.sql`SELECT id FROM bots WHERE id = ${botId} FOR UPDATE`);
           const current = await tx.bot.findFirst({
             where: { id: botId, userId: actor.userId, spaceId: actor.spaceId, archivedAt: null },
             include: { computer: true },

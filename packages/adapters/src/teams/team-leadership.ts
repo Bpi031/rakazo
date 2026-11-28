@@ -4,38 +4,56 @@ import {
   leadershipToolInput,
   workflowDefinitionSchema,
 } from "@rakazo/contracts";
+import type { Prisma, PrismaClient } from "@rakazo/db";
 import {
   appendEventInTransaction,
   createThreadMessageInTransaction,
   readJsonColumn,
-  type Prisma,
-  type PrismaClient,
 } from "@rakazo/db";
 import { z } from "zod";
+import { observeTeamComputers } from "./team-observer.js";
 import { managerRole, teamDigest } from "./team-policy.js";
 import { memberScope } from "./team-storage.js";
-import { observeTeamComputers } from "./team-observer.js";
 import { TeamWorkflowService } from "./team-workflows.js";
 
 const owner = (role: string) => role.split(",").some((r) => r.trim() === "owner");
 const snapshotSchema = z.object({
   organizationId: z.string(),
-  fromUserId: z.string(), toUserId: z.string(),
-  fromBotId: z.string(), toBotId: z.string(),
-  fromSpaceId: z.string(), toSpaceId: z.string(),
-  fromThreadId: z.string(), toThreadId: z.string(),
-  fromName: z.string(), toName: z.string(),
-  fromRole: z.string(), toRole: z.string(),
-  fromControlVersion: z.number().int(), toControlVersion: z.number().int(),
-  workflows: z.array(z.object({
-    id: z.string(), digest: z.string(), status: z.string(), definition: workflowDefinitionSchema,
-  })),
+  fromUserId: z.string(),
+  toUserId: z.string(),
+  fromBotId: z.string(),
+  toBotId: z.string(),
+  fromSpaceId: z.string(),
+  toSpaceId: z.string(),
+  fromThreadId: z.string(),
+  toThreadId: z.string(),
+  fromName: z.string(),
+  toName: z.string(),
+  fromRole: z.string(),
+  toRole: z.string(),
+  fromControlVersion: z.number().int(),
+  toControlVersion: z.number().int(),
+  workflows: z.array(
+    z.object({
+      id: z.string(),
+      digest: z.string(),
+      status: z.string(),
+      definition: workflowDefinitionSchema,
+    }),
+  ),
 });
 type HandoverSnapshot = z.infer<typeof snapshotSchema>;
 const handoverSnapshot = (row: { id: string; snapshot: unknown }) =>
-  readJsonColumn(snapshotSchema, row.snapshot, {
-    table: "team_leadership_transfers", column: "snapshot", id: row.id,
-  }, "reject");
+  readJsonColumn(
+    snapshotSchema,
+    row.snapshot,
+    {
+      table: "team_leadership_transfers",
+      column: "snapshot",
+      id: row.id,
+    },
+    "reject",
+  );
 type Tx = Prisma.TransactionClient;
 export class TeamLeadershipService {
   constructor(

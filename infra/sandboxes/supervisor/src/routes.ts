@@ -84,7 +84,6 @@ import {
 } from "./networks.js";
 import { publishedScreenUrl } from "./readiness.js";
 import { logRequestFailure } from "./request-failures.js";
-import { mountTeamObservations } from "./team-observations.js";
 import { limitSupervisorRequestBody, supervisorFileWriteSchema } from "./request-limits.js";
 import {
   computerScreenBoots,
@@ -121,6 +120,7 @@ import {
   toSandboxInput,
   workspaceTarget,
 } from "./supervisor-logic.js";
+import { mountTeamObservations } from "./team-observations.js";
 
 const app = new Hono();
 
@@ -213,7 +213,9 @@ app.post("/computers", async (c) => {
         const info = await existing.inspect();
         pinnedComputers.assertContainer(body.botId, info, networkMode);
         if (roleManaged && info.Config.Labels?.["rost.role"] !== body.role)
-          throw new Error("Computer role changed; operator reconciliation required without automatic recreation");
+          throw new Error(
+            "Computer role changed; operator reconciliation required without automatic recreation",
+          );
         const desired = await docker.getImage(image).inspect();
         const controlPublishOk = controlPortPublicationMatches(
           info.HostConfig.PortBindings,

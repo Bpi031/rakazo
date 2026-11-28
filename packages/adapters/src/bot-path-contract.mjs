@@ -1,3 +1,4 @@
+import { hasAsciiControl } from "@rakazo/contracts/managed-text";
 export const BOT_HOME = "/home/rakazo";
 export const BOT_WORKSPACE = `${BOT_HOME}/workspace`;
 export const BOT_PATH_GUIDANCE = `Path contract: shell cwd is /home/rakazo; workspace is /home/rakazo/workspace.
@@ -8,7 +9,8 @@ Installed /opt/... guides use skill_read or shell, not home-file tools. Shell co
 
 function teamRoots(workspace) {
   return workspace && /^\/home\/rakazo\/bots\/[A-Za-z0-9_-]+$/.test(workspace.cwd)
-    ? workspace.roots.filter((root) => root === workspace.cwd || root === `${BOT_HOME}/shared`)
+    ? workspace.roots
+        .filter((root) => root === workspace.cwd || root === `${BOT_HOME}/shared`)
         .map((root) => root.slice(BOT_HOME.length + 1))
     : undefined;
 }
@@ -28,11 +30,19 @@ class PathRejected extends Error {
 }
 
 function homeRelative(value, field) {
-  if (typeof value !== "string" || value.length > 1024 || /[\\\x00-\x1f\x7f]/.test(value))
+  if (
+    typeof value !== "string" ||
+    value.length > 1024 ||
+    value.includes("\\") ||
+    hasAsciiControl(value, { includeDelete: true })
+  )
     throw new PathRejected(field, "home-relative");
   if (value === BOT_HOME) return "";
   const relative = value.startsWith(BOT_HOME + "/") ? value.slice(BOT_HOME.length + 1) : value;
-  if (relative.startsWith("/") || relative && relative.split("/").some((p) => !p || p === "." || p === ".."))
+  if (
+    relative.startsWith("/") ||
+    (relative && relative.split("/").some((p) => !p || p === "." || p === ".."))
+  )
     throw new PathRejected(field, "home-relative");
   return relative;
 }
@@ -46,7 +56,10 @@ function workspaceRelative(value, field, rootAllowed = false) {
 
 function jobRelative(value, field) {
   let relative;
-  if (typeof value === "string" && (value.startsWith("/") || value === "workspace" || value.startsWith("workspace/"))) {
+  if (
+    typeof value === "string" &&
+    (value.startsWith("/") || value === "workspace" || value.startsWith("workspace/"))
+  ) {
     relative = workspaceRelative(value, field).slice("workspace/".length);
   } else relative = homeRelative(value, field);
   if (!relative) throw new PathRejected(field, "workspace-relative-job");
@@ -72,20 +85,26 @@ function teamJobRelative(value, field, roots) {
 export function canonicalToolPaths(tool, args, workspace) {
   if (!args || typeof args !== "object" || Array.isArray(args)) return { args };
   const roots = teamRoots(workspace);
-  const scopedPath = (value, field, allowRoot = false) => roots
-    ? teamPath(value, field, roots, allowRoot) : workspaceRelative(value, field, allowRoot);
+  const scopedPath = (value, field, allowRoot = false) =>
+    roots ? teamPath(value, field, roots, allowRoot) : workspaceRelative(value, field, allowRoot);
   const result = { ...args };
   const translate = (field, operation) => {
-    if (Object.hasOwn(result, field) && result[field] !== undefined && !(field === "rostJobOut" && result[field] === null))
+    if (
+      Object.hasOwn(result, field) &&
+      result[field] !== undefined &&
+      !(field === "rostJobOut" && result[field] === null)
+    )
       result[field] = operation(result[field], field);
   };
   try {
-    if (["read_file", "list_files", "write_file", "attach_file"].includes(tool)) translate("path", (v, f) => {
-      const relative = homeRelative(v, f);
-      if (!relative && tool !== "list_files") throw new PathRejected(f, "home-relative-file");
-      return relative;
-    });
-    if (["workspace_read", "workspace_list"].includes(tool)) translate("path", (v, f) => scopedPath(v, f, tool === "workspace_list"));
+    if (["read_file", "list_files", "write_file", "attach_file"].includes(tool))
+      translate("path", (v, f) => {
+        const relative = homeRelative(v, f);
+        if (!relative && tool !== "list_files") throw new PathRejected(f, "home-relative-file");
+        return relative;
+      });
+    if (["workspace_read", "workspace_list"].includes(tool))
+      translate("path", (v, f) => scopedPath(v, f, tool === "workspace_list"));
     if (tool === "present_report") translate("report_path", workspaceRelative);
     if (tool === "rule_priorities") {
       translate("policy", scopedPath);
@@ -96,8 +115,16 @@ export function canonicalToolPaths(tool, args, workspace) {
     return { args: result };
   } catch (error) {
     if (!(error instanceof PathRejected)) throw error;
-    return { error: { code: "ROST_TOOL_PATH", error: "The path does not match this tool's declared base.",
-      field: error.field, expectedBase: error.domain, action: botPathGuidance(workspace),
-      toolExecuted: false, solveStarted: false } };
+    return {
+      error: {
+        code: "ROST_TOOL_PATH",
+        error: "The path does not match this tool's declared base.",
+        field: error.field,
+        expectedBase: error.domain,
+        action: botPathGuidance(workspace),
+        toolExecuted: false,
+        solveStarted: false,
+      },
+    };
   }
 }

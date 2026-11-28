@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import { act } from "react";
-import { createQueryRoot } from "../lib/query/query-root.test-support";
 import { afterEach, expect, it, vi } from "vitest";
+import { createQueryRoot } from "../lib/query/query-root.test-support";
 import { QuestionFormCard } from "./QuestionFormCard";
-(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: ReturnType<typeof createQueryRoot>, host: HTMLDivElement;
 afterEach(async () => {
   if (root) await act(async () => root.unmount());
@@ -38,17 +39,15 @@ const button = (text: string) =>
 async function choose(value: string) {
   const trigger = host.querySelector<HTMLElement>('[role="combobox"]')!;
   await act(async () => trigger.click());
-  const option = Array.from(document.querySelectorAll<HTMLElement>('[role="option"]'))
-    .find((item) => item.textContent === value)!;
+  const option = Array.from(document.querySelectorAll<HTMLElement>('[role="option"]')).find(
+    (item) => item.textContent === value,
+  )!;
   await act(async () => option.click());
 }
 async function change(selector: string, value: string) {
   const el = host.querySelector(selector) as HTMLInputElement;
   await act(async () => {
-    Object.getOwnPropertyDescriptor(
-      HTMLInputElement.prototype,
-      "value",
-    )!.set!.call(el, value);
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(el, value);
     el.dispatchEvent(new Event("change", { bubbles: true }));
     el.dispatchEvent(new Event("input", { bubbles: true }));
   });

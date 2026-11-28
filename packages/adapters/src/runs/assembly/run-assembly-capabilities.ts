@@ -29,6 +29,7 @@ import { resolveComputerRunModel } from "../../computers/computer-model-settings
 import { checkpointRunComputerWorkspace } from "../../computers/computer-workspace.js";
 import { sandboxKindCapabilities } from "../../computers/sandbox/sandbox-kind-capabilities.js";
 import { teamWorkspaceInstruction } from "../../computers/screens/computer-support.prompt.js";
+import { assertManagedTeamComputer, managedWorkspaceInstruction } from "../../managed-workspace.js";
 import type { RunMediaSources } from "../../media/media-sources.js";
 import { approvedModelCreditOffering } from "../../model-credits/offerings.js";
 import { resolveDeploymentModel } from "../../models/deployment-model.js";
@@ -61,7 +62,6 @@ import {
 import { backgroundHelpersAllowed } from "../../tasks/background-helpers.js";
 import { TASK_CATALOG_GUIDANCE } from "../../tasks/task-catalog.prompt.js";
 import { agentConnectionTools, builtinAgentTools } from "../../tools/builtin.tool-definition.js";
-import { MANAGED_TOOL_NAMES, managedTools } from "../tools/run-tools-managed.js";
 import type { RunExecutorServices, RunHold } from "../lifecycle/run-attempt.js";
 import { APPROVED_EFFECT_REPLAY_ORDER } from "../lifecycle/run-effects.js";
 import { createRunWorkspaceCheckpoint, failRunBeforeTurn } from "../lifecycle/run-lifecycle.js";
@@ -71,6 +71,7 @@ import {
   selectBuiltinToolsForRun,
   unavailableBuiltinToolReasons,
 } from "../tools/run-tool-selection.js";
+import { MANAGED_TOOL_NAMES, managedTools } from "../tools/run-tools-managed.js";
 import { historyMyChatsAllowed } from "../tools/run-tools-memory.js";
 import type { UserComputerState } from "../tools/run-tools-user-computer.js";
 import { USER_COMPUTER_SHELL_TOOL, userComputerOwner } from "../tools/run-tools-user-computer.js";
@@ -84,7 +85,6 @@ import { RECENT_TURN_IMAGE_TURNS } from "../turn/run-turn-images.js";
 import { refreshTakeoverContinuePlan } from "../turn/takeover-resume.js";
 import { historyReplaysOutsideContent, historyToolResults } from "../turn/tool-step-calls.js";
 import type { ThreadHistory, TurnContext } from "./run-assembly-history.js";
-import { assertManagedTeamComputer, managedWorkspaceInstruction } from "../../managed-workspace.js";
 import type { ConnectedRun, RunRecords, SavedTurn } from "./run-assembly-records.js";
 import { lazyRunComputer } from "./run-computer.js";
 import {

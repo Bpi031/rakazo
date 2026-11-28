@@ -2,7 +2,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { aiRecipient } from "./ai-consent.js";
 
 it("does not misidentify a managed router as Azure or expose a master key", () => {
-  const recipient = aiRecipient({ provider: "codex-foundry", use: "model", modelId: "operator-deployment" });
+  const recipient = aiRecipient({
+    provider: "codex-foundry",
+    use: "model",
+    modelId: "operator-deployment",
+  });
   expect(recipient?.name).toBe("Operator-managed service");
   expect(recipient?.detail).toBe("operator-deployment");
   expect(recipient?.privacyUrl).toBeUndefined();
@@ -12,7 +16,9 @@ it("binds renewed consent to changed operator processor disclosure", () => {
   const before = aiRecipient({ provider: "codex-foundry", use: "model", modelId: "x" });
   expect(before?.name).toBe("Requesty / deepinfra");
   vi.stubEnv("CODEX_MODEL_PROCESSORS", '{"x":"OpenAI"}');
-  expect(aiRecipient({ provider: "codex-foundry", use: "model", modelId: "x" })?.key).not.toBe(before?.key);
+  expect(aiRecipient({ provider: "codex-foundry", use: "model", modelId: "x" })?.key).not.toBe(
+    before?.key,
+  );
   vi.unstubAllEnvs();
 });
 

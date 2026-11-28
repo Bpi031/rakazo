@@ -16,7 +16,6 @@ import { filterImageReturningComputerTools } from "../../models/model-vision.js"
 import { agentConnectionTools, builtinAgentTools } from "../../tools/builtin.tool-definition.js";
 import { shellDescription } from "../../tools/builtin-computer.tool-definition.js";
 import { searchHistoryThisChat } from "../../tools/builtin-memory.tool-definition.js";
-import { MANAGED_TOOL_NAMES } from "./run-tools-managed.js";
 import {
   filterBuiltinToolsForRun,
   filterBuiltinToolsForThread,
@@ -31,6 +30,7 @@ import {
   groupMessageBotUnavailableReason,
   routineRunToolUnavailableReason,
 } from "./run-tool-selection.prompt.js";
+import { MANAGED_TOOL_NAMES } from "./run-tools-managed.js";
 import { USER_COMPUTER_SCREEN_TOOLS, USER_COMPUTER_TOOLS } from "./run-tools-user-computer.js";
 
 export const READ_ONLY_AGENT_TOOLS = new Set([

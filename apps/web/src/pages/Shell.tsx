@@ -41,14 +41,16 @@ import { ChatComposerArea } from "./shell/composer/chat-composer-area";
 import { useComposerActions } from "./shell/composer/use-composer-actions";
 import { useComposerMentions } from "./shell/composer/use-composer-mentions";
 import { useComposerModelShortcuts } from "./shell/composer/use-composer-model-shortcuts";
+import { useReportDraft } from "./shell/composer/use-report-draft";
 import { ComputerOverlay } from "./shell/computers/computer-overlay";
 import { ComputerPanel } from "./shell/computers/computer-panel";
 import { useComputerControls, useComputerState } from "./shell/computers/use-computer";
 import { KeyboardShortcutsDialog } from "./shell/keyboard-shortcuts-dialog";
-import { rightPanelStorageKey } from "./shell/right-panel-state";
+import { ShellDevicePrompts } from "./shell/shell-device-prompts";
 import { ShellDialogs, useShellDialogs } from "./shell/shell-dialogs";
 import { AppOverlays, SettingsOverlays } from "./shell/shell-overlays";
 import { isApplePlatform } from "./shell/shell-shortcuts";
+import { ShellSpaceContent } from "./shell/shell-space-content";
 import { ShellSidePanel } from "./shell/side-panel";
 import { ArchivedChats } from "./shell/sidebar/archived-chats";
 import { ShellSidebar } from "./shell/sidebar/shell-sidebar";
@@ -69,24 +71,21 @@ import {
   useSpaceRosterSeed,
 } from "./shell/sidebar/use-space-roster";
 import { useSpaceEpoch } from "./shell/space-switch";
-import { ShellDevicePrompts } from "./shell/shell-device-prompts";
-import { ShellSpaceContent } from "./shell/shell-space-content";
-import { useReportDraft } from "./shell/composer/use-report-draft";
 import { useActiveChat } from "./shell/use-active-chat";
 import { useBotCall } from "./shell/use-bot-call";
 import { useBrowserNotifications } from "./shell/use-browser-notifications";
+import { useManagedChat } from "./shell/use-managed-chat";
 import { usePaletteActions } from "./shell/use-palette-actions";
 import { useReportedUiLocale } from "./shell/use-reported-ui-locale";
 import { useRightPanel, useRightPanelRestore } from "./shell/use-right-panel";
 import { useRoutineEditor } from "./shell/use-routine-editor";
 import { useRoutineList } from "./shell/use-routine-list";
 import { useShellNavigation } from "./shell/use-shell-navigation";
-import { useShellReadyMarks } from "./shell/use-shell-ready-marks";
+import { useShellReadiness } from "./shell/use-shell-ready-marks";
 import { useShellSettings } from "./shell/use-shell-settings";
 import { useShellShortcutActions } from "./shell/use-shell-shortcut-actions";
 import { useShellStatus } from "./shell/use-shell-status";
 import { useSpaceActions } from "./shell/use-space-actions";
-import { useManagedChat } from "./shell/use-managed-chat";
 import { useOpenSpaceChat } from "./shell/use-space-switch";
 
 export function ShellPage() {
@@ -409,11 +408,19 @@ function SpaceShell({ sidebarScrollRef }: { sidebarScrollRef: Ref<HTMLDivElement
   });
   const { activeSnapshot, transcript, composerRunning } = view;
   const managedBot = !inGroup && bootstrapMe?.managedServices === true ? active : undefined;
-  const { reportDraft, composeReport } = useReportDraft(inGroup && groupId ? `group:${groupId}` : active ? `bot:${active.id}` : null);
+  const { reportDraft, composeReport } = useReportDraft(
+    inGroup && groupId ? `group:${groupId}` : active ? `bot:${active.id}` : null,
+  );
   const managedChat = useManagedChat({
-    managedBot, developerMode: bootstrapMe?.developerMode, defaultModel: bootstrapMe?.defaultModel,
-    panel, setPanel, searchParams, setSearchParams,
-    onBotChange: (updated) => setBots((rows) => rows.map((row) => row.id === updated.id ? updated : row)),
+    managedBot,
+    developerMode: bootstrapMe?.developerMode,
+    defaultModel: bootstrapMe?.defaultModel,
+    panel,
+    setPanel,
+    searchParams,
+    setSearchParams,
+    onBotChange: (updated) =>
+      setBots((rows) => rows.map((row) => (row.id === updated.id ? updated : row))),
   });
   const { composerMentionTargets, footerLogos, setFooterLogos } = useComposerMentions({
     rpc,
@@ -425,30 +432,19 @@ function SpaceShell({ sidebarScrollRef }: { sidebarScrollRef: Ref<HTMLDivElement
     integrationsOpen: overlay?.kind === "integrations",
     initialBotsLoaded,
   });
-  // Not while the shell is leaving: a roster with nothing anywhere is on its way to onboarding,
-  // and a reopened group chat is on its way to that group.
-  const showNewBotPrompt =
-    initialBotsLoaded &&
-    bots.length === 0 &&
-    !activeGroup &&
-    !routeChat?.groupId &&
-    (groups.length > 0 ||
-      archivedBots.length > 0 ||
-      archivedGroups.length > 0 ||
-      spaces.some((space) => space.hasContent) ||
-      // Someone who has chatted before, in a new organization: nothing is on its way to them.
-      !firstBotDue);
-  const shellReady =
-    initialBotsLoaded &&
-    (inGroup
-      ? Boolean(activeGroup && activeSnapshot)
-      : bots.length === 0 || Boolean(active && activeSnapshot));
-
-  useShellReadyMarks({
+  const { showNewBotPrompt, shellReady } = useShellReadiness({
     botsLoaded: initialBotsLoaded,
+    botsEmpty: bots.length === 0,
     active,
+    groupRoute: Boolean(routeChat?.groupId),
+    activeGroup: Boolean(activeGroup),
+    group: inGroup,
+    threadLoaded: Boolean(activeSnapshot),
     snapshotBotId: snapshot?.botId,
-    ready: shellReady,
+    hasContent:
+      groups.length + archivedBots.length + archivedGroups.length > 0 ||
+      spaces.some((space) => space.hasContent) ||
+      !firstBotDue,
   });
 
   const { scrollRequest, clearScrollRequest, jumpToReplyMessage } = useMessageJump({
@@ -521,15 +517,8 @@ function SpaceShell({ sidebarScrollRef }: { sidebarScrollRef: Ref<HTMLDivElement
     stopRun,
     setSendError: composer.setSendError,
   });
-  function openChatSettings(kind: "bot" | "group", id: string) {
-    const destKey =
-      userId && bootstrapMe?.spaceId
-        ? rightPanelStorageKey(userId, bootstrapMe.spaceId, kind, id)
-        : null;
-    rightPanel.openPanelInChat(destKey, kind === "bot" ? "settings" : "group-settings", () =>
-      navigate(kind === "bot" ? `/app/${id}` : `/app/g/${id}`),
-    );
-  }
+  const openChatSettings = (kind: "bot" | "group", id: string) =>
+    rightPanel.openSettingsInChat(userId, bootstrapMe?.spaceId, kind, id, navigate);
 
   useRightPanelRestore({
     rightPanel,
@@ -640,8 +629,14 @@ function SpaceShell({ sidebarScrollRef }: { sidebarScrollRef: Ref<HTMLDivElement
       className="relative flex h-full min-h-0 min-w-0 overflow-hidden bg-background text-foreground/90 [&[data-resizing-sidebar]_*[data-slot=sidebar-gap]]:transition-none [&[data-resizing-sidebar]_*[data-slot=sidebar-container]]:transition-none"
       {...swipeHandlers}
     >
-      <ShellDevicePrompts me={bootstrapMe} userId={userId} setMe={setBootstrapMe}
-        onComputerUpdated={() => { if (active) void refreshThread(active.id); }} />
+      <ShellDevicePrompts
+        me={bootstrapMe}
+        userId={userId}
+        setMe={setBootstrapMe}
+        onComputerUpdated={() => {
+          if (active) void refreshThread(active.id);
+        }}
+      />
       <ShellSidebar
         scrollRef={sidebarScrollRef}
         isMobile={isMobileSidebar}
@@ -990,7 +985,13 @@ function SpaceShell({ sidebarScrollRef }: { sidebarScrollRef: Ref<HTMLDivElement
   );
 
   return (
-    <ShellSpaceContent spaceId={shellSpaceId} ready={initialBotsLoaded || initialLoadFailed}
-      inboundOrigin={bootstrapMe?.inboundOrigin} pages={pages}>{shell}</ShellSpaceContent>
+    <ShellSpaceContent
+      spaceId={shellSpaceId}
+      ready={initialBotsLoaded || initialLoadFailed}
+      inboundOrigin={bootstrapMe?.inboundOrigin}
+      pages={pages}
+    >
+      {shell}
+    </ShellSpaceContent>
   );
 }

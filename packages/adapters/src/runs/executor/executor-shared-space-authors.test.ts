@@ -150,10 +150,11 @@ async function runInSpace(space: Space, options: RunOptions = {}) {
       })),
     },
     message: {
-      findMany: vi.fn(async (args: { where?: { threadId?: string; AND?: { threadId?: string }[] } }) =>
-        args.where?.threadId || args.where?.AND?.some((scope) => scope.threadId === run.threadId)
-          ? historyMessages(space !== "legacy" && space.authors)
-          : [],
+      findMany: vi.fn(
+        async (args: { where?: { threadId?: string; AND?: { threadId?: string }[] } }) =>
+          args.where?.threadId || args.where?.AND?.some((scope) => scope.threadId === run.threadId)
+            ? historyMessages(space !== "legacy" && space.authors)
+            : [],
       ),
       findUnique: vi.fn(async () => null),
       findFirst: vi.fn(async () => null),

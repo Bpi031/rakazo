@@ -1,6 +1,7 @@
 import { createRoot } from "react-dom/client";
 import { TeamWorkflowsPanel } from "./TeamWorkflowsPanel";
 import "../styles.css";
+
 const row = {
   id: "flow",
   digest: "d".repeat(64),
@@ -49,10 +50,17 @@ const row = {
   ],
 };
 const handover = {
-  id: "handover", digest: "a".repeat(64), status: "draft", sender: true,
-  fromBotId: "lead", toBotId: "successor", fromName: "Current team lead",
-  toName: "Successor's private assistant", sourceRemainsOwner: false,
-  workflows: [{ id: "flow", name: row.name }], expiresAt: "2099-01-01T00:00:00Z",
+  id: "handover",
+  digest: "a".repeat(64),
+  status: "draft",
+  sender: true,
+  fromBotId: "lead",
+  toBotId: "successor",
+  fromName: "Current team lead",
+  toName: "Successor's private assistant",
+  sourceRemainsOwner: false,
+  workflows: [{ id: "flow", name: row.name }],
+  expiresAt: "2099-01-01T00:00:00Z",
 };
 window.fetch = async (url, options) => {
   const operation = options?.method === "POST" ? JSON.parse(String(options.body)).operation : null;

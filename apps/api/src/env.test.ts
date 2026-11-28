@@ -14,9 +14,12 @@ const base = {
 describe("loadEnv", () => {
   it("loads only explicitly configured, validated additional web origins", () => {
     expect(loadEnv(base).additionalWebOrigins).toEqual([]);
-    expect(loadEnv({ ...base, WEB_ADDITIONAL_ORIGINS: "http://192.0.2.11:5173" }).additionalWebOrigins)
-      .toEqual(["http://192.0.2.11:5173"]);
-    expect(() => loadEnv({ ...base, WEB_ADDITIONAL_ORIGINS: "*" })).toThrow("WEB_ADDITIONAL_ORIGINS");
+    expect(
+      loadEnv({ ...base, WEB_ADDITIONAL_ORIGINS: "http://192.0.2.11:5173" }).additionalWebOrigins,
+    ).toEqual(["http://192.0.2.11:5173"]);
+    expect(() => loadEnv({ ...base, WEB_ADDITIONAL_ORIGINS: "*" })).toThrow(
+      "WEB_ADDITIONAL_ORIGINS",
+    );
   });
   it("defaults the attachment count to ten and accepts configured bounds", () => {
     expect(loadEnv(base).maxAttachmentsPerMessage).toBe(10);

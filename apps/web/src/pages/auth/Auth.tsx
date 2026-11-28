@@ -345,7 +345,9 @@ export function AuthPage({
       ) : mode === "up" && registrationClosed ? (
         <div className="w-full text-center">
           <p role="status">Registration is closed</p>
-          <Link to="/sign-in" className="mt-4 inline-block font-medium text-foreground">Back to sign in</Link>
+          <Link to="/sign-in" className="mt-4 inline-block font-medium text-foreground">
+            Back to sign in
+          </Link>
         </div>
       ) : (
         <>

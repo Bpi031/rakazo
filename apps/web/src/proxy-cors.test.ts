@@ -1,12 +1,12 @@
+import { once } from "node:events";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { once } from "node:events";
-import { setTimeout as delay } from "node:timers/promises";
-import { expect, it, vi } from "vitest";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { loadConfigFromFile, preview } from "vite";
+import { expect, it, vi } from "vitest";
+import { HTTP_KEEP_ALIVE_MS, httpKeepAlive } from "./http-keep-alive";
 import { pageRpcTransport } from "./lib/rpc-lifecycle";
-import { httpKeepAlive, HTTP_KEEP_ALIVE_MS } from "./http-keep-alive";
 
 it("proxies API preflights unchanged instead of consuming them in Vite CORS", async () => {
   const loaded = await loadConfigFromFile(

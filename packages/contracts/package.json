@@ -11,6 +11,7 @@
       "default": "./src/index.ts"
     },
     "./local-settings": "./src/clients/local-settings.js",
+    "./managed-text": "./src/text/managed-text.mjs",
     "./client-build": {
       "types": "./src/clients/client-build.ts",
       "development": "./src/clients/client-build.ts",

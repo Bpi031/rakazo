@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import type { AgentReport, AgentReportMessage } from "@rakazo/contracts";
 import {
   ArrowDown,
   ArrowUp,
@@ -7,7 +7,7 @@ import {
   ChevronRight,
   MessageSquare,
 } from "lucide-react";
-import type { AgentReport, AgentReportMessage } from "@rakazo/contracts";
+import { useMemo, useState } from "react";
 import "../pages/workspace-motion.css";
 
 type Table = Extract<AgentReport["sections"][number], { kind: "table" }>;
@@ -77,9 +77,9 @@ function ReportTable({
           className="max-w-full rounded border border-border bg-background px-2 py-1 text-body"
         />
       </div>
-      <div
+      <section
+        // biome-ignore lint/a11y/noNoninteractiveTabindex: Makes this overflow region keyboard-scrollable across browsers.
         tabIndex={0}
-        role="region"
         aria-label={`${table.title} table`}
         className="w-full min-w-0 max-w-full max-h-[460px] overflow-auto overscroll-x-contain rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
       >
@@ -152,14 +152,16 @@ function ReportTable({
             ))}
           </tbody>
         </table>
-      </div>
+      </section>
       {expanded !== null && table.rows[expanded] && onRequest && (
         <section aria-label="Selected row" className="mt-3 border-t border-border py-3">
           <dl className="grid grid-cols-2 gap-3">
             {table.columns.map((field) => (
               <div key={field.key} className="min-w-0">
                 <dt className="break-words text-label text-muted-foreground">{field.label}</dt>
-                <dd className="break-words text-body">{display(table.rows[expanded]![field.key])}</dd>
+                <dd className="break-words text-body">
+                  {display(table.rows[expanded]![field.key])}
+                </dd>
               </div>
             ))}
           </dl>
@@ -186,6 +188,7 @@ function ReportTable({
         <span>{rows.length} rows</span>
         <span className="inline-flex items-center gap-2">
           <button
+            type="button"
             title="Previous page"
             aria-label="Previous page"
             disabled={current === 0}
@@ -199,6 +202,7 @@ function ReportTable({
           </button>
           {current + 1} / {pages}
           <button
+            type="button"
             title="Next page"
             aria-label="Next page"
             disabled={current + 1 >= pages}

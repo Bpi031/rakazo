@@ -1,5 +1,6 @@
-import { readFileSync } from "node:fs";
 import { createHmac } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { hasInvalidJsonbText } from "@rakazo/contracts/managed-text";
 import { z } from "zod";
 import { managedEffort, managedReasoning } from "../managed-reasoning.mjs";
 
@@ -19,11 +20,39 @@ export type WorkflowTextResult = {
   usage?: Record<string, unknown>;
 };
 
-const resultSchema = z.object({
-  text: z.string().trim().min(1).max(8000).refine((value) =>
-    !/[\u0000\uD800-\uDFFF]/u.test(value), "Invalid output text"),
-  needsApproval: z.boolean(),
-}).strict();
+export function workflowCachedInputTokens(usage: WorkflowTextResult["usage"]): unknown {
+  const details = usage?.input_tokens_details;
+  return typeof details === "object" && details !== null && "cached_tokens" in details
+    ? details.cached_tokens
+    : undefined;
+}
+
+const workflowResponse = z.object({
+  status: z.literal("completed"),
+  output: z.array(
+    z.discriminatedUnion("type", [
+      z.object({ type: z.literal("reasoning") }),
+      z.object({
+        type: z.literal("message"),
+        role: z.string().optional(),
+        content: z.array(z.object({ type: z.string(), text: z.unknown() })).nullish(),
+      }),
+    ]),
+  ),
+  usage: z.record(z.string(), z.unknown()).nullish(),
+});
+
+const resultSchema = z
+  .object({
+    text: z
+      .string()
+      .trim()
+      .min(1)
+      .max(8000)
+      .refine((value) => !hasInvalidJsonbText(value), "Invalid output text"),
+    needsApproval: z.boolean(),
+  })
+  .strict();
 
 // Automated team turns never enter a personal Codex session or receive tools,
 // skills, memory, files, connectors, credentials or conversation history.
@@ -92,18 +121,17 @@ export async function workflowText(
   } finally {
     reader.releaseLock();
   }
-  const document = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  if (
-    document.status !== "completed" ||
-    !Array.isArray(document.output) ||
-    document.output.some((o: any) => o.type !== "message" && o.type !== "reasoning")
-  )
-    throw new Error("Unexpected workflow response");
-  const raw = document.output
-    .flatMap((o: any) => (o.type === "message" && o.role === "assistant" ? (o.content ?? []) : []))
-    .filter((c: any) => c.type === "output_text")
-    .map((c: any) => c.text)
+  const document = workflowResponse.safeParse(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+  if (!document.success) throw new Error("Unexpected workflow response");
+  const raw = document.data.output
+    .flatMap((o) => (o.type === "message" && o.role === "assistant" ? (o.content ?? []) : []))
+    .filter((c) => c.type === "output_text")
+    .map((c) => z.string().parse(c.text))
     .join("");
   const value = resultSchema.parse(JSON.parse(raw));
-  return { text: value.text, needsApproval: value.needsApproval, usage: document.usage };
+  return {
+    text: value.text,
+    needsApproval: value.needsApproval,
+    usage: document.data.usage ?? undefined,
+  };
 }

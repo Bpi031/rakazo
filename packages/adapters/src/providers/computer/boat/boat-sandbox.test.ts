@@ -1590,7 +1590,11 @@ describe("BoatSandboxProvider", () => {
         snapshotCompletedAt: snapshotAt.toISOString(),
         stopRequestedAt: snapshotAt.toISOString(),
       });
-      for (const sensitive of ["private stop error", "private sandbox name", "private command output"]) {
+      for (const sensitive of [
+        "private stop error",
+        "private sandbox name",
+        "private command output",
+      ]) {
         expect(JSON.stringify(events)).not.toContain(sensitive);
       }
       expect(api.state(computer.id)).toBe("ready");

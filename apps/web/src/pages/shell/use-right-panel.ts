@@ -51,11 +51,25 @@ export function useRightPanel({
     setRestoredPanelKey(destKey);
   }
 
+  function openSettingsInChat(
+    userId: string | undefined,
+    spaceId: string | undefined,
+    kind: "bot" | "group",
+    id: string,
+    navigate: (path: string) => unknown,
+  ) {
+    const destKey = userId && spaceId ? rightPanelStorageKey(userId, spaceId, kind, id) : null;
+    openPanelInChat(destKey, kind === "bot" ? "settings" : "group-settings", () =>
+      navigate(kind === "bot" ? `/app/${id}` : `/app/g/${id}`),
+    );
+  }
+
   return {
     panel,
     setPanel,
     setPanelState,
     openPanelInChat,
+    openSettingsInChat,
     modelFocusRequest,
     setModelFocusRequest,
     restoredPanelKey,

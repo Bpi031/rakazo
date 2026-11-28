@@ -1,10 +1,11 @@
 import { z } from "zod";
+import { hasAsciiControl, hasInvalidJsonbText } from "./text/managed-text.mjs";
 
 export const safeText = (max: number) =>
   z
     .string()
     .max(max)
-    .refine((s) => !/[\u0000\uD800-\uDFFF]/u.test(s), "Invalid text");
+    .refine((s) => !hasInvalidJsonbText(s), "Invalid text");
 const label = safeText(200).pipe(z.string().trim().min(1));
 const fieldId = z.string().regex(/^[a-z][a-z0-9_]{0,39}$/);
 const finiteNumber = z
@@ -45,10 +46,12 @@ export const QuestionForm = z
     "Distinct field ids required",
   );
 export type QuestionForm = z.infer<typeof QuestionForm>;
-export const QuestionFormInput = z.object({
-  question: safeText(2000).pipe(z.string().trim().min(1)),
-  form: QuestionForm,
-}).strict();
+export const QuestionFormInput = z
+  .object({
+    question: safeText(2000).pipe(z.string().trim().min(1)),
+    form: QuestionForm,
+  })
+  .strict();
 export function validateQuestionAnswer(form: QuestionForm, raw: string) {
   const value = z
     .object({
@@ -88,7 +91,7 @@ export function validateQuestionAnswer(form: QuestionForm, raw: string) {
 export const WorkspacePath = safeText(500).refine(
   (s) =>
     /^(?:workspace\/|shared\/|bots\/[A-Za-z0-9_-]+\/)/.test(s) &&
-    !/[\\\x00-\x1f]/.test(s) &&
+    !(s.includes("\\") || hasAsciiControl(s)) &&
     s.split("/").every((p) => p && p !== "." && p !== ".." && !p.startsWith(".")),
   "Exact workspace-relative path required",
 );

@@ -1,4 +1,7 @@
 import * as z from "zod";
+import { AgentReportBlock } from "../agent-report.js";
+import { AgentStatusBlock } from "../agent-status.js";
+import { QuestionForm } from "../agent-workbench.js";
 import { PAGE_TITLE_MAX_LENGTH } from "../artifacts/pages.js";
 import {
   botSecretDestinationSchema,
@@ -12,9 +15,6 @@ import { McpTransportSchema } from "../integrations/mcp.js";
 import { McpAppCspSchema } from "../integrations/mcp-app.js";
 import { OutgoingDraft } from "../integrations/outgoing-draft.js";
 import { ToolQuestionSchema } from "../integrations/tool-question.js";
-import { AgentReportBlock } from "../agent-report.js";
-import { AgentStatusBlock } from "../agent-status.js";
-import { QuestionForm } from "../agent-workbench.js";
 
 export const MessageRole = z.enum(["user", "bot", "system"]);
 export const BotMessageIntent = z.enum(["request", "result", "question", "status", "fyi"]);
@@ -127,7 +127,13 @@ export const MessageBlock = z.discriminatedUnion("kind", [
   AgentReportBlock,
   AgentStatusBlock,
   z.object({ kind: z.literal("policy_review"), reviewId: z.uuid(), botId: Id }).strict(),
-  z.object({ kind: z.literal("policy_approval"), reviewId: z.string().regex(/^[a-f0-9]{64}$/), botId: Id }).strict(),
+  z
+    .object({
+      kind: z.literal("policy_approval"),
+      reviewId: z.string().regex(/^[a-f0-9]{64}$/),
+      botId: Id,
+    })
+    .strict(),
   z.object({ kind: z.literal("text"), text: z.string() }),
   z.object({
     kind: z.literal("card"),

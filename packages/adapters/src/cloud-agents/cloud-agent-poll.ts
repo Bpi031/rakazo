@@ -9,9 +9,9 @@ import { cloudAgentHttpsUrl, deadlineSignal } from "@rakazo/core";
 import type { CloudAgent, HeldLease } from "@rakazo/db";
 import {
   appendEventInTransaction,
-  checkpointRunFields,
   assertLeaseHeld,
   changeMessageBlocks,
+  checkpointRunFields,
   LeaseHeldError,
   Prisma,
   THREAD_LOCK_TRANSACTION_OPTIONS,

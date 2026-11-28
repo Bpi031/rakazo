@@ -1,6 +1,7 @@
-import { expect, it, vi } from "vitest";
 import { leadershipDecision, leadershipProposal, leadershipToolInput } from "@rakazo/contracts";
+import { expect, it, vi } from "vitest";
 import { TeamLeadershipService } from "./teams/team-leadership.js";
+
 it("an agent cannot confirm or accept a handover", () => {
   for (const operation of ["offer", "accept", "decline", "cancel", "confirm"])
     expect(leadershipToolInput.safeParse({ operation }).success).toBe(false);
@@ -32,11 +33,13 @@ it("requires a digest, bounded password and exact operation for browser decision
 it.each(["bot_message", "routine", "team_workflow", "webhook"])(
   "cannot turn %s into a leadership offer",
   async (trigger) => {
-    const db: any = {
+    const db = {
       run: { findUniqueOrThrow: vi.fn(async () => ({ status: "running", trigger })) },
     };
     await expect(
-      new TeamLeadershipService(db).agent("r", "k", {
+      new TeamLeadershipService(
+        db as unknown as ConstructorParameters<typeof TeamLeadershipService>[0],
+      ).agent("r", "k", {
         operation: "propose",
         proposal: { successorBotId: "peer", workflowIds: [] },
       }),

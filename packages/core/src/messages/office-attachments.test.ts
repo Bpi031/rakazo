@@ -44,24 +44,42 @@ describe("Office file delivery", () => {
       expect(attachmentKindForMimeType(mime!)).toBe("file");
       expect(attachmentExtensionForMimeType(mime!)).toBe(`.${extension}`);
       expect(inferAttachmentMimeType(`roster.${extension}`, mime)).toBe(mime);
-      expect(messageBlockForArtifact({ id: "a", name: `roster.${extension}`, mimeType: mime!, size: 5 }))
-        .toEqual({ kind: "file", artifactId: "a", name: `roster.${extension}`, mimeType: mime, size: 5 });
+      expect(
+        messageBlockForArtifact({ id: "a", name: `roster.${extension}`, mimeType: mime!, size: 5 }),
+      ).toEqual({
+        kind: "file",
+        artifactId: "a",
+        name: `roster.${extension}`,
+        mimeType: mime,
+        size: 5,
+      });
     });
-    it.each(["", "application/octet-stream", "application/zip", "application/x-zip-compressed",
-      "application/x-zip", "multipart/x-zip"])(`preserves ${extension} when reported as %s`, reported => {
+    it.each([
+      "",
+      "application/octet-stream",
+      "application/zip",
+      "application/x-zip-compressed",
+      "application/x-zip",
+      "multipart/x-zip",
+    ])(`preserves ${extension} when reported as %s`, (reported) => {
       expect(inferAttachmentMimeType(`roster.${extension!.toUpperCase()}`, reported)).toBe(mime);
     });
   }
-  it.each([["dot", "application/msword"], ["xlt", "application/vnd.ms-excel"],
-    ["pot", "application/vnd.ms-powerpoint"], ["pps", "application/vnd.ms-powerpoint"]])(
-    "recognizes the legacy %s template/slideshow alias", (extension, mime) => {
-      expect(inferAttachmentMimeType(`template.${extension}`, "application/octet-stream")).toBe(mime);
-      expect(inferAttachmentMimeType(`template.${extension!.toUpperCase()}`)).toBe(mime);
-    });
+  it.each([
+    ["dot", "application/msword"],
+    ["xlt", "application/vnd.ms-excel"],
+    ["pot", "application/vnd.ms-powerpoint"],
+    ["pps", "application/vnd.ms-powerpoint"],
+  ])("recognizes the legacy %s template/slideshow alias", (extension, mime) => {
+    expect(inferAttachmentMimeType(`template.${extension}`, "application/octet-stream")).toBe(mime);
+    expect(inferAttachmentMimeType(`template.${extension!.toUpperCase()}`)).toBe(mime);
+  });
   it("does not broaden the allowlist to executables or arbitrary binary files", () => {
     expect(inferAttachmentMimeType("program.exe", "application/octet-stream")).toBeNull();
     expect(() => validateAttachmentMimeType("application/octet-stream")).toThrow();
-    expect(inferAttachmentMimeType("bundle.zip", "application/x-zip-compressed")).toBe("application/zip");
+    expect(inferAttachmentMimeType("bundle.zip", "application/x-zip-compressed")).toBe(
+      "application/zip",
+    );
     expect(() => decodeAttachmentBase64(Buffer.alloc(12).toString("base64"), 11)).toThrow();
   });
 });

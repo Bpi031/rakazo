@@ -12,7 +12,10 @@ import { parseModelSecret } from "./model-secret.js";
 export const DEFAULT_OPENROUTER_MODEL_ID = modelProviders.openrouter.deployment.defaultModel;
 
 export function managedCodexModels(env: NodeJS.ProcessEnv = process.env): string[] {
-  return (env.CODEX_DEPLOYMENTS ?? "").split(",").map((entry) => entry.trim()).filter(Boolean);
+  return (env.CODEX_DEPLOYMENTS ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
 }
 
 /**
@@ -44,7 +47,13 @@ export function resolveDeploymentModel(env: NodeJS.ProcessEnv = process.env) {
     const model = env.CODEX_DEFAULT_MODEL?.trim() || models[0];
     if (!model || !models.includes(model) || !env.CODEX_CAPABILITY_KEY_FILE)
       throw new Error("Protected Codex deployment is not configured");
-    return { provider: "codex-foundry", model, key: undefined, configured: true, hostCredentials: true };
+    return {
+      provider: "codex-foundry",
+      model,
+      key: undefined,
+      configured: true,
+      hostCredentials: true,
+    };
   }
   const offerings = modelCreditOfferings(env);
   if (offerings) {

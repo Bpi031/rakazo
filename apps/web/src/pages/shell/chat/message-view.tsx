@@ -15,10 +15,10 @@ import { isPeerReceiptBlocks, isToolActivityBlock, otherAuthor } from "@rakazo/c
 import { BotAvatar, cn, resolvePersonaColorDef } from "@rakazo/ui-web";
 import { UserRound } from "lucide-react";
 import { memo, useCallback, useMemo } from "react";
-import { CollaborationMarker } from "../../../components/ai/CollaborationMarker";
-import { BuiCard } from "../../../components/ai/primitives";
 import { AgentReportCard } from "../../../components/AgentReportCard";
 import { AgentStatusPanel } from "../../../components/AgentStatusPanel";
+import { CollaborationMarker } from "../../../components/ai/CollaborationMarker";
+import { BuiCard } from "../../../components/ai/primitives";
 import { ComputerCard } from "../../../components/computers/ComputerCard";
 import { ArtifactFileCard } from "../../../components/messages/ArtifactFileCard";
 import { AskCard } from "../../../components/messages/AskCard";
@@ -34,9 +34,9 @@ import {
   ToolSteps,
 } from "../../../components/messages/ToolActivityDisclosure";
 import { ToolQuestionCard } from "../../../components/messages/ToolQuestionCard";
-import { PageBlockCard } from "../../../components/pages/PageBlockCard";
 import { PolicyOwnerCard } from "../../../components/PolicyOwnerCard";
 import { PolicyReviewCard } from "../../../components/PolicyReviewCard";
+import { PageBlockCard } from "../../../components/pages/PageBlockCard";
 import { SkillDraftCard } from "../../../components/teach/SkillDraftCard";
 import {
   isToolOnlyNarration,

@@ -10,12 +10,12 @@ import {
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { AgentWorkbench, workbenchEnabled } from "../../agent-workbench.js";
-import { NativeControl, nativeEnabled, NativeSessionBusyError } from "../../native-control.js";
-import { nativeHelper } from "../../native-helper.js";
 import { ComputerBusyError } from "../../computers/computer-lifecycle.js";
-import { isStrategicInitiativeRun } from "../../routines/strategic-initiative.js";
 import { managedWorkspace } from "../../managed-workspace.js";
+import { NativeControl, NativeSessionBusyError, nativeEnabled } from "../../native-control.js";
+import { nativeHelper } from "../../native-helper.js";
 import { policyWorkflowInstruction } from "../../policy/policy-workflow.js";
+import { isStrategicInitiativeRun } from "../../routines/strategic-initiative.js";
 import { personSpeaker } from "../../runtime/context/history-speakers.js";
 import { backgroundHelpersAllowed } from "../../tasks/background-helpers.js";
 import { builtinAgentTools } from "../../tools/builtin.tool-definition.js";
@@ -496,7 +496,10 @@ async function modelTurnRequest(
   };
 }
 
-export function runtimeInstructions(managed: boolean, parts: Parameters<typeof userTurnInstructions>[0]) {
+export function runtimeInstructions(
+  managed: boolean,
+  parts: Parameters<typeof userTurnInstructions>[0],
+) {
   const join = (values: ReturnType<typeof userTurnInstructions>) =>
     values.filter(Boolean).join("\n\n");
   return {

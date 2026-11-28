@@ -40,8 +40,8 @@ import {
 } from "@rakazo/core";
 import type { createRepos, PrismaClient, ThreadEvents } from "@rakazo/db";
 import {
-  checkpointRunFields,
   changeMessageBlocks,
+  checkpointRunFields,
   clearEndedRunState,
   expireComputerExecutionLeases,
   IsolationError,

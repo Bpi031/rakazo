@@ -1,20 +1,25 @@
-import { CodexProtocolRuntime, runtimeConfig } from "./codex-protocol.mjs";
-import { validateCodexQuestion } from "./codex-question-validation.js";
+import type {
+  AdapterContext,
+  AgentRunRequest,
+  AgentRuntimeEvent,
+  SandboxProvider,
+} from "@rakazo/adapter-kit";
 import { nativeReadTools } from "@rakazo/contracts";
 import { deadlineSignal } from "@rakazo/core";
+import type { PrismaClient } from "@rakazo/db";
 import { AgentWorkbench } from "./agent-workbench.js";
+import { CodexProtocolRuntime, runtimeConfig } from "./codex-protocol.mjs";
+import { validateCodexQuestion } from "./codex-question-validation.js";
+import { managedWorkspace } from "./managed-workspace.js";
 import { NativeControl } from "./native-control.js";
 import { teamDigest } from "./teams/team-policy.js";
-import type { PrismaClient } from "@rakazo/db";
-import type { AdapterContext, SandboxProvider, RuntimeSessionRequest } from "@rakazo/adapter-kit";
-import { managedWorkspace } from "./managed-workspace.js";
 
 export async function nativeHelper(
   deps: { prisma: PrismaClient; sandbox: SandboxProvider },
   runId: string,
   executionId: string,
   args: Record<string, unknown>,
-  open: (request: RuntimeSessionRequest) => Promise<any>,
+  open: NonNullable<AgentRunRequest["openRuntimeSession"]>,
   context: AdapterContext,
 ) {
   const control = new NativeControl(deps.prisma, deps.sandbox);
@@ -30,9 +35,12 @@ export async function nativeHelper(
     prisma: deps.prisma,
     helperAuthority: "native_read_only_worker",
     generate: async (input) => {
-      const runtime = new CodexProtocolRuntime({ ...runtimeConfig(), validateQuestion: validateCodexQuestion });
-      let text = "",
-        usage: any;
+      const runtime = new CodexProtocolRuntime({
+        ...runtimeConfig(),
+        validateQuestion: validateCodexQuestion,
+      });
+      let text = "";
+      let usage: Extract<AgentRuntimeEvent, { type: "usage" }> | undefined;
       const signal = deadlineSignal(90000, context.signal);
       let calls = 0;
       for await (const event of runtime.run(
@@ -84,7 +92,7 @@ export async function nativeHelper(
         usage: usage
           ? {
               input_tokens:
-                usage.inputTokens !== null && usage.cacheReadTokens !== null
+                usage.inputTokens !== null && typeof usage.cacheReadTokens === "number"
                   ? usage.inputTokens + usage.cacheReadTokens
                   : undefined,
               input_tokens_details: { cached_tokens: usage.cacheReadTokens },
@@ -95,5 +103,10 @@ export async function nativeHelper(
       };
     },
   });
-  return helper.helper(runId, executionId, {...args,instructions:args.instructions??'Use only the offered scoped read-only tools. Report exactly which files were inspected and the remaining uncertainty. No writes, policy approval or solver work.'});
+  return helper.helper(runId, executionId, {
+    ...args,
+    instructions:
+      args.instructions ??
+      "Use only the offered scoped read-only tools. Report exactly which files were inspected and the remaining uncertainty. No writes, policy approval or solver work.",
+  });
 }

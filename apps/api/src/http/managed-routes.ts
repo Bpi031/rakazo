@@ -1,37 +1,40 @@
-import type { JobPublisher } from "@rakazo/adapter-kit";
+import type { JobPublisher, SandboxProvider } from "@rakazo/adapter-kit";
 import type {
   CheckpointService,
   createAgentHomeStore,
   createArtifactStore,
   startServerFoundation,
 } from "@rakazo/adapters";
-import type { SandboxProvider } from "@rakazo/adapter-kit";
-import type { PrismaClient } from "@rakazo/db";
-import type { Hono } from "hono";
-import type { requestSessions } from "../auth/request-session.js";
-import type { AppEnv } from "../env.js";
-import { AccountAdminService, mountAccountAdmin } from "../account-admin.js";
-import { mountTeamWorkflows } from "../team-workflows-http.js";
-import { mountAgentWorkbench } from "../agent-workbench-http.js";
-import { AgentWorkbench, workbenchEnabled, NativeControl, nativeEnabled } from "@rakazo/adapters";
-import { TeamWorkflowService, TeamLeadershipService } from "@rakazo/adapters";
 import {
-  TeamService,
+  AgentWorkbench,
+  NativeControl,
+  nativeEnabled,
   observeTeamComputers,
+  PolicyWorkflow,
+  PriorityService,
+  TeamLeadershipService,
+  TeamService,
+  TeamWorkflowService,
   teamEnabled,
   teamMessagingEnabled,
+  workbenchEnabled,
 } from "@rakazo/adapters";
-import { mountTeamHttp, mountDisabledTeamHttp } from "../team-http.js";
+import { signupPolicyFromEnv } from "@rakazo/core";
+import type { PrismaClient } from "@rakazo/db";
+import type { Hono } from "hono";
+import { AccountAdminService, mountAccountAdmin } from "../account-admin.js";
+import { mountAgentWorkbench } from "../agent-workbench-http.js";
+import type { requestSessions } from "../auth/request-session.js";
+import { mountCheckpointHttp } from "../checkpoints-http.js";
+import { developerAccess } from "../developer-access.js";
+import type { AppEnv } from "../env.js";
 import { mountManagedServiceGuards } from "../managed-services.js";
 import { mountManagedUsage } from "../managed-usage.js";
 import { mountPriorityHttp } from "../policy-priorities-http.js";
-import { mountCheckpointHttp } from "../checkpoints-http.js";
-import { mountWorkspaceInsights, WorkspaceInsights } from "../workspace-insights.js";
-import { PriorityService } from "@rakazo/adapters";
-import { PolicyWorkflow } from "@rakazo/adapters";
 import { mountPolicyWorkflow } from "../policy-workflow-http.js";
-import { signupPolicyFromEnv } from "@rakazo/core";
-import { developerAccess } from "../developer-access.js";
+import { mountDisabledTeamHttp, mountTeamHttp } from "../team-http.js";
+import { mountTeamWorkflows } from "../team-workflows-http.js";
+import { mountWorkspaceInsights, WorkspaceInsights } from "../workspace-insights.js";
 
 export async function initializeManagedSignupPolicy(prisma: PrismaClient, env: AppEnv) {
   if (env.agentRuntime === "codex") {

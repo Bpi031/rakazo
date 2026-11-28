@@ -79,7 +79,10 @@ const teamManifestSchema = z
     digest: z.string().regex(/^[a-f0-9]{64}$/),
   })
   .strict();
-export const checkpointFileManifestSchema = z.discriminatedUnion("version", [legacyManifestSchema, teamManifestSchema]);
+export const checkpointFileManifestSchema = z.discriminatedUnion("version", [
+  legacyManifestSchema,
+  teamManifestSchema,
+]);
 export type CheckpointFileManifest = z.infer<typeof checkpointFileManifestSchema>;
 export type CheckpointFileScope = "dedicated" | "team";
 
@@ -125,7 +128,9 @@ export function parseCheckpointFileManifest(raw: unknown): CheckpointFileManifes
 
 /** The API owns this pool; its dataDir must not be mounted into the Agent sandbox. */
 export class CheckpointFiles {
-  constructor(private readonly deps: { sandbox: SandboxProvider; dataDir: string }) {}
+  constructor(
+    private readonly deps: { sandbox: Pick<SandboxProvider, "execute">; dataDir: string },
+  ) {}
 
   private async direct(
     actor: Actor,

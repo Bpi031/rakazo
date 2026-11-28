@@ -75,9 +75,13 @@ it("starts a skill test run even when waking it fails", async () => {
   const runs: Array<Record<string, unknown>> = [];
   const prisma = {
     $transaction: vi.fn(async (action: (tx: unknown) => unknown) => action(prisma)),
-    thread: { update: vi.fn(async () => ({
-      activeBranchId: "fixture-branch", checkpointGeneration: 3, checkpointBlocked: false,
-    })) },
+    thread: {
+      update: vi.fn(async () => ({
+        activeBranchId: "fixture-branch",
+        checkpointGeneration: 3,
+        checkpointBlocked: false,
+      })),
+    },
     taughtSkill: {
       findFirst: vi.fn(async () => ({
         id: "skill-1",
@@ -109,8 +113,11 @@ it("starts a skill test run even when waking it fails", async () => {
 
   expect(runs).toEqual([
     expect.objectContaining({
-      taskId: "task-1", status: "queued", trigger: "skill",
-      branchId: "fixture-branch", checkpointGeneration: 3,
+      taskId: "task-1",
+      status: "queued",
+      trigger: "skill",
+      branchId: "fixture-branch",
+      checkpointGeneration: 3,
     }),
   ]);
   expect(enqueue).toHaveBeenCalledExactlyOnceWith(runContinueJob("run-1"));

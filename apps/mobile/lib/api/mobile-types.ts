@@ -164,12 +164,14 @@ export function blockText(message: MobileMessage) {
           ...block.report.sections.map((section) => {
             if (section.kind === "text") return `${section.title}: ${section.text}`;
             if (section.kind === "metrics")
-              return section.items.map((item) =>
-                `${item.label}: ${item.value ?? "--"} ${item.unit ?? ""}`.trim(),
-              ).join("; ");
+              return section.items
+                .map((item) => `${item.label}: ${item.value ?? "--"} ${item.unit ?? ""}`.trim())
+                .join("; ");
             return `${section.title}: ${section.rows.length} rows`;
           }),
-        ].filter(Boolean).join("\n");
+        ]
+          .filter(Boolean)
+          .join("\n");
       if (block.kind === "policy_review" || block.kind === "policy_approval")
         return "Policy review. Open the original web chat to see it.";
       if (block.kind === "agent_status")

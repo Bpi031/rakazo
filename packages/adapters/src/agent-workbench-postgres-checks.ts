@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { answerRunInput, deferSteering, type PrismaClient } from "@rakazo/db";
 import type { Actor } from "@rakazo/contracts";
+import type { PrismaClient } from "@rakazo/db";
+import { answerRunInput, deferSteering } from "@rakazo/db";
 import { AgentWorkbench } from "./agent-workbench.js";
 
 export async function workbenchChecks(db: PrismaClient, actor: Actor, other: Actor, botId: string) {
@@ -40,13 +41,13 @@ export async function workbenchChecks(db: PrismaClient, actor: Actor, other: Act
     description: "Reviewed office",
     sha256: "b".repeat(64),
   };
-  const commands: any[] = [],
-    modelInputs: any[] = [];
+  const commands: Record<string, unknown>[] = [];
+  const modelInputs: unknown[] = [];
   const service = new AgentWorkbench({
     prisma: db,
     sandbox: {
-      async *execute(_computer: unknown, command: any) {
-        const input = JSON.parse(Buffer.from(command.argv[4], "base64").toString());
+      async *execute(_computer, command) {
+        const input = JSON.parse(Buffer.from(command.argv[4]!, "base64").toString());
         commands.push(input);
         yield {
           type: "stdout",
@@ -64,7 +65,7 @@ export async function workbenchChecks(db: PrismaClient, actor: Actor, other: Act
         };
         yield { type: "exit", code: 0 };
       },
-    } as any,
+    },
     generate: async (input) => {
       generated++;
       modelInputs.push(input);
@@ -120,8 +121,14 @@ export async function workbenchChecks(db: PrismaClient, actor: Actor, other: Act
     operation: "propose_goal",
     objective: "Compare weekend balance",
   });
-  ok((goal as any).changed === false && (goal as any).id);
-  ok(((await service.view(actor, botId)).goal as any).objective === "Inspect draft");
+  ok("changed" in goal && goal.changed === false && "id" in goal && goal.id);
+  const currentGoal = (await service.view(actor, botId)).goal;
+  ok(
+    currentGoal !== null &&
+      typeof currentGoal === "object" &&
+      "objective" in currentGoal &&
+      currentGoal.objective === "Inspect draft",
+  );
   await reject(
     service.agent(first.id, "goal", { operation: "propose_goal", objective: "Different replay" }),
   );
@@ -287,8 +294,14 @@ export async function workbenchChecks(db: PrismaClient, actor: Actor, other: Act
     (await db.steeringMessage.findUniqueOrThrow({ where: { id: steering.id } })).claimedAt === null,
   );
   // Actual durable answer operation validates fields and exact owner before resuming the task.
-  await db.steeringMessage.update({ where: { id: steering.id }, data: { runId: first.id, claimedAt: new Date() } });
-  await db.run.update({ where: { id: first.id }, data: { status: "waiting_input", leaseOwner: null } });
+  await db.steeringMessage.update({
+    where: { id: steering.id },
+    data: { runId: first.id, claimedAt: new Date() },
+  });
+  await db.run.update({
+    where: { id: first.id },
+    data: { status: "waiting_input", leaseOwner: null },
+  });
   await deferSteering(db, scoped);
   ok((await db.steeringMessage.findUniqueOrThrow({ where: { id: steering.id } })).runId === null);
   const waiting = await run();

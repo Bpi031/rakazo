@@ -15,7 +15,10 @@ export async function checkpointApi<T>(
       method: body === undefined ? "GET" : "POST",
       credentials: "include",
       cache: "no-store",
-      headers: withSpaceHeaders(body === undefined ? {} : { "content-type": "application/json" }, spaceId),
+      headers: withSpaceHeaders(
+        body === undefined ? {} : { "content-type": "application/json" },
+        spaceId,
+      ),
       signal: AbortSignal.any([
         ...(signal ? [signal] : []),
         AbortSignal.timeout(body === undefined ? 15000 : 310000),

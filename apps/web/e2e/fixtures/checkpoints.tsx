@@ -1,10 +1,10 @@
 import { useState } from "react";
-import { createQueryRoot } from "../../src/lib/query/query-root.test-support";
 import { CheckpointsPanel } from "../../src/components/CheckpointsPanel";
 import { CheckpointTree } from "../../src/components/CheckpointTree";
 import { useCheckpointI18n } from "../../src/lib/checkpoint-i18n";
 import { bootstrapI18n } from "../../src/lib/locale/i18n";
 import { normalizeUiLocale } from "../../src/lib/locale/ui-locale";
+import { createQueryRoot } from "../../src/lib/query/query-root.test-support";
 import { checkpointBranchesPreview } from "./checkpoint-branches";
 import "../../src/styles.css";
 

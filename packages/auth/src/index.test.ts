@@ -231,11 +231,27 @@ describe("passwordResetEmail", () => {
 
 describe("resolveSignupPolicy", () => {
   it("an invitation does not turn an open registration policy into a closed allowlist", async () => {
-    const db = { managedSignupPolicy: { findUnique: vi.fn(async () => ({ signupPolicyInitialized: true, signupsEnabled: true, signupAllowlist: "" })) },
-      teamInvite: { findMany: vi.fn(async () => [{ email: "invite@example.test" }]) } };
+    const db = {
+      managedSignupPolicy: {
+        findUnique: vi.fn(async () => ({
+          signupPolicyInitialized: true,
+          signupsEnabled: true,
+          signupAllowlist: "",
+        })),
+      },
+      teamInvite: { findMany: vi.fn(async () => [{ email: "invite@example.test" }]) },
+    };
     vi.stubEnv("TEAM_MANAGEMENT_ENABLED", "1");
-    try { expect(await resolveSignupPolicy(db as never, { signupsEnabled: "false", signupAllowlist: undefined })).toEqual({ enabled: true, allowlist: [] }); }
-    finally { vi.unstubAllEnvs(); }
+    try {
+      expect(
+        await resolveSignupPolicy(db as never, {
+          signupsEnabled: "false",
+          signupAllowlist: undefined,
+        }),
+      ).toEqual({ enabled: true, allowlist: [] });
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
   it("uses environment defaults before deployment settings exist", async () => {
     const prisma = {

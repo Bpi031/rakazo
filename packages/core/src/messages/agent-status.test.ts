@@ -1,5 +1,5 @@
-import { expect, it } from "vitest";
 import { AgentStatusBlock } from "@rakazo/contracts";
+import { expect, it } from "vitest";
 import { reduceLiveMessageBlocks, updateAgentStatusBlocks } from "./events.js";
 
 it("merges plan, usage and command status without replacing pending narration", () => {
@@ -14,7 +14,9 @@ it("merges plan, usage and command status without replacing pending narration", 
   blocks = updateAgentStatusBlocks(blocks, {
     activity: { kind: "command", status: "completed", durationMs: 10 },
   });
-  blocks = updateAgentStatusBlocks(blocks, { configuration: { model: "approved", effort: "high" } });
+  blocks = updateAgentStatusBlocks(blocks, {
+    configuration: { model: "approved", effort: "high" },
+  });
   blocks = reduceLiveMessageBlocks(blocks, { type: "progress", payload: { delta: "workbook." } });
   expect(blocks.filter((b) => b.kind === "agent_status")).toHaveLength(1);
   expect(blocks.find((b) => b.kind === "agent_status")).toMatchObject({

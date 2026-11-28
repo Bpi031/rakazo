@@ -1,24 +1,33 @@
 // @vitest-environment jsdom
+import { NativeDecision } from "@rakazo/contracts";
 import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
+import type { z } from "zod";
+import { createQueryRoot } from "../lib/query/query-root.test-support";
+
 vi.mock("../lib/rpc", () => ({ withSpaceHeaders: (h = {}) => h }));
+
 import { NativeAgentPanel } from "./NativeAgentPanel";
-(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-let root: Root, host: HTMLDivElement;
+
+let root: ReturnType<typeof createQueryRoot> | undefined;
+let host: HTMLDivElement;
 afterEach(async () => {
-  if (root) await act(async () => root.unmount());
+  const mounted = root;
+  if (mounted) await act(async () => mounted.unmount());
+  root = undefined;
   host?.remove();
   vi.unstubAllGlobals();
 });
 async function fixture(completed = true) {
-  const calls: any[] = [];
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const calls: z.infer<typeof NativeDecision>[] = [];
   const preferences = { mode: "execute", persistence: true, action: "none", revision: 0 };
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (_url: any, init: any) => {
-      if (init.method === "POST") {
-        const body = JSON.parse(init.body);
+    vi.fn<typeof fetch>(async (_url, init) => {
+      if (init?.method === "POST") {
+        if (typeof init.body !== "string") throw new Error("Expected a JSON decision");
+        const body = NativeDecision.parse(JSON.parse(init.body));
         calls.push(body);
         Object.assign(preferences, body.preferences, { revision: preferences.revision + 1 });
         return Response.json({ ok: true });
@@ -34,13 +43,14 @@ async function fixture(completed = true) {
   );
   host = document.createElement("div");
   document.body.append(host);
-  root = createRoot(host);
-  await act(async () => root.render(<NativeAgentPanel botId="own-bot" />));
+  const mounted = createQueryRoot(host);
+  root = mounted;
+  await act(async () => mounted.render(<NativeAgentPanel botId="own-bot" />));
   return calls;
 }
 it("Plan changes only the next-turn preferences and is fenced against duplicate clicks", async () => {
   const calls = await fixture();
-  const button = host.querySelectorAll<HTMLButtonElement>('[role="radio"]')[0]!;
+  const button = host.querySelector<HTMLInputElement>('input[type="radio"][value="plan"]')!;
   await act(async () => {
     button.click();
     button.click();
@@ -60,6 +70,6 @@ it("requires a completed context for fork/compaction but not a new read-only rev
   expect(buttons.find((b) => b.textContent === "Fork conversation")!.disabled).toBe(true);
   expect(buttons.find((b) => b.textContent === "Compact context")!.disabled).toBe(true);
   await act(async () => buttons.find((b) => b.textContent === "Review workspace")!.click());
-  expect(calls[0].preferences.action).toBe("review");
+  expect(calls[0]?.preferences.action).toBe("review");
   expect(calls).toHaveLength(1);
 });

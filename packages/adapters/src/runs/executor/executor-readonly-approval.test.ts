@@ -867,25 +867,48 @@ function askDetail(f: ReturnType<typeof fixture>): string {
 }
 
 it("streams and keeps redacted runtime status without an approval or tool effect", async () => {
-  const f = fixture({ secrets: ["fixture-secret"], runtimeEvents: [
-    { type: "status", value: { plan: [{ step: "Review fixture-secret", status: "inProgress" }] } },
-    { type: "status", value: { activity: { kind: "command", status: "completed", durationMs: 5 } } },
-  ] });
+  const f = fixture({
+    secrets: ["fixture-secret"],
+    runtimeEvents: [
+      {
+        type: "status",
+        value: { plan: [{ step: "Review fixture-secret", status: "inProgress" }] },
+      },
+      {
+        type: "status",
+        value: { activity: { kind: "command", status: "completed", durationMs: 5 } },
+      },
+    ],
+  });
   f.setCalls([]);
   await f.run();
   expect(f.effects).toEqual([]);
-  expect(f.finalizeRun).toHaveBeenCalledWith(expect.objectContaining({ blocks: expect.arrayContaining([
-    expect.objectContaining({ kind: "agent_status",
-      plan: [{ step: "Review [redacted]", status: "inProgress" }],
-      activity: { kind: "command", status: "completed", durationMs: 5 },
+  expect(f.finalizeRun).toHaveBeenCalledWith(
+    expect.objectContaining({
+      blocks: expect.arrayContaining([
+        expect.objectContaining({
+          kind: "agent_status",
+          plan: [{ step: "Review [redacted]", status: "inProgress" }],
+          activity: { kind: "command", status: "completed", durationMs: 5 },
+        }),
+      ]),
     }),
-  ]) }));
+  );
   expect(JSON.stringify(f.appendEvent.mock.calls)).not.toContain("fixture-secret");
-  expect(f.appendEvent).toHaveBeenCalledWith(expect.objectContaining({
-    type: "thread.progress", payload: { agentStatus: { activity: {
-      kind: "command", status: "completed", durationMs: 5,
-    } } },
-  }));
+  expect(f.appendEvent).toHaveBeenCalledWith(
+    expect.objectContaining({
+      type: "thread.progress",
+      payload: {
+        agentStatus: {
+          activity: {
+            kind: "command",
+            status: "completed",
+            durationMs: 5,
+          },
+        },
+      },
+    }),
+  );
 });
 
 it("enqueues pending work when an approval pauses its current run", async () => {

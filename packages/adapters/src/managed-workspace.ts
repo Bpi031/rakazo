@@ -1,3 +1,5 @@
+import type { Prisma } from "@rakazo/db";
+
 /** Paths are derived from the authorized database binding, never model input. */
 export function managedWorkspace(scope: string, botId: string) {
   if (scope !== "team") return { cwd: "/home/rakazo", roots: ["/home/rakazo/workspace"] };
@@ -31,7 +33,7 @@ export function assertWorkspacePath(value: unknown, roots: readonly string[]) {
 }
 
 export async function assertManagedTeamComputer(
-  db: { bot: { count: (query: any) => Promise<number> } },
+  db: { bot: { count: (query: { where: Prisma.BotWhereInput }) => Promise<number> } },
   computer: { id: string; scope: string; userId: string; spaceId: string },
   actor: { userId: string; spaceId: string },
 ) {

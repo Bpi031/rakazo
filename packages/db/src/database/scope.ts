@@ -51,12 +51,13 @@ export async function requireMembership(
     select: { state: true },
   });
   if (control && control.state !== "active") throw new IsolationError("Team account unavailable");
-  const owner = process.env.AGENT_RUNTIME === "codex"
-    ? await prisma.deploymentSettings.findUnique({
-        where: { id: "default" },
-        select: { ownerUserId: true },
-      })
-    : null;
+  const owner =
+    process.env.AGENT_RUNTIME === "codex"
+      ? await prisma.deploymentSettings.findUnique({
+          where: { id: "default" },
+          select: { ownerUserId: true },
+        })
+      : null;
   return {
     userId: user.id,
     spaceId: membership.spaceId,

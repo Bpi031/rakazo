@@ -3,7 +3,10 @@ import { z } from "zod";
 const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable();
 export const AgentStatusFields = z
   .object({
-    configuration: z.object({ model: z.string().min(1).max(128), effort: z.string().min(1).max(16) }).strict().optional(),
+    configuration: z
+      .object({ model: z.string().min(1).max(128), effort: z.string().min(1).max(16) })
+      .strict()
+      .optional(),
     plan: z
       .array(
         z

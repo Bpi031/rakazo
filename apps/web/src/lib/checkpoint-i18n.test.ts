@@ -6,7 +6,10 @@ import { checkpointCopy, checkpointError, checkpointHttpError } from "./checkpoi
 
 async function activateChinese() {
   const catalog = await formatter().parse(
-    readFileSync(new URL("../../../../packages/i18n/locales/zh-CN/messages.po", import.meta.url), "utf8"),
+    readFileSync(
+      new URL("../../../../packages/i18n/locales/zh-CN/messages.po", import.meta.url),
+      "utf8",
+    ),
     { locale: "zh-CN", sourceLocale: "en", filename: "messages.po" },
   );
   i18n.load(

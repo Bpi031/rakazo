@@ -1,11 +1,14 @@
-import { expect, it, vi } from "vitest";
 import { Hono } from "hono";
+import { expect, it, vi } from "vitest";
+
 const auth = vi.hoisted(() => ({ memberScope: vi.fn() }));
 vi.mock("@rakazo/adapters", async (importOriginal) => {
   const policy = await importOriginal<typeof import("@rakazo/adapters")>();
   return { ...policy, memberScope: auth.memberScope };
 });
+
 import { AccountAdminService, mountAccountAdmin } from "./account-admin.js";
+
 const actor = {
   userId: "owner",
   spaceId: "space",
@@ -21,7 +24,7 @@ function fixture(role = "owner") {
   };
   const scope = { organizationId: "org", role };
   auth.memberScope.mockResolvedValue(scope);
-  const team: any = {
+  const team = {
     scope: vi.fn(async () => {
       if (role === "member") throw new Error("Manager required");
       return scope;
@@ -30,7 +33,7 @@ function fixture(role = "owner") {
     propose: vi.fn(async () => ({ status: "pending" })),
     confirm: vi.fn(async () => ({ status: "applied" })),
   };
-  const db: any = {
+  const db = {
     deploymentSettings: {
       findUnique: vi.fn(async () => settings),
     },
@@ -58,8 +61,14 @@ function fixture(role = "owner") {
     teamAudit: { create: vi.fn() },
     $executeRaw: vi.fn(),
   };
-  db.$transaction = async (work: any) => work(db);
-  const service = new AccountAdminService(db, team, { enabled: false, allowlist: [] });
+  const prisma = Object.assign(db, {
+    $transaction: <T>(work: (tx: typeof db) => Promise<T>) => work(db),
+  });
+  const service = new AccountAdminService(
+    prisma as unknown as ConstructorParameters<typeof AccountAdminService>[0],
+    team as unknown as ConstructorParameters<typeof AccountAdminService>[1],
+    { enabled: false, allowlist: [] },
+  );
   const verifyPassword = vi.fn(
     async (_request: Request, password: string) => password === "correct",
   );

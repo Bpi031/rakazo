@@ -129,20 +129,22 @@ export async function reconnectBotComputer(
       if (status !== 404 && !/not connected|not found|no such/i.test(String(error))) throw error;
     });
   }
-  return network.connect(pinnedComputers.connectOptions(botId, container.id, computerNetworkNameFor(botId))).then(
-    () => true,
-    (error) => {
-      // A leftover or conflicting endpoint, which a retry would not clear.
-      const status = (error as { statusCode?: number })?.statusCode;
-      const unattachable =
-        status === 404 ||
-        status === 409 ||
-        /not found|no such|already exists|already connected/i.test(String(error));
-      if (!unattachable) throw error;
-      getLogger().error("computer network reconnect failed", error);
-      return false;
-    },
-  );
+  return network
+    .connect(pinnedComputers.connectOptions(botId, container.id, computerNetworkNameFor(botId)))
+    .then(
+      () => true,
+      (error) => {
+        // A leftover or conflicting endpoint, which a retry would not clear.
+        const status = (error as { statusCode?: number })?.statusCode;
+        const unattachable =
+          status === 404 ||
+          status === 409 ||
+          /not found|no such|already exists|already connected/i.test(String(error));
+        if (!unattachable) throw error;
+        getLogger().error("computer network reconnect failed", error);
+        return false;
+      },
+    );
 }
 
 /**

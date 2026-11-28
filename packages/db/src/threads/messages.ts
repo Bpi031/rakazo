@@ -131,10 +131,16 @@ export async function loadRunHistoryMessages(
     select: HISTORY_MESSAGE_SELECT(run.botId),
   });
   const earlier = routine?.earlierResults
-    ? await earlierRoutineResults(prisma, run, {
-        routineId: routine.routineId,
-        limit: routine.earlierResults,
-      }, visibleWhere, visibleSql)
+    ? await earlierRoutineResults(
+        prisma,
+        run,
+        {
+          routineId: routine.routineId,
+          limit: routine.earlierResults,
+        },
+        visibleWhere,
+        visibleSql,
+      )
     : [];
   const recentIds = new Set(recent.map((message) => message.id));
   const messages = [...recent, ...earlier.filter((message) => !recentIds.has(message.id))]

@@ -1,18 +1,25 @@
 import { randomUUID } from "node:crypto";
-import { readManagedRuntimeAsset } from "./storage/managed-runtime-assets.js";
-import type { SandboxProvider } from "@rakazo/adapter-kit";
+import type { NativeSessionFinish, SandboxProvider } from "@rakazo/adapter-kit";
 import type { Actor } from "@rakazo/contracts";
 import { CompletionReceipt, NativeDecision, NativePreferences } from "@rakazo/contracts";
 import type { Prisma, PrismaClient } from "@rakazo/db";
 import { assertCheckpointGeneration, readJsonColumn } from "@rakazo/db";
 import { z } from "zod";
 import { toComputerRef } from "./computers/screens/computer-support.js";
+import {
+  assertManagedTeamComputer,
+  managedWorkspace,
+  workspaceRelativeRoots,
+} from "./managed-workspace.js";
+import { readManagedRuntimeAsset } from "./storage/managed-runtime-assets.js";
 import { teamDigest } from "./teams/team-policy.js";
 import { memberScope } from "./teams/team-storage.js";
-import { assertManagedTeamComputer, managedWorkspace, workspaceRelativeRoots } from "./managed-workspace.js";
 
 const json = (v: unknown) => JSON.parse(JSON.stringify(v)) as Prisma.InputJsonValue;
 const preferencesPayload = NativePreferences.extend({ revision: z.number().int().nonnegative() });
+const receiptFiles = z.object({
+  files: z.array(z.looseObject({ path: z.string(), sha256: z.string() })).max(24),
+});
 const sessionPayload = z.looseObject({
   fingerprint: z.string(),
   action: NativePreferences.shape.action.optional(),
@@ -22,65 +29,142 @@ const sessionPayload = z.looseObject({
   turnId: z.string().nullable().optional(),
 });
 function readNative<T extends z.ZodType>(schema: T, row: { id: string; payload: unknown }) {
-  return readJsonColumn(schema, row.payload, { table: 'agent_workbench_records', column: 'payload', id: row.id }, 'reject');
+  return readJsonColumn(
+    schema,
+    row.payload,
+    { table: "agent_workbench_records", column: "payload", id: row.id },
+    "reject",
+  );
 }
-export const nativeEnabled = () => process.env.ROST_AGENT_NATIVE === '1';
+export const nativeEnabled = () => process.env.ROST_AGENT_NATIVE === "1";
 export class NativeSessionBusyError extends Error {
   constructor() {
-    super('ROST_NATIVE_SESSION_BUSY: Another owned agent turn is using this private session.');
-    this.name = 'NativeSessionBusyError';
+    super("ROST_NATIVE_SESSION_BUSY: Another owned agent turn is using this private session.");
+    this.name = "NativeSessionBusyError";
   }
 }
 export class NativeControl {
-  constructor(private db: PrismaClient, private sandbox?: SandboxProvider) {}
+  constructor(
+    private db: PrismaClient,
+    private sandbox?: Pick<SandboxProvider, "execute">,
+  ) {}
   private async owned(actor: Actor, botId: string) {
     await memberScope(this.db, actor.userId, actor.spaceId);
-    const bot = await this.db.bot.findFirstOrThrow({ where: { id: botId, userId: actor.userId, spaceId: actor.spaceId, archivedAt: null }, include: { computer: true } });
+    const bot = await this.db.bot.findFirstOrThrow({
+      where: { id: botId, userId: actor.userId, spaceId: actor.spaceId, archivedAt: null },
+      include: { computer: true },
+    });
     if (bot.computer) await assertManagedTeamComputer(this.db, bot.computer, actor);
     return bot;
   }
-  private where(actor: Actor, botId: string) { return { userId: actor.userId, spaceId: actor.spaceId, botId }; }
-  private key(actor: Actor, botId: string, kind: string) { return teamDigest({ ...this.where(actor, botId), kind }); }
+  private where(actor: Actor, botId: string) {
+    return { userId: actor.userId, spaceId: actor.spaceId, botId };
+  }
+  private key(actor: Actor, botId: string, kind: string) {
+    return teamDigest({ ...this.where(actor, botId), kind });
+  }
   async view(actor: Actor, botId: string) {
     await this.owned(actor, botId);
-    const records = await this.db.agentWorkbenchRecord.findMany({ where: { ...this.where(actor, botId), kind: { startsWith: 'native_' } }, orderBy: { updatedAt: 'desc' }, take: 80 });
-    const preferences = await this.db.agentWorkbenchRecord.findUnique({ where: { id: this.key(actor, botId, 'native_preferences') } });
+    const records = await this.db.agentWorkbenchRecord.findMany({
+      where: { ...this.where(actor, botId), kind: { startsWith: "native_" } },
+      orderBy: { updatedAt: "desc" },
+      take: 80,
+    });
+    const preferences = await this.db.agentWorkbenchRecord.findUnique({
+      where: { id: this.key(actor, botId, "native_preferences") },
+    });
     await this.owned(actor, botId);
-    return { enabled: nativeEnabled(), preferences: preferences ? readNative(preferencesPayload, preferences) : preferencesPayload.parse({ mode: 'execute', persistence: true, action: 'none', revision: 0 }), records: records.filter(r => r.kind !== 'native_preferences').map(r => ({ id: r.id, kind: r.kind, status: r.status, payload: r.payload, updatedAt: r.updatedAt.toISOString() })), policyApprovalGranted: false, solveStarted: false };
+    return {
+      enabled: nativeEnabled(),
+      preferences: preferences
+        ? readNative(preferencesPayload, preferences)
+        : preferencesPayload.parse({
+            mode: "execute",
+            persistence: true,
+            action: "none",
+            revision: 0,
+          }),
+      records: records
+        .filter((r) => r.kind !== "native_preferences")
+        .map((r) => ({
+          id: r.id,
+          kind: r.kind,
+          status: r.status,
+          payload: r.payload,
+          updatedAt: r.updatedAt.toISOString(),
+        })),
+      policyApprovalGranted: false,
+      solveStarted: false,
+    };
   }
   async decide(actor: Actor, raw: unknown) {
-    const input = NativeDecision.parse(raw); await this.owned(actor, input.botId);
-    if (!nativeEnabled()) throw new Error('Native capability disabled');
-    return this.db.$transaction(async tx => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${this.key(actor, input.botId, 'native_preferences')}, 0))`;
-      const id = this.key(actor, input.botId, 'native_preferences');
+    const input = NativeDecision.parse(raw);
+    await this.owned(actor, input.botId);
+    if (!nativeEnabled()) throw new Error("Native capability disabled");
+    return this.db.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${this.key(actor, input.botId, "native_preferences")}, 0))`;
+      const id = this.key(actor, input.botId, "native_preferences");
       const old = await tx.agentWorkbenchRecord.findUnique({ where: { id } });
-      if ((old ? readNative(preferencesPayload, old).revision : 0) !== input.revision) throw new Error('Preferences changed; refresh');
-      const payload = { ...input.preferences, ...(input.preferences.action === 'fork' || input.preferences.action === 'review' ? { mode: 'plan' } : {}), revision: input.revision + 1 };
-      return tx.agentWorkbenchRecord.upsert({ where: { id }, create: { id, ...this.where(actor,input.botId), kind: 'native_preferences', status: 'selected', payload: json(payload), digest: teamDigest(payload) }, update: { payload: json(payload), digest: teamDigest(payload) } });
+      if ((old ? readNative(preferencesPayload, old).revision : 0) !== input.revision)
+        throw new Error("Preferences changed; refresh");
+      const payload = {
+        ...input.preferences,
+        ...(input.preferences.action === "fork" || input.preferences.action === "review"
+          ? { mode: "plan" }
+          : {}),
+        revision: input.revision + 1,
+      };
+      return tx.agentWorkbenchRecord.upsert({
+        where: { id },
+        create: {
+          id,
+          ...this.where(actor, input.botId),
+          kind: "native_preferences",
+          status: "selected",
+          payload: json(payload),
+          digest: teamDigest(payload),
+        },
+        update: { payload: json(payload), digest: teamDigest(payload) },
+      });
     });
   }
   async actor(runId: string) {
-    const run = await this.db.run.findUniqueOrThrow({where:{id:runId}});
-    if (run.status !== 'running') throw new Error('Live owned agent turn required');
+    const run = await this.db.run.findUniqueOrThrow({ where: { id: runId } });
+    if (run.status !== "running") throw new Error("Live owned agent turn required");
     if (typeof run.checkpointGeneration === "number")
       await assertCheckpointGeneration(this.db, run.threadId, run.checkpointGeneration);
-    const actor = {userId:run.userId,spaceId:run.spaceId,email:'',isDeploymentOwner:false};
-    const bot = await this.owned(actor,run.botId);
+    const actor = { userId: run.userId, spaceId: run.spaceId, email: "", isDeploymentOwner: false };
+    const bot = await this.owned(actor, run.botId);
     return { actor, run, bot };
   }
   async observe(runId: string, kind: string, payload: unknown) {
     const { actor, run } = await this.actor(runId);
-    if (!['capabilities','watch','diff','files','review','completion'].includes(kind) || Buffer.byteLength(JSON.stringify(payload)) > 200000) throw new Error('Native observation cap');
+    if (
+      !["capabilities", "watch", "diff", "files", "review", "completion"].includes(kind) ||
+      Buffer.byteLength(JSON.stringify(payload)) > 200000
+    )
+      throw new Error("Native observation cap");
     const id = teamDigest({ runId, kind });
-    return this.db.agentWorkbenchRecord.upsert({ where: { id }, create: { id, ...this.where(actor,run.botId), runId, kind: 'native_' + kind, status: 'observed', digest: teamDigest(payload), payload: json(payload) }, update: { digest: teamDigest(payload), payload: json(payload) } });
+    return this.db.agentWorkbenchRecord.upsert({
+      where: { id },
+      create: {
+        id,
+        ...this.where(actor, run.botId),
+        runId,
+        kind: "native_" + kind,
+        status: "observed",
+        digest: teamDigest(payload),
+        payload: json(payload),
+      },
+      update: { digest: teamDigest(payload), payload: json(payload) },
+    });
   }
   async prepare(runId: string, fingerprint: string) {
-    const {actor,run,bot}=await this.actor(runId);
+    const { actor, run, bot } = await this.actor(runId);
     const workspace = managedWorkspace(bot.computer?.scope ?? "dedicated", run.botId);
     const view = await this.view(actor, run.botId);
     const p = view.preferences;
-    const id=this.key(actor,run.botId,'native_session');
+    const id = this.key(actor, run.botId, "native_session");
     return this.db.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${id}, 0))`;
       const thread = await tx.thread.findFirstOrThrow({
@@ -109,69 +193,185 @@ export class NativeControl {
       });
       const row = await tx.agentWorkbenchRecord.findUnique({ where: { id } });
       const saved = row ? readNative(sessionPayload, row) : null;
-      const priorRun=row?.runId?await tx.run.findUniqueOrThrow({where:{id:row.runId}}):null;
-      const answeredPause=row?.runId===runId&&row.status==='needs_review'&&saved?.paused===true&&run.leaseFence>(saved.leaseFence??Number.MAX_SAFE_INTEGER);
-      if (priorRun&&['queued','leased','running','waiting_input','waiting_takeover'].includes(priorRun.status)&&!answeredPause) {
+      const priorRun = row?.runId
+        ? await tx.run.findUniqueOrThrow({ where: { id: row.runId } })
+        : null;
+      const answeredPause =
+        row?.runId === runId &&
+        row.status === "needs_review" &&
+        saved?.paused === true &&
+        run.leaseFence > (saved.leaseFence ?? Number.MAX_SAFE_INTEGER);
+      if (
+        priorRun &&
+        ["queued", "leased", "running", "waiting_input", "waiting_takeover"].includes(
+          priorRun.status,
+        ) &&
+        !answeredPause
+      ) {
         // A different queued turn may wait. A duplicate attempt of this run must
         // not release/requeue the live owner's lease or replay its tool effects.
         if (row!.runId !== runId) throw new NativeSessionBusyError();
-        throw new Error('Native session already owned');
+        throw new Error("Native session already owned");
       }
-      const previous = row?.status === 'completed' && priorRun?.status==='completed' && saved?.fingerprint === ownedFingerprint ? saved : null;
+      const previous =
+        row?.status === "completed" &&
+        priorRun?.status === "completed" &&
+        saved?.fingerprint === ownedFingerprint
+          ? saved
+          : null;
       // Restored history always starts from the reconstructed branch. An old
       // workbench compact/fork preference must not borrow the abandoned session.
       const action =
         (thread.checkpointGeneration ?? 0) > 0 && !previous ? "none" : (p.action ?? "none");
-      if (['compact','fork'].includes(action) && (!previous || !p.persistence)) throw new Error('A completed matching persistent native session is required');
-      const payload = { fingerprint: ownedFingerprint, previous, mode: p.mode, action, sessionKey: id, revision: p.revision, currentRunId: runId,leaseFence:run.leaseFence };
-      await tx.agentWorkbenchRecord.upsert({ where: { id }, create: { id, ...this.where(actor,run.botId), runId, kind: 'native_session', status: 'running', digest: teamDigest(payload), payload: json(payload) }, update: { runId, status:'running', digest:teamDigest(payload), payload:json(payload) } });
-      const prefId = this.key(actor, run.botId, 'native_preferences');
-      if (action !== 'none') await tx.agentWorkbenchRecord.updateMany({ where: { id: prefId, digest: teamDigest(p) }, data: { payload: json({ ...p, action:'none', revision:p.revision+1 }), digest:teamDigest({ ...p, action:'none', revision:p.revision+1 }) } });
-      return { ...payload, workspace, previous: p.persistence && action !== 'review' ? previous : null, persistent: p.persistence === true };
+      if (["compact", "fork"].includes(action) && (!previous || !p.persistence))
+        throw new Error("A completed matching persistent native session is required");
+      const payload = {
+        fingerprint: ownedFingerprint,
+        previous,
+        mode: p.mode,
+        action,
+        sessionKey: id,
+        revision: p.revision,
+        currentRunId: runId,
+        leaseFence: run.leaseFence,
+      };
+      await tx.agentWorkbenchRecord.upsert({
+        where: { id },
+        create: {
+          id,
+          ...this.where(actor, run.botId),
+          runId,
+          kind: "native_session",
+          status: "running",
+          digest: teamDigest(payload),
+          payload: json(payload),
+        },
+        update: { runId, status: "running", digest: teamDigest(payload), payload: json(payload) },
+      });
+      const prefId = this.key(actor, run.botId, "native_preferences");
+      if (action !== "none")
+        await tx.agentWorkbenchRecord.updateMany({
+          where: { id: prefId, digest: teamDigest(p) },
+          data: {
+            payload: json({ ...p, action: "none", revision: p.revision + 1 }),
+            digest: teamDigest({ ...p, action: "none", revision: p.revision + 1 }),
+          },
+        });
+      return {
+        ...payload,
+        workspace,
+        previous: p.persistence && action !== "review" ? previous : null,
+        persistent: p.persistence === true,
+      };
     });
   }
-  async finish(runId: string, value: any) {
-    const run = await this.db.run.findUniqueOrThrow({where:{id:runId}});
+  async finish(runId: string, value: NativeSessionFinish) {
+    const run = await this.db.run.findUniqueOrThrow({ where: { id: runId } });
     if (typeof run.checkpointGeneration === "number")
       await assertCheckpointGeneration(this.db, run.threadId, run.checkpointGeneration);
-    const actor = {userId:run.userId,spaceId:run.spaceId,email:'',isDeploymentOwner:false};
-    await this.owned(actor,run.botId);
-    const id=this.key(actor,run.botId,'native_session');
-    const row=await this.db.agentWorkbenchRecord.findUniqueOrThrow({where:{id}});
-    if(row.runId!==runId||row.status!=='running') throw new Error('Native completion ownership changed');
-    const saved=readNative(sessionPayload, row);
-    const conversationOnly=saved.action==='fork';
-    const completed=value.completed===true&&!conversationOnly&&run.status==='running'&&typeof value.threadId==='string'&&typeof value.turnId==='string';
-    const payload={fingerprint:saved.fingerprint,threadId:value.threadId??null,turnId:value.turnId??null,usage:value.usage??null,completed,conversationOnly,paused:value.paused===true,leaseFence:saved.leaseFence};
-    const changed=await this.db.agentWorkbenchRecord.updateMany({where:{id,runId,status:'running'},data:{status:completed?'completed':'needs_review',payload:json(payload),digest:teamDigest(payload)}});
-    if(changed.count!==1)throw new Error('Native completion ownership changed');
+    const actor = { userId: run.userId, spaceId: run.spaceId, email: "", isDeploymentOwner: false };
+    await this.owned(actor, run.botId);
+    const id = this.key(actor, run.botId, "native_session");
+    const row = await this.db.agentWorkbenchRecord.findUniqueOrThrow({ where: { id } });
+    if (row.runId !== runId || row.status !== "running")
+      throw new Error("Native completion ownership changed");
+    const saved = readNative(sessionPayload, row);
+    const conversationOnly = saved.action === "fork";
+    const completed =
+      value.completed === true &&
+      !conversationOnly &&
+      run.status === "running" &&
+      typeof value.threadId === "string" &&
+      typeof value.turnId === "string";
+    const payload = {
+      fingerprint: saved.fingerprint,
+      threadId: value.threadId ?? null,
+      turnId: value.turnId ?? null,
+      usage: value.usage ?? null,
+      completed,
+      conversationOnly,
+      paused: value.paused === true,
+      leaseFence: saved.leaseFence,
+    };
+    const changed = await this.db.agentWorkbenchRecord.updateMany({
+      where: { id, runId, status: "running" },
+      data: {
+        status: completed ? "completed" : "needs_review",
+        payload: json(payload),
+        digest: teamDigest(payload),
+      },
+    });
+    if (changed.count !== 1) throw new Error("Native completion ownership changed");
   }
-  async files(actor: Actor, botId: string, input: Record<string,unknown>) {
+  async files(actor: Actor, botId: string, input: Record<string, unknown>) {
     const files = readManagedRuntimeAsset("native-files.py");
-    const bot=await this.owned(actor,botId);
-    if(!this.sandbox||!bot.computer?.providerRef||bot.computer.state!=='running')throw new Error('Existing owned running computer required');
-    let stdout='',code:number|undefined;
-    for await(const e of this.sandbox.execute(toComputerRef(bot.computer),{argv:['/opt/office-python/bin/python3','-I','-c',files,Buffer.from(JSON.stringify(input)).toString('base64'), JSON.stringify(workspaceRelativeRoots(bot.computer.scope, botId))],cwd:'/home/rakazo',timeoutMs:15000,unsetEnv:['PYTHONPATH','PYTHONHOME','LD_PRELOAD']},{...this.where(actor,botId),operationId:randomUUID(),traceId:'native-observation',signal:AbortSignal.timeout(20000)})){
-      if(e.type==='stdout'){stdout+=e.data;if(Buffer.byteLength(stdout)>400000)throw new Error('Observation cap');}if(e.type==='exit')code=e.code;
+    const bot = await this.owned(actor, botId);
+    if (!this.sandbox || !bot.computer?.providerRef || bot.computer.state !== "running")
+      throw new Error("Existing owned running computer required");
+    let stdout = "",
+      code: number | undefined;
+    for await (const e of this.sandbox.execute(
+      toComputerRef(bot.computer),
+      {
+        argv: [
+          "/opt/office-python/bin/python3",
+          "-I",
+          "-c",
+          files,
+          Buffer.from(JSON.stringify(input)).toString("base64"),
+          JSON.stringify(workspaceRelativeRoots(bot.computer.scope, botId)),
+        ],
+        cwd: "/home/rakazo",
+        timeoutMs: 15000,
+        unsetEnv: ["PYTHONPATH", "PYTHONHOME", "LD_PRELOAD"],
+      },
+      {
+        ...this.where(actor, botId),
+        operationId: randomUUID(),
+        traceId: "native-observation",
+        signal: AbortSignal.timeout(20000),
+      },
+    )) {
+      if (e.type === "stdout") {
+        stdout += e.data;
+        if (Buffer.byteLength(stdout) > 400000) throw new Error("Observation cap");
+      }
+      if (e.type === "exit") code = e.code;
     }
-    const result=JSON.parse(stdout);if(code!==0||result.error)throw new Error('Private workspace observation rejected');await this.owned(actor,botId);return result;
+    const result = JSON.parse(stdout);
+    if (code !== 0 || result.error) throw new Error("Private workspace observation rejected");
+    await this.owned(actor, botId);
+    return result;
   }
-  async tool(runId: string, name: string, args: any) {
-    const {actor,run}=await this.actor(runId);
-    if(name==='workspace_list'&&Object.keys(args).length===0)return this.files(actor,run.botId,{operation:'inventory'});
-    if(name==='workspace_read'&&Object.keys(args).join(',')==='path'&&typeof args.path==='string')return this.files(actor,run.botId,{operation:'read',path:args.path});
-    throw new Error('Read-only native tool denied');
+  async tool(runId: string, name: string, args: Record<string, unknown>) {
+    const { actor, run } = await this.actor(runId);
+    if (name === "workspace_list" && Object.keys(args).length === 0)
+      return this.files(actor, run.botId, { operation: "inventory" });
+    if (
+      name === "workspace_read" &&
+      Object.keys(args).join(",") === "path" &&
+      typeof args.path === "string"
+    )
+      return this.files(actor, run.botId, { operation: "read", path: args.path });
+    throw new Error("Read-only native tool denied");
   }
   async receipt(runId: string, raw: unknown) {
-    const claim=CompletionReceipt.parse(raw);
-    const {actor,run}=await this.actor(runId);
-    const all=[...claim.deliverables,...claim.evidence];
-    const paths=[...new Set(all.map(f=>f.path))];
-    let observed:any[]=[];
-    let status='needs_review';
-    try{observed=(await this.files(actor,run.botId,{operation:'receipt',paths})).files;
-      if(all.every(f=>observed.some(o=>o.path===f.path&&o.sha256===f.sha256)))status=claim.kind==='answer'&&claim.deliverables.length===0?'answer_recorded':'files_verified';
-    }catch{}
+    const claim = CompletionReceipt.parse(raw);
+    const { actor, run } = await this.actor(runId);
+    const all = [...claim.deliverables, ...claim.evidence];
+    const paths = [...new Set(all.map((f) => f.path))];
+    let observed: z.infer<typeof receiptFiles>["files"] = [];
+    let status = "needs_review";
+    try {
+      observed = receiptFiles.parse(
+        await this.files(actor, run.botId, { operation: "receipt", paths }),
+      ).files;
+      if (all.every((f) => observed.some((o) => o.path === f.path && o.sha256 === f.sha256)))
+        status =
+          claim.kind === "answer" && claim.deliverables.length === 0
+            ? "answer_recorded"
+            : "files_verified";
+    } catch {}
     const artifacts = await this.db.artifact.findMany({
       where: {
         ...this.where(actor, run.botId),
@@ -180,8 +380,22 @@ export class NativeControl {
       },
       select: { id: true, hash: true, name: true },
     });
-    const payload={claim,observed,artifacts,status,validationAssessment:'model_supplied_unverified',policyApprovalGranted:false,solveStarted:false};
-    await this.observe(runId,'completion',payload);
-    return {message:status==='needs_review'?'Completion requires review: requested files were missing or changed. No completion was certified.':claim.message,status};
+    const payload = {
+      claim,
+      observed,
+      artifacts,
+      status,
+      validationAssessment: "model_supplied_unverified",
+      policyApprovalGranted: false,
+      solveStarted: false,
+    };
+    await this.observe(runId, "completion", payload);
+    return {
+      message:
+        status === "needs_review"
+          ? "Completion requires review: requested files were missing or changed. No completion was certified."
+          : claim.message,
+      status,
+    };
   }
 }

@@ -1,11 +1,11 @@
+import type { WorkflowDefinition } from "@rakazo/contracts";
 import { bestEffort } from "@rakazo/logging/best-effort";
-import { useEffect, useRef, useState } from "react";
 import { Check, Pause, RefreshCw, ShieldCheck, Workflow, X } from "lucide-react";
-import { withSpaceHeaders } from "../lib/rpc";
-import { useVisibleRefresh } from "../lib/use-visible-refresh";
+import { useEffect, useRef, useState } from "react";
 import { useBoundSpaceId } from "../lib/query/space-rpc";
 import { useManagedOperation } from "../lib/query/use-managed-operation";
-import type { WorkflowDefinition } from "@rakazo/contracts";
+import { withSpaceHeaders } from "../lib/rpc";
+import { useVisibleRefresh } from "../lib/use-visible-refresh";
 
 export type WorkflowView = {
   id: string;
@@ -53,7 +53,10 @@ export async function workflowApi<T>(
       method: body === undefined ? "GET" : "POST",
       credentials: "include",
       signal: AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(12_000)]),
-      headers: withSpaceHeaders(body === undefined ? {} : { "content-type": "application/json" }, spaceId),
+      headers: withSpaceHeaders(
+        body === undefined ? {} : { "content-type": "application/json" },
+        spaceId,
+      ),
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     },
   );
@@ -121,17 +124,19 @@ export function TeamWorkflowsPanel({
     refreshVisible.current = () => {
       if (loading || busy || review || handoverReview) return;
       loading = true;
-      void bestEffort("refresh team workflows", load(controller.signal))
-        .finally(() => {
-          loading = false;
-        });
+      void bestEffort("refresh team workflows", load(controller.signal)).finally(() => {
+        loading = false;
+      });
     };
     return () => {
       refreshVisible.current = null;
       controller.abort();
     };
   }, [botId, selectedId, busy, review, handoverReview, activeSpaceId]);
-  useVisibleRefresh(() => refreshVisible.current?.(), busy || review || handoverReview ? null : 10_000);
+  useVisibleRefresh(
+    () => refreshVisible.current?.(),
+    busy || review || handoverReview ? null : 10_000,
+  );
   function choose(item: WorkflowView, operation: "enable" | "pause" | "consent" | "revoke") {
     setHandoverReview(null);
     setReview({ item, operation });
@@ -151,9 +156,17 @@ export function TeamWorkflowsPanel({
       setError("");
       setPassword("");
       try {
-        await workflowApi(handoverReview ? "leadership/decide" : "decide", {
-          id: current.item.id, digest: current.item.digest, operation: current.operation, password,
-        }, undefined, scope.spaceId);
+        await workflowApi(
+          handoverReview ? "leadership/decide" : "decide",
+          {
+            id: current.item.id,
+            digest: current.item.digest,
+            operation: current.operation,
+            password,
+          },
+          undefined,
+          scope.spaceId,
+        );
       } catch (e) {
         if (scope.isCurrent()) setError((e as Error).message);
         return;
@@ -161,8 +174,11 @@ export function TeamWorkflowsPanel({
       if (!scope.isCurrent()) return;
       setReview(null);
       setHandoverReview(null);
-      try { await load(undefined, scope.spaceId, scope.isCurrent); }
-      catch { if (scope.isCurrent()) setError("Decision saved; refresh to load the current workflows."); }
+      try {
+        await load(undefined, scope.spaceId, scope.isCurrent);
+      } catch {
+        if (scope.isCurrent()) setError("Decision saved; refresh to load the current workflows.");
+      }
     });
   }
   return (
@@ -174,6 +190,7 @@ export function TeamWorkflowsPanel({
         <Workflow size={18} />
         <h2 className="min-w-0 flex-1 text-body font-semibold">Team workflows</h2>
         <button
+          type="button"
           className={icon}
           title="Refresh workflows"
           aria-label="Refresh workflows"
@@ -186,6 +203,7 @@ export function TeamWorkflowsPanel({
           <RefreshCw size={16} />
         </button>
         <button
+          type="button"
           className={icon}
           title="Close workflows"
           aria-label="Close workflows"
@@ -214,9 +232,12 @@ export function TeamWorkflowsPanel({
               Leadership handover: {h.fromName} to {h.toName}
             </h3>
             <p className="text-body">
-              {h.status}<span className="ml-2 text-muted-foreground">{h.sourceRemainsOwner
-                ? "Original owner remains owner; successor becomes a team manager."
-                : "Current manager becomes a member; successor becomes a manager."}</span>
+              {h.status}
+              <span className="ml-2 text-muted-foreground">
+                {h.sourceRemainsOwner
+                  ? "Original owner remains owner; successor becomes a team manager."
+                  : "Current manager becomes a member; successor becomes a manager."}
+              </span>
             </p>
             <p className="text-body">
               Private bot histories, files and licenses stay separate. Existing solves are not
@@ -235,6 +256,7 @@ export function TeamWorkflowsPanel({
               <div className="flex flex-wrap gap-2">
                 {h.sender && h.status === "draft" && (
                   <button
+                    type="button"
                     className="rounded border border-border px-3 py-1.5 text-body"
                     onClick={() => chooseHandover(h, "offer")}
                   >
@@ -243,6 +265,7 @@ export function TeamWorkflowsPanel({
                 )}
                 {!h.sender && h.status === "offered" && (
                   <button
+                    type="button"
                     className="rounded border border-border px-3 py-1.5 text-body"
                     onClick={() => chooseHandover(h, "accept")}
                   >
@@ -250,6 +273,7 @@ export function TeamWorkflowsPanel({
                   </button>
                 )}
                 <button
+                  type="button"
                   className="rounded border border-border px-3 py-1.5 text-body"
                   onClick={() => chooseHandover(h, h.sender ? "cancel" : "decline")}
                 >
@@ -264,7 +288,10 @@ export function TeamWorkflowsPanel({
             <div className="flex flex-wrap items-baseline gap-2">
               <h3 className="break-words text-body font-semibold">{item.name}</h3>
               <span className="text-label text-muted-foreground">
-                {item.status}<span className="ml-2 text-muted-foreground">{item.ready ? "Ready" : "Awaiting consent / review"}</span>
+                {item.status}
+                <span className="ml-2 text-muted-foreground">
+                  {item.ready ? "Ready" : "Awaiting consent / review"}
+                </span>
               </span>
             </div>
             <p className="whitespace-pre-wrap break-words text-body">{item.definition.objective}</p>
@@ -299,6 +326,7 @@ export function TeamWorkflowsPanel({
                   </span>
                   {p.you && (
                     <button
+                      type="button"
                       className="rounded border border-border px-2 py-1 text-label"
                       disabled={busy}
                       onClick={() => choose(item, p.consented ? "revoke" : "consent")}
@@ -333,6 +361,7 @@ export function TeamWorkflowsPanel({
             {item.manager && (
               <div className="flex flex-wrap gap-2">
                 <button
+                  type="button"
                   className="inline-flex items-center gap-2 rounded border border-border px-3 py-1.5 text-body"
                   disabled={busy || Date.parse(item.expiresAt) <= Date.now()}
                   onClick={() => choose(item, "enable")}
@@ -341,6 +370,7 @@ export function TeamWorkflowsPanel({
                   {item.status === "active" ? "Review grant" : "Review and enable"}
                 </button>
                 <button
+                  type="button"
                   className="inline-flex items-center gap-2 rounded border border-border px-3 py-1.5 text-body"
                   disabled={busy || item.status !== "active"}
                   onClick={() => choose(item, "pause")}
@@ -353,13 +383,15 @@ export function TeamWorkflowsPanel({
             {item.executions.map((e) => (
               <details key={e.id} className="text-body">
                 <summary className="break-words">
-                  {new Date(e.createdAt).toLocaleString()}<span className="ml-2 text-muted-foreground">{e.status}</span>
+                  {new Date(e.createdAt).toLocaleString()}
+                  <span className="ml-2 text-muted-foreground">{e.status}</span>
                 </summary>
                 <ul className="mt-2 space-y-3">
                   {e.steps.map((s) => (
                     <li key={s.botId} className="whitespace-pre-wrap break-words">
                       <strong>
-                        {item.participants.find((p) => p.botId === s.botId)?.name}<span className="ml-2 text-muted-foreground">{s.status}</span>
+                        {item.participants.find((p) => p.botId === s.botId)?.name}
+                        <span className="ml-2 text-muted-foreground">{s.status}</span>
                       </strong>
                       <p>{s.text}</p>
                     </li>
@@ -409,6 +441,7 @@ export function TeamWorkflowsPanel({
           </label>
           <div className="flex gap-2">
             <button
+              type="button"
               disabled={busy || !checked || !password}
               className="rounded border border-border px-3 py-2 text-body disabled:opacity-40"
               onClick={() => void confirm()}
@@ -416,6 +449,7 @@ export function TeamWorkflowsPanel({
               Confirm leadership decision
             </button>
             <button
+              type="button"
               disabled={busy}
               className="px-3 py-2 text-body"
               onClick={() => {
@@ -468,6 +502,7 @@ export function TeamWorkflowsPanel({
           </label>
           <div className="flex gap-2">
             <button
+              type="button"
               disabled={busy || !checked || !password}
               className="rounded border border-border px-3 py-2 text-body disabled:opacity-40"
               onClick={() => void confirm()}
@@ -475,6 +510,7 @@ export function TeamWorkflowsPanel({
               Confirm workflow decision
             </button>
             <button
+              type="button"
               disabled={busy}
               className="px-3 py-2 text-body"
               onClick={() => {

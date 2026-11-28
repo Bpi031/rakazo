@@ -1,5 +1,3 @@
-export * from "./checkpoint-workspaces.js";
-export * from "./checkpoints.js";
 export * from "./account/account-deletion.js";
 export * from "./account/account-export.js";
 export * from "./account/account-status.js";
@@ -31,6 +29,8 @@ export * from "./bots/bot-update.js";
 export * from "./bots/memory-config.js";
 export * from "./bots/roster-changes.js";
 export * from "./bots/teaching-recordings.js";
+export * from "./checkpoint-workspaces.js";
+export * from "./checkpoints.js";
 export * from "./computers/computer-runs.js";
 export * from "./computers/computers.js";
 export * from "./database/client.js";

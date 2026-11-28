@@ -5,5 +5,8 @@ export function validateCodexQuestion(event: { type: "ask"; text: string; form?:
   if (!event.form) return { success: true as const, data: event };
   const result = QuestionFormInput.safeParse({ question: event.text, form: event.form });
   if (!result.success) return result;
-  return { success: true as const, data: { ...event, text: result.data.question, form: result.data.form } };
+  return {
+    success: true as const,
+    data: { ...event, text: result.data.question, form: result.data.form },
+  };
 }

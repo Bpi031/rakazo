@@ -39,17 +39,17 @@ import {
   withTransactionRetry,
 } from "@rakazo/db";
 import { bestEffort, getLogger } from "@rakazo/logging";
+import { assertManagedTeamComputer } from "../managed-workspace.js";
 import { resolveAgentHomePath } from "../storage/home.js";
 import { ObjectAgentHomeStore } from "../storage/home-object-store.js";
+import { teamEnabled } from "../teams/team-policy.js";
+import { managerComputerEligible, memberScope, prepareMemberHome } from "../teams/team-storage.js";
 import {
   checkpointComputerWorkspace,
   ensureComputerWorkspaceLayout,
   removeDeletedBotWorkspaces,
   restoreComputerWorkspace,
 } from "./computer-workspace.js";
-import { assertManagedTeamComputer } from "../managed-workspace.js";
-import { teamEnabled } from "../teams/team-policy.js";
-import { managerComputerEligible, memberScope, prepareMemberHome } from "../teams/team-storage.js";
 import { sandboxAllowanceUsedUp } from "./sandbox/sandbox-allowance.js";
 import {
   isSandboxDamagedError,

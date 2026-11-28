@@ -35,7 +35,10 @@ function prismaForMembership(
           if (select.organizationId && !select.spaceId) return { organizationId: "org-first" };
           if (session.member === false && where.organizationId === session.pinned) return null;
           return found
-            ? { spaceId: where.spaceId ?? "space-default", organizationId: where.organizationId ?? "org-first" }
+            ? {
+                spaceId: where.spaceId ?? "space-default",
+                organizationId: where.organizationId ?? "org-first",
+              }
             : null;
         },
       ),
@@ -59,7 +62,9 @@ describe("requireMembership", () => {
   it("rejects inactive members in the requested organization", async () => {
     const db = prismaForMembership(true);
     vi.mocked(db.teamMemberControl.findUnique).mockResolvedValue({ state: "suspended" } as never);
-    await expect(requireMembership(db, user, "space-support")).rejects.toBeInstanceOf(IsolationError);
+    await expect(requireMembership(db, user, "space-support")).rejects.toBeInstanceOf(
+      IsolationError,
+    );
     expect(db.teamMemberControl.findUnique).toHaveBeenCalledWith({
       where: { organizationId_userId: { organizationId: "org-first", userId: user.id } },
       select: { state: true },
@@ -68,7 +73,9 @@ describe("requireMembership", () => {
 
   it("recognizes the configured owner only in the managed runtime", async () => {
     vi.stubEnv("AGENT_RUNTIME", "codex");
-    await expect(requireMembership(prismaForMembership(true), user, "space-support")).resolves.toMatchObject({
+    await expect(
+      requireMembership(prismaForMembership(true), user, "space-support"),
+    ).resolves.toMatchObject({
       isDeploymentOwner: true,
     });
   });

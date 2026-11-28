@@ -1,2 +1,9 @@
-export { clearSpaceSelection, createSpaceRpc, rpc, selectSpace, selectedSpaceId, withSpaceHeaders } from "./query/rpc";
 export type { RpcClient } from "./query/rpc";
+export {
+  clearSpaceSelection,
+  createSpaceRpc,
+  rpc,
+  selectedSpaceId,
+  selectSpace,
+  withSpaceHeaders,
+} from "./query/rpc";

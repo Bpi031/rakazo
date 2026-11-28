@@ -5,9 +5,9 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createDb, createRepos } from "@rakazo/db";
-import { createRunExecutor } from "./runs/executor/executor.js";
-import { createRostJobWatch } from "./rost-job-watch.js";
 import { PriorityService } from "./policy/policy-priorities.js";
+import { createRostJobWatch } from "./rost-job-watch.js";
+import { createRunExecutor } from "./runs/executor/executor.js";
 import { createScheduleFromTool } from "./schedule-tools.js";
 
 if (process.env.ROST_DISPOSABLE_TEAM_DB !== "1" || !process.env.DATABASE_URL)
@@ -68,7 +68,7 @@ try {
   const observation = { binding: "a".repeat(64), deadlineUtc: Date.now() / 1000 + 21600 };
   let reads = 0,
     failedNotifications = 0;
-  const deps: any = {
+  const deps = {
     prisma: db,
     sandbox: {
       async *execute() {
@@ -88,7 +88,7 @@ try {
       close: async () => {},
     },
     events: { append: async () => {}, notify: async () => {} },
-  };
+  } as unknown as Parameters<typeof createRunExecutor>[0];
   const watch = await createRostJobWatch(deps, { ...actor, botId: bot.id }, "case/job", thread.id);
   const readsBeforeInvalid = reads;
   const invalid = await createScheduleFromTool(deps, {
@@ -200,14 +200,14 @@ try {
   await db.run.update({ where: { id: run.id }, data: { userId, status: "completed" } });
   await assert.rejects(priorities.agent(run.id, { operation: "current" }), /running owned/);
   checks++;
-  console.log(
+  process.stdout.write(
     JSON.stringify({
       status: "passed",
       checks,
       model_calls: 0,
       solver_calls: 0,
       disposable_database: true,
-    }),
+    }) + "\n",
   );
 } finally {
   await db.organization.deleteMany({ where: { id: org } });

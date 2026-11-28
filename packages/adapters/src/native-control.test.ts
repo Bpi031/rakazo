@@ -1,120 +1,246 @@
-import { expect, it, vi } from 'vitest';
-import { NativeControl, NativeSessionBusyError } from './native-control.js';
+import type { PrismaClient } from "@rakazo/db";
+import { expect, it, vi } from "vitest";
+import { NativeControl, NativeSessionBusyError } from "./native-control.js";
+
+type ActorFixture = Awaited<ReturnType<NativeControl["actor"]>>;
+type Row = {
+  status: string;
+  payload: {
+    fingerprint: string;
+    threadId?: string;
+    turnId?: string;
+    paused?: boolean;
+    leaseFence?: number;
+  };
+  runId?: string;
+};
+const view = { enabled: true, records: [], policyApprovalGranted: false, solveStarted: false };
 
 function fixture() {
   let generation = 0;
-  let row: any = null;
-  let threadId = 'private-thread';
-  let priorStatus = 'completed';
-  const actor = { userId: 'owner', spaceId: 'space' };
+  let row: Row | null = null;
+  let threadId = "private-thread";
+  let priorStatus = "completed";
+  const actor = { userId: "owner", spaceId: "space" };
   const tx = {
     $executeRaw: vi.fn(async () => 1),
-    thread: { findFirstOrThrow: vi.fn(async () => ({ historyCompactionGeneration: generation })) },
+    thread: {
+      findFirstOrThrow: vi.fn(async () => ({
+        historyCompactionGeneration: generation,
+        activeBranchId: null as string | null,
+        checkpointGeneration: 0,
+        checkpointBlocked: false,
+      })),
+    },
     run: { findUniqueOrThrow: vi.fn(async () => ({ status: priorStatus })) },
     agentWorkbenchRecord: {
       findUnique: vi.fn(async () => row),
-      upsert: vi.fn(async ({ create, update }: any) => { row = row ? { ...row, ...update } : create; return row; }),
+      upsert: vi.fn(async ({ create, update }: { create: Row; update: Partial<Row> }) => {
+        row = row ? { ...row, ...update } : create;
+        return row;
+      }),
     },
   };
-  const service = new NativeControl({ $transaction: async (fn: any) => fn(tx) } as any);
-  vi.spyOn(service, 'actor').mockImplementation(async () => ({ actor, bot: { computer: { scope: 'dedicated' } }, run: { id: 'next', botId: 'bot', threadId, leaseFence: 1 } }) as any);
-  vi.spyOn(service, 'view').mockResolvedValue({ preferences: { mode: 'execute', persistence: true, action: 'none', revision: 0 } } as any);
+  const service = new NativeControl({
+    $transaction: <T>(fn: (db: typeof tx) => Promise<T>) => fn(tx),
+  } as unknown as PrismaClient);
+  vi.spyOn(service, "actor").mockImplementation(
+    async () =>
+      ({
+        actor,
+        bot: { computer: { scope: "dedicated" } },
+        run: { id: "next", botId: "bot", threadId, leaseFence: 1 },
+      }) as unknown as ActorFixture,
+  );
+  vi.spyOn(service, "view").mockResolvedValue({
+    ...view,
+    preferences: { mode: "execute", persistence: true, action: "none", revision: 0 },
+  });
   return {
-    service, tx,
-    complete() { row = { ...row, status: 'completed', payload: { fingerprint: row.payload.fingerprint, threadId: 'native-owned', turnId: 'turn' } }; },
-    clear() { generation++; },
-    changeThread() { threadId = 'different-private-thread'; },
-    prior(status: string) { priorStatus = status; },
-    row() { return structuredClone(row); },
-    pause() { row = { ...row, status: 'needs_review', payload: { ...row.payload, paused: true, leaseFence: 0 } }; },
+    service,
+    tx,
+    complete() {
+      if (!row) throw new Error("Expected session reservation");
+      row = {
+        ...row,
+        status: "completed",
+        payload: { fingerprint: row.payload.fingerprint, threadId: "native-owned", turnId: "turn" },
+      };
+    },
+    clear() {
+      generation++;
+    },
+    changeThread() {
+      threadId = "different-private-thread";
+    },
+    prior(status: string) {
+      priorStatus = status;
+    },
+    row() {
+      return structuredClone(row);
+    },
+    pause() {
+      if (!row) throw new Error("Expected session reservation");
+      row = {
+        ...row,
+        status: "needs_review",
+        payload: { ...row.payload, paused: true, leaseFence: 0 },
+      };
+    },
   };
 }
 
-it('resumes unchanged owned history but not a cleared chat generation', async () => {
+it("resumes unchanged owned history but not a cleared chat generation", async () => {
   const f = fixture();
-  expect((await f.service.prepare('first', 'tools-v1')).previous).toBeNull();
+  expect((await f.service.prepare("first", "tools-v1")).previous).toBeNull();
   f.complete();
-  expect((await f.service.prepare('second', 'tools-v1')).previous?.threadId).toBe('native-owned');
-  f.complete(); f.clear();
-  expect((await f.service.prepare('after-clear', 'tools-v1')).previous).toBeNull();
-  expect(f.tx.thread.findFirstOrThrow).toHaveBeenLastCalledWith({ where: { id: 'private-thread', spaceId: 'space', botId: 'bot' }, select: { historyCompactionGeneration: true,
+  expect((await f.service.prepare("second", "tools-v1")).previous?.threadId).toBe("native-owned");
+  f.complete();
+  f.clear();
+  expect((await f.service.prepare("after-clear", "tools-v1")).previous).toBeNull();
+  expect(f.tx.thread.findFirstOrThrow).toHaveBeenLastCalledWith({
+    where: { id: "private-thread", spaceId: "space", botId: "bot" },
+    select: {
+      historyCompactionGeneration: true,
       activeBranchId: true,
       checkpointGeneration: true,
-      checkpointBlocked: true } });
+      checkpointBlocked: true,
+    },
+  });
 });
 
-it.each(['queued','leased','running','waiting_input','waiting_takeover'])('defers another %s owner without stealing its session', async status => {
+it.each(["queued", "leased", "running", "waiting_input", "waiting_takeover"])(
+  "defers another %s owner without stealing its session",
+  async (status) => {
+    const f = fixture();
+    await f.service.prepare("owner", "tools-v1");
+    f.prior(status);
+    const before = f.row();
+    await expect(f.service.prepare("routine", "tools-v1")).rejects.toBeInstanceOf(
+      NativeSessionBusyError,
+    );
+    expect(f.row()).toEqual(before);
+    f.complete();
+    f.prior("completed");
+    expect((await f.service.prepare("routine", "tools-v1")).previous?.threadId).toBe(
+      "native-owned",
+    );
+  },
+);
+
+it("does not treat a duplicate attempt of the same live run as requeueable contention", async () => {
   const f = fixture();
-  await f.service.prepare('owner', 'tools-v1'); f.prior(status);
+  await f.service.prepare("owner", "tools-v1");
+  f.prior("running");
   const before = f.row();
-  await expect(f.service.prepare('routine', 'tools-v1')).rejects.toBeInstanceOf(NativeSessionBusyError);
-  expect(f.row()).toEqual(before);
-  f.complete(); f.prior('completed');
-  expect((await f.service.prepare('routine', 'tools-v1')).previous?.threadId).toBe('native-owned');
-});
-
-it('does not treat a duplicate attempt of the same live run as requeueable contention', async () => {
-  const f = fixture(); await f.service.prepare('owner', 'tools-v1'); f.prior('running');
-  const before = f.row();
-  await expect(f.service.prepare('owner', 'tools-v1')).rejects.not.toBeInstanceOf(NativeSessionBusyError);
+  await expect(f.service.prepare("owner", "tools-v1")).rejects.not.toBeInstanceOf(
+    NativeSessionBusyError,
+  );
   expect(f.row()).toEqual(before);
 });
 
-it('still permits the same run to resume after an answered pause with a newer fence', async () => {
-  const f = fixture(); await f.service.prepare('owner', 'tools-v1'); f.prior('running'); f.pause();
-  expect((await f.service.prepare('owner', 'tools-v1')).currentRunId).toBe('owner');
-});
-
-it('does not borrow a completed native session from another product thread', async () => {
+it("still permits the same run to resume after an answered pause with a newer fence", async () => {
   const f = fixture();
-  await f.service.prepare('first', 'tools-v1'); f.complete(); f.changeThread();
-  expect((await f.service.prepare('different-thread', 'tools-v1')).previous).toBeNull();
+  await f.service.prepare("owner", "tools-v1");
+  f.prior("running");
+  f.pause();
+  expect((await f.service.prepare("owner", "tools-v1")).currentRunId).toBe("owner");
+});
+
+it("does not borrow a completed native session from another product thread", async () => {
+  const f = fixture();
+  await f.service.prepare("first", "tools-v1");
+  f.complete();
+  f.changeThread();
+  expect((await f.service.prepare("different-thread", "tools-v1")).previous).toBeNull();
 });
 
 it("reconstructs after rollback even when a stale fork preference remains", async () => {
   const f = fixture();
-  await f.service.prepare('first', 'tools-v1');
+  await f.service.prepare("first", "tools-v1");
   f.complete();
   f.tx.thread.findFirstOrThrow.mockResolvedValue({
     historyCompactionGeneration: 1,
     checkpointGeneration: 1,
     activeBranchId: "restored",
     checkpointBlocked: false,
-  } as any);
+  });
   vi.mocked(f.service.view).mockResolvedValue({
+    ...view,
     preferences: { mode: "execute", persistence: true, action: "fork", revision: 1 },
-  } as any);
+  });
   const next = await f.service.prepare("restored", "tools-v1");
   expect(next.previous).toBeNull();
   expect(next.action).toBe("none");
 });
 
 it("keeps native session identities separate for two bots on the same Computer", async () => {
-  const rows = new Map<string, any>();
+  const rows = new Map<string, Row>();
   const tx = {
     $executeRaw: vi.fn(async () => 1),
-    thread: { findFirstOrThrow: vi.fn(async () => ({ historyCompactionGeneration: 0, checkpointGeneration: 0, checkpointBlocked: false })) },
+    thread: {
+      findFirstOrThrow: vi.fn(async () => ({
+        historyCompactionGeneration: 0,
+        checkpointGeneration: 0,
+        checkpointBlocked: false,
+      })),
+    },
     run: { findUniqueOrThrow: vi.fn(async () => ({ status: "completed" })) },
     agentWorkbenchRecord: {
-      findUnique: vi.fn(async ({ where }) => rows.get(where.id) ?? null),
-      upsert: vi.fn(async ({ where, create, update }) => {
-        const row = rows.has(where.id) ? { ...rows.get(where.id), ...update } : create;
-        rows.set(where.id, row); return row;
-      }),
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) => rows.get(where.id) ?? null),
+      upsert: vi.fn(
+        async ({
+          where,
+          create,
+          update,
+        }: {
+          where: { id: string };
+          create: Row;
+          update: Partial<Row>;
+        }) => {
+          const previous = rows.get(where.id);
+          const row = previous ? { ...previous, ...update } : create;
+          rows.set(where.id, row);
+          return row;
+        },
+      ),
     },
   };
-  const service = new NativeControl({ $transaction: async (operation: any) => operation(tx) } as any);
+  const service = new NativeControl({
+    $transaction: <T>(operation: (db: typeof tx) => Promise<T>) => operation(tx),
+  } as unknown as PrismaClient);
   vi.spyOn(service, "actor").mockImplementation(async (runId) => {
     const botId = runId.startsWith("a-") ? "bot-a" : "bot-b";
-    return { actor: { userId: "owner", spaceId: "space" }, bot: { computer: { scope: 'team' } }, run: { id: runId, botId, threadId: `thread:${botId}`, computerId: "shared-computer", leaseFence: 1, checkpointGeneration: 0 } } as any;
+    return {
+      actor: { userId: "owner", spaceId: "space" },
+      bot: { computer: { scope: "team" } },
+      run: {
+        id: runId,
+        botId,
+        threadId: `thread:${botId}`,
+        computerId: "shared-computer",
+        leaseFence: 1,
+        checkpointGeneration: 0,
+      },
+    } as unknown as ActorFixture;
   });
-  vi.spyOn(service, "view").mockResolvedValue({ preferences: { persistence: true, mode: "execute", action: "none", revision: 0 } } as any);
+  vi.spyOn(service, "view").mockResolvedValue({
+    ...view,
+    preferences: { persistence: true, mode: "execute", action: "none", revision: 0 },
+  });
   const first = await service.prepare("a-first", "same-tools");
-  const row = rows.get(first.sessionKey);
-  rows.set(first.sessionKey, { ...row, status: "completed", payload: { fingerprint: first.fingerprint, threadId: "native-a", turnId: "turn-a" } });
+  const row = rows.get(first.sessionKey)!;
+  rows.set(first.sessionKey, {
+    ...row,
+    status: "completed",
+    payload: { fingerprint: first.fingerprint, threadId: "native-a", turnId: "turn-a" },
+  });
   const other = await service.prepare("b-first", "same-tools");
-  expect(first.workspace).toEqual({ cwd: '/home/rakazo/bots/bot-a', roots: ['/home/rakazo/bots/bot-a', '/home/rakazo/shared'] });
-  expect(other.workspace.roots).not.toContain('/home/rakazo/bots/bot-a');
+  expect(first.workspace).toEqual({
+    cwd: "/home/rakazo/bots/bot-a",
+    roots: ["/home/rakazo/bots/bot-a", "/home/rakazo/shared"],
+  });
+  expect(other.workspace.roots).not.toContain("/home/rakazo/bots/bot-a");
   expect(other.sessionKey).not.toBe(first.sessionKey);
   expect(other.previous).toBeNull();
   expect((await service.prepare("a-next", "same-tools")).previous?.threadId).toBe("native-a");

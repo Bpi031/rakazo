@@ -26,11 +26,13 @@ export function QuestionCard({
   const [custom, setCustom] = useState("");
   const [collapsed, setCollapsed] = useState(false);
   const [submitted, setSubmitted] = useState(false);
-  const save = useSave({ save: (answer: string) => onAnswer(answer), onSaved: () => setSubmitted(true) });
+  const save = useSave({
+    save: (answer: string) => onAnswer(answer),
+    onSaved: () => setSubmitted(true),
+  });
   const pending = save.pending;
   const error = save.error ? errorText(save.error, t`Could not submit this answer`) : null;
   const value = selected ?? custom.trim();
-
 
   if (collapsed) {
     return (
@@ -68,9 +70,19 @@ export function QuestionCard({
       </div>
       {detail ? (
         detailFormat === "text" ? (
-          <div data-testid="ask-detail" className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap break-words font-sans text-body-sm text-muted-foreground">{detail}</div>
+          <div
+            data-testid="ask-detail"
+            className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap break-words font-sans text-body-sm text-muted-foreground"
+          >
+            {detail}
+          </div>
         ) : (
-          <pre data-testid="ask-detail" className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap break-words text-body-sm text-muted-foreground">{detail}</pre>
+          <pre
+            data-testid="ask-detail"
+            className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap break-words text-body-sm text-muted-foreground"
+          >
+            {detail}
+          </pre>
         )
       ) : null}
       <form
@@ -81,7 +93,9 @@ export function QuestionCard({
         }}
       >
         <fieldset disabled={pending || submitted} className="min-w-0 space-y-2">
-          <legend className="sr-only"><Trans>Choose an answer</Trans></legend>
+          <legend className="sr-only">
+            <Trans>Choose an answer</Trans>
+          </legend>
           {actions.map((action, index) => {
             const recommended = /\s*\(Recommended\)\s*$/i.test(action.label);
             const label = recommended
@@ -114,7 +128,9 @@ export function QuestionCard({
                     </span>
                   ) : null}
                 </span>
-                {selected === action.id ? <ArrowRight className="size-4 shrink-0" aria-hidden="true" /> : null}
+                {selected === action.id ? (
+                  <ArrowRight className="size-4 shrink-0" aria-hidden="true" />
+                ) : null}
               </label>
             );
           })}
@@ -131,13 +147,28 @@ export function QuestionCard({
             className="mt-3 resize-y"
           />
         </fieldset>
-        {error ? <p role="alert" className="break-words text-body text-destructive">{error}</p> : null}
+        {error ? (
+          <p role="alert" className="break-words text-body text-destructive">
+            {error}
+          </p>
+        ) : null}
         <div className="flex flex-wrap justify-end gap-2">
-          <Button type="button" variant="ghost" disabled={pending || submitted} onClick={() => setCollapsed(true)}>
+          <Button
+            type="button"
+            variant="ghost"
+            disabled={pending || submitted}
+            onClick={() => setCollapsed(true)}
+          >
             <Trans>Answer later</Trans>
           </Button>
           <Button type="submit" disabled={!value || pending || submitted}>
-            {pending ? <Trans>Sending...</Trans> : submitted ? <Trans>Answered</Trans> : <Trans>Continue</Trans>}
+            {pending ? (
+              <Trans>Sending...</Trans>
+            ) : submitted ? (
+              <Trans>Answered</Trans>
+            ) : (
+              <Trans>Continue</Trans>
+            )}
             <ArrowRight className="size-4" aria-hidden="true" />
           </Button>
         </div>

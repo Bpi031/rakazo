@@ -183,13 +183,22 @@ export async function runThreadSubscription(options: {
             let timer: ReturnType<typeof setTimeout> | undefined;
             const next = watchHead
               ? await waitForHeadOrResult(pending, Math.min(idleAt, headCheckAt), attempt.signal)
-              : await untilAborted(Promise.race([
-                  pending,
-                  new Promise<"idle">((resolve) => {
-                    timer = setTimeout(() => resolve("idle"), IDLE_TIMEOUT_MS);
-                  }),
-                ]), attempt.signal).finally(() => clearTimeout(timer));
-            if (isStopped() || generation !== attemptGeneration || next === stopped || next === "idle") break;
+              : await untilAborted(
+                  Promise.race([
+                    pending,
+                    new Promise<"idle">((resolve) => {
+                      timer = setTimeout(() => resolve("idle"), IDLE_TIMEOUT_MS);
+                    }),
+                  ]),
+                  attempt.signal,
+                ).finally(() => clearTimeout(timer));
+            if (
+              isStopped() ||
+              generation !== attemptGeneration ||
+              next === stopped ||
+              next === "idle"
+            )
+              break;
             if (next === checkHead) {
               resumePending = false;
               if (Date.now() >= idleAt) {
@@ -275,11 +284,7 @@ export async function runThreadSubscription(options: {
         commitRecovery();
         if (generation !== attemptGeneration) continue;
         const refreshed = options.currentSnapshot();
-        if (
-          catchUp &&
-          recovery.current.phase === "live" &&
-          refreshed?.threadId === head.threadId
-        ) {
+        if (catchUp && recovery.current.phase === "live" && refreshed?.threadId === head.threadId) {
           cursor = Math.max(cursor, refreshed.cursor);
           effectsCursor = Math.max(effectsCursor, refreshed.cursor);
         }

@@ -88,7 +88,9 @@ describe("catalog gaps", () => {
   });
 
   it("writes every real translation back exactly as Lingui formats it", () => {
-    for (const { name: locale } of readdirSync(LOCALES, { withFileTypes: true }).filter((entry) => entry.isDirectory())) {
+    for (const { name: locale } of readdirSync(LOCALES, { withFileTypes: true }).filter((entry) =>
+      entry.isDirectory(),
+    )) {
       const catalog = readFileSync(join(LOCALES, locale, "messages.po"), "utf8");
       const blanked = catalog
         .split("\n\n")

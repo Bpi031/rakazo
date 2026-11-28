@@ -1,6 +1,7 @@
-import type { ModelCatalogEntry } from "@rakazo/contracts";
-import type { Hono } from "hono";
 import { managedEffort, managedReasoning } from "@rakazo/adapters";
+import type { ModelCatalogEntry } from "@rakazo/contracts";
+import { hasAsciiControl } from "@rakazo/contracts/managed-text";
+import type { Hono } from "hono";
 
 export const MANAGED_PROVIDER = "codex-foundry";
 
@@ -24,7 +25,7 @@ export function managedCatalog(env: NodeJS.ProcessEnv = process.env): ModelCatal
         typeof value !== "string" ||
         !value.trim() ||
         value.length > 100 ||
-        /[\x00-\x1f\x7f]/.test(value),
+        hasAsciiControl(value, { includeDelete: true }),
     )
   )
     throw new Error("Invalid operator model labels");

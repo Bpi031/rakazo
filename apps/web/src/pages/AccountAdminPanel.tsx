@@ -1,12 +1,21 @@
-import { useEffect, useState } from "react";
 import type { AccountAdminView } from "@rakazo/contracts";
 import { accountAdminViewSchema } from "@rakazo/contracts";
-import { Button, Dialog, DialogContent, DialogTitle, Input, Label, OptionSelect, Switch } from "@rakazo/ui-web";
+import {
+  Button,
+  Dialog,
+  DialogContent,
+  DialogTitle,
+  Input,
+  Label,
+  OptionSelect,
+  Switch,
+} from "@rakazo/ui-web";
 import { Check, MailPlus, RefreshCw, Save, ShieldCheck, X } from "lucide-react";
-import { accountAdminApi } from "./account-admin-api";
+import { useEffect, useId, useState } from "react";
 import type { SaveScope } from "../lib/query/query";
-import { useManagedOperation } from "../lib/query/use-managed-operation";
 import { useBoundSpaceId } from "../lib/query/space-rpc";
+import { useManagedOperation } from "../lib/query/use-managed-operation";
+import { accountAdminApi } from "./account-admin-api";
 
 type Review = {
   id: string;
@@ -21,6 +30,8 @@ const icon =
   "inline-flex size-8 shrink-0 items-center justify-center rounded-md hover:bg-accent disabled:opacity-40";
 
 export function AccountAdminPanel() {
+  const confirmationId = useId();
+  const passwordId = useId();
   const [view, setView] = useState<AccountAdminView | null>(null);
   const [enabled, setEnabled] = useState(false);
   const [admission, setAdmission] = useState("selected");
@@ -40,7 +51,9 @@ export function AccountAdminPanel() {
   const activeSpaceId = useBoundSpaceId();
 
   async function load(signal?: AbortSignal, spaceId = activeSpaceId, isCurrent = () => true) {
-    const next = accountAdminViewSchema.parse(await accountAdminApi("view", undefined, signal, spaceId));
+    const next = accountAdminViewSchema.parse(
+      await accountAdminApi("view", undefined, signal, spaceId),
+    );
     if (signal?.aborted || !isCurrent()) return;
     setView(next);
     if (next.registration) {
@@ -61,9 +74,11 @@ export function AccountAdminPanel() {
       setError("");
       setNotice("");
       setPassword("");
-      try { await action(scope); }
-      catch (error) {
-        if (scope.isCurrent()) setError(error instanceof Error ? error.message : "Account operation failed.");
+      try {
+        await action(scope);
+      } catch (error) {
+        if (scope.isCurrent())
+          setError(error instanceof Error ? error.message : "Account operation failed.");
       }
     });
   }
@@ -80,7 +95,8 @@ export function AccountAdminPanel() {
     const name = view?.members.find((member) => member.userId === action.userId)?.name ?? "Member";
     if (action.kind === "member_role") return `${name}: role → ${action.role}`;
     if (action.kind === "member_state") return `${name}: account → ${action.state}`;
-    if (action.kind === "invite") return `Invite ${action.email} as ${action.role === "admin" ? "Manager" : "Member"}?`;
+    if (action.kind === "invite")
+      return `Invite ${action.email} as ${action.role === "admin" ? "Manager" : "Member"}?`;
     return `Revoke invitation ${view?.invitations.find((invite) => invite.id === action.inviteId)?.email ?? ""}`;
   }
   const memberInvite = review?.action.kind === "invite" && review.action.role === "member";
@@ -242,12 +258,18 @@ export function AccountAdminPanel() {
                         </td>
                         <td className="py-3 pr-4">
                           {member.role.split(",").some((role) => role.trim() === "owner") ? (
-                            <span>Owner <span className="text-muted-foreground">Protected</span></span>
+                            <span>
+                              Owner <span className="text-muted-foreground">Protected</span>
+                            </span>
                           ) : (
                             <OptionSelect
                               className={control}
                               aria-label={"Role for " + member.name}
-                              value={member.role.split(",").some((role) => role.trim() === "admin") ? "admin" : "member"}
+                              value={
+                                member.role.split(",").some((role) => role.trim() === "admin")
+                                  ? "admin"
+                                  : "member"
+                              }
                               disabled={busy || member.protected || !view.canAssignRoles}
                               onValueChange={(role) =>
                                 void propose({
@@ -256,7 +278,10 @@ export function AccountAdminPanel() {
                                   role,
                                 })
                               }
-                              options={[{ value: "member", label: "Member" }, { value: "admin", label: "Manager" }]}
+                              options={[
+                                { value: "member", label: "Member" },
+                                { value: "admin", label: "Manager" },
+                              ]}
                             />
                           )}
                         </td>
@@ -273,7 +298,9 @@ export function AccountAdminPanel() {
                                 state,
                               })
                             }
-                            options={["active", "suspended", "archived", "removed"].map((value) => ({ value, label: value }))}
+                            options={["active", "suspended", "archived", "removed"].map(
+                              (value) => ({ value, label: value }),
+                            )}
                           />
                         </td>
                       </tr>
@@ -336,6 +363,7 @@ export function AccountAdminPanel() {
                 <div className="flex items-center justify-between">
                   <Label htmlFor="private-invite-token">Private invitation token</Label>
                   <button
+                    type="button"
                     className={icon}
                     title="Dismiss invitation token"
                     aria-label="Dismiss invitation token"
@@ -362,14 +390,17 @@ export function AccountAdminPanel() {
                     <p className="break-all">{invite.email}</p>
                     <p className="text-label text-muted-foreground">
                       {invite.role}
-                      <span className="ml-2">{invite.status === "pending" && Date.parse(invite.expiresAt) <= Date.now()
-                        ? "expired"
-                        : invite.status}</span>
+                      <span className="ml-2">
+                        {invite.status === "pending" && Date.parse(invite.expiresAt) <= Date.now()
+                          ? "expired"
+                          : invite.status}
+                      </span>
                       <span className="ml-2">{new Date(invite.expiresAt).toLocaleString()}</span>
                     </p>
                   </div>
                   {invite.status === "pending" && (
                     <button
+                      type="button"
                       className={icon}
                       title="Review invitation revocation"
                       aria-label={"Revoke invitation for " + invite.email}
@@ -392,6 +423,7 @@ export function AccountAdminPanel() {
                   <div key={item.id} className="flex items-center justify-between gap-3 text-body">
                     <span>{description(item.action)}</span>
                     <button
+                      type="button"
                       className={icon}
                       title="Review account action"
                       aria-label="Review account action"
@@ -421,7 +453,9 @@ export function AccountAdminPanel() {
             aria-describedby={undefined}
             className="max-h-[90vh] max-w-lg overflow-auto rounded-lg p-5"
           >
-            <DialogTitle>{memberInvite ? "Review invitation" : "Review account changes"}</DialogTitle>
+            <DialogTitle>
+              {memberInvite ? "Review invitation" : "Review account changes"}
+            </DialogTitle>
             <p className="break-words text-body">
               {registrationReview
                 ? `Public registration: ${registrationReview.enabled ? "Open" : "Closed"}. Admission: ${registrationReview.allowlist.length ? registrationReview.allowlist.join(", ") : "Anyone"}. Existing accounts remain unchanged.`
@@ -443,9 +477,10 @@ export function AccountAdminPanel() {
               </pre>
             </details>
             {!memberInvite && (
-              <label className="block space-y-1 text-body">
+              <label htmlFor={confirmationId} className="block space-y-1 text-body">
                 <span>Confirmation</span>
                 <Input
+                  id={confirmationId}
                   aria-label="Account confirmation phrase"
                   placeholder={confirmation}
                   value={phrase}
@@ -454,9 +489,10 @@ export function AccountAdminPanel() {
                 />
               </label>
             )}
-            <label className="block space-y-1 text-body">
+            <label htmlFor={passwordId} className="block space-y-1 text-body">
               <span>Your password</span>
               <Input
+                id={passwordId}
                 aria-label="Admin account password"
                 type="password"
                 autoComplete="current-password"
@@ -474,17 +510,27 @@ export function AccountAdminPanel() {
                 onClick={() =>
                   work(async (scope) => {
                     const result = registrationReview
-                      ? await accountAdminApi("registration", {
-                          ...registrationReview,
-                          phrase,
-                          password,
-                        }, undefined, scope.spaceId)
-                      : await accountAdminApi<{ enrollmentToken?: string }>("confirm", {
-                          id: review!.id,
-                          digest: review!.digest,
-                          phrase: memberInvite ? confirmation : phrase,
-                          password,
-                        }, undefined, scope.spaceId);
+                      ? await accountAdminApi(
+                          "registration",
+                          {
+                            ...registrationReview,
+                            phrase,
+                            password,
+                          },
+                          undefined,
+                          scope.spaceId,
+                        )
+                      : await accountAdminApi<{ enrollmentToken?: string }>(
+                          "confirm",
+                          {
+                            id: review!.id,
+                            digest: review!.digest,
+                            phrase: memberInvite ? confirmation : phrase,
+                            password,
+                          },
+                          undefined,
+                          scope.spaceId,
+                        );
                     if (!scope.isCurrent()) return;
                     if (
                       result &&
@@ -495,8 +541,12 @@ export function AccountAdminPanel() {
                       setToken(result.enrollmentToken);
                     closeReview();
                     setNotice(memberInvite ? "Invitation created." : "Account settings saved.");
-                    try { await load(undefined, scope.spaceId, scope.isCurrent); }
-                    catch { if (scope.isCurrent()) setError("Account change recorded. Refresh to load current settings."); }
+                    try {
+                      await load(undefined, scope.spaceId, scope.isCurrent);
+                    } catch {
+                      if (scope.isCurrent())
+                        setError("Account change recorded. Refresh to load current settings.");
+                    }
                   })
                 }
               >

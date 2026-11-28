@@ -94,11 +94,16 @@ it("retries a failed deployment lookup", async () => {
   expect(fetch).toHaveBeenCalledTimes(2);
 });
 it("refreshes mutable registration capabilities after the short cache window", async () => {
-  const fetch = vi.fn(async () => Response.json({ ...capability, sso: null, registrationEnabled: false }));
-  vi.stubGlobal("fetch", fetch); vi.useFakeTimers();
+  const fetch = vi.fn(async () =>
+    Response.json({ ...capability, sso: null, registrationEnabled: false }),
+  );
+  vi.stubGlobal("fetch", fetch);
+  vi.useFakeTimers();
   await fetchAuthCapabilities();
   await vi.advanceTimersByTimeAsync(5001);
-  fetch.mockImplementation(async () => Response.json({ ...capability, sso: null, registrationEnabled: true }));
+  fetch.mockImplementation(async () =>
+    Response.json({ ...capability, sso: null, registrationEnabled: true }),
+  );
   expect((await fetchAuthCapabilities()).registrationEnabled).toBe(true);
   expect(fetch).toHaveBeenCalledTimes(2);
 });

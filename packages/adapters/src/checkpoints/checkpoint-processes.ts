@@ -81,7 +81,7 @@ print('checkpoint-writers-stopped')
 `;
 
 export async function assertCheckpointWritersIdle(
-  sandbox: SandboxProvider,
+  sandbox: Pick<SandboxProvider, "execute">,
   computer: ComputerRef,
   context: AdapterContext,
   scope: ComputerMode = "dedicated",
@@ -112,7 +112,7 @@ export async function assertCheckpointWritersIdle(
 }
 
 export async function stopCheckpointWriters(
-  sandbox: SandboxProvider,
+  sandbox: Pick<SandboxProvider, "execute">,
   computer: ComputerRef,
   context: AdapterContext,
   scope: ComputerMode = "dedicated",

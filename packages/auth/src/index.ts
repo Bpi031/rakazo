@@ -150,15 +150,29 @@ export async function resolveSignupPolicy(
     where: { id: "default" },
     select: { signupsEnabled: true, signupAllowlist: true, signupPolicyInitialized: true },
   });
-  const policy = settings?.signupPolicyInitialized ? {
-      enabled: settings.signupsEnabled,
-      allowlist: parseAllowlist(settings.signupAllowlist),
-    } : signupPolicyFromEnv(env);
-  if ((process.env.TEAM_MANAGEMENT_ENABLED === "1" || process.env.TEAM_MESSAGING_ENABLED === "1" || process.env.AGENT_RUNTIME === "codex")
-      && prisma.teamInvite && policy.enabled && policy.allowlist.length > 0) {
-    const invites = await prisma.teamInvite.findMany({ where: { OR: [{ status: "pending", expiresAt: { gt: new Date() } }, { status: "accepted" }] }, select: { email: true }, take: 1001 });
+  const policy = settings?.signupPolicyInitialized
+    ? {
+        enabled: settings.signupsEnabled,
+        allowlist: parseAllowlist(settings.signupAllowlist),
+      }
+    : signupPolicyFromEnv(env);
+  if (
+    (process.env.TEAM_MANAGEMENT_ENABLED === "1" ||
+      process.env.TEAM_MESSAGING_ENABLED === "1" ||
+      process.env.AGENT_RUNTIME === "codex") &&
+    prisma.teamInvite &&
+    policy.enabled &&
+    policy.allowlist.length > 0
+  ) {
+    const invites = await prisma.teamInvite.findMany({
+      where: { OR: [{ status: "pending", expiresAt: { gt: new Date() } }, { status: "accepted" }] },
+      select: { email: true },
+      take: 1001,
+    });
     if (invites.length > 1000) throw new Error("Invitation admission capacity exceeded");
-    policy.allowlist = [...new Set([...policy.allowlist, ...invites.map((invite) => invite.email)])];
+    policy.allowlist = [
+      ...new Set([...policy.allowlist, ...invites.map((invite) => invite.email)]),
+    ];
   }
   return policy;
 }

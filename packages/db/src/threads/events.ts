@@ -26,6 +26,7 @@ import {
   publishRosterChange,
 } from "../bots/roster-changes.js";
 import { draftRecordingsOfLease } from "../bots/teaching-recordings.js";
+import { CheckpointConflictError } from "../checkpoints.js";
 import { expireComputerExecutionLeases } from "../computers/computers.js";
 import type { PrismaClient } from "../database/client.js";
 import { Prisma } from "../database/client.js";
@@ -61,7 +62,6 @@ import {
 } from "./event-stream.js";
 import { readMessageBlocks } from "./message-blocks.js";
 import type { RunLease } from "./messages.js";
-import { CheckpointConflictError } from "../checkpoints.js";
 import {
   assertRunCanWriteHistory,
   assertRunIsCancelled,
@@ -321,8 +321,13 @@ export async function clearThread(
       },
       // Takes the thread's row lock, as every message writer does; nothing in it changes.
       data: { nextMessageSeq: { increment: 0 } },
-      select: { nextMessageSeq: true, historyCompactionGeneration: true, userId: true,
-        activeBranchId: true, checkpointBlocked: true },
+      select: {
+        nextMessageSeq: true,
+        historyCompactionGeneration: true,
+        userId: true,
+        activeBranchId: true,
+        checkpointBlocked: true,
+      },
     });
     if (thread.checkpointBlocked) throw new CheckpointConflictError();
     await clearThreadReads(tx, input.threadId);
@@ -358,7 +363,9 @@ export async function clearThread(
     });
     const helperThreadIds = helperThreads.map((thread) => thread.id);
     const cleared = {
-      threadId: { in: thread.activeBranchId ? helperThreadIds : [input.threadId, ...helperThreadIds] },
+      threadId: {
+        in: thread.activeBranchId ? helperThreadIds : [input.threadId, ...helperThreadIds],
+      },
     };
     // A reply's kept screenshots belong to its messages, so they go with them.
     const clearedRuns = await tx.message.findMany({

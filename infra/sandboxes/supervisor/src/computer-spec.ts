@@ -690,7 +690,10 @@ export type SandboxInput =
 
 export function containerCreateOptions(input: ComputerCreateInput) {
   const license = process.env.ROST_GUROBI_LICENSE_HOST;
-  if (license && (!license.startsWith("/") || license.includes("\n") || license.split("/").includes("..")))
+  if (
+    license &&
+    (!license.startsWith("/") || license.includes("\n") || license.split("/").includes(".."))
+  )
     throw new Error("Gurobi license mount must use an absolute operator path");
   const ports = computerPortBindings(input.publishControlPort);
   const extraMounts = (input.mounts ?? []).map(computerMountSettings);
@@ -705,8 +708,9 @@ export function containerCreateOptions(input: ComputerCreateInput) {
       "HOME=/home/rakazo",
       process.env.CODEX_DEPLOYMENTS && input.role !== "member"
         ? "PATH=/opt/office-python/bin:/opt/rost/bin:/opt/gurobi/bin:/opt/codex/bin:/home/rakazo/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-        : process.env.CODEX_DEPLOYMENTS ? "PATH=/opt/office-python/bin:/opt/codex/bin:/home/rakazo/.local/bin:/usr/local/bin:/usr/bin:/bin"
-        : "PATH=/home/rakazo/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        : process.env.CODEX_DEPLOYMENTS
+          ? "PATH=/opt/office-python/bin:/opt/codex/bin:/home/rakazo/.local/bin:/usr/local/bin:/usr/bin:/bin"
+          : "PATH=/home/rakazo/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
       `TEAM_COMPUTER_ROLE=${input.role ?? "manager"}`,
       "NPM_CONFIG_PREFIX=/home/rakazo/.local",
       "PIP_USER=1",
@@ -747,23 +751,45 @@ export function containerCreateOptions(input: ComputerCreateInput) {
             Mounts: extraMounts.length ? extraMounts : undefined,
           }),
       PortBindings: ports.PortBindings,
-      ...(process.env.ROST_GUROBI_LICENSE_HOST && input.role !== "member" ? {
-        Mounts: [
-          ...(input.homeVolume ? [{ Type: "volume" as const, Source: input.homeVolume.name,
-            Target: "/home/rakazo", VolumeOptions: { NoCopy: true, Subpath: input.homeVolume.subpath } as Docker.MountSettings["VolumeOptions"] }] : []),
-          { Type: "bind" as const, Source: process.env.ROST_GUROBI_LICENSE_HOST,
-            Target: "/run/rost-license/gurobi.lic", ReadOnly: true },
-        ],
-      } : {}),
+      ...(process.env.ROST_GUROBI_LICENSE_HOST && input.role !== "member"
+        ? {
+            Mounts: [
+              ...(input.homeVolume
+                ? [
+                    {
+                      Type: "volume" as const,
+                      Source: input.homeVolume.name,
+                      Target: "/home/rakazo",
+                      VolumeOptions: {
+                        NoCopy: true,
+                        Subpath: input.homeVolume.subpath,
+                      } as Docker.MountSettings["VolumeOptions"],
+                    },
+                  ]
+                : []),
+              {
+                Type: "bind" as const,
+                Source: process.env.ROST_GUROBI_LICENSE_HOST,
+                Target: "/run/rost-license/gurobi.lic",
+                ReadOnly: true,
+              },
+            ],
+          }
+        : {}),
       ShmSize: 256 * 1024 * 1024,
       CapDrop: ["ALL"],
       SecurityOpt: ["no-new-privileges:true"],
       ...computerResourceLimits(),
       ReadonlyPaths: ["/usr/share/novnc"],
-      ...(process.env.TEAM_MANAGEMENT_ENABLED === "1" ? {
-        ReadonlyRootfs: true,
-        Tmpfs: { "/tmp": "rw,nosuid,nodev,size=1g,mode=1777", "/var/tmp": "rw,nosuid,nodev,size=64m,mode=1777" },
-      } : {}),
+      ...(process.env.TEAM_MANAGEMENT_ENABLED === "1"
+        ? {
+            ReadonlyRootfs: true,
+            Tmpfs: {
+              "/tmp": "rw,nosuid,nodev,size=1g,mode=1777",
+              "/var/tmp": "rw,nosuid,nodev,size=64m,mode=1777",
+            },
+          }
+        : {}),
       AutoRemove: false,
       NetworkMode: input.networkMode ?? "bridge",
       ...(input.dns ? { Dns: input.dns } : {}),

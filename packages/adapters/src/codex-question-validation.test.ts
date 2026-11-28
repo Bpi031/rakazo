@@ -1,16 +1,23 @@
-import { describe, expect, it, vi } from "vitest";
-import type { AgentRunRequest } from "@rakazo/adapter-kit";
-import { QuestionForm, QuestionFormInput, formTools } from "@rakazo/contracts";
-import { CodexProtocolRuntime } from "./codex-protocol.mjs";
+import type { AgentRunRequest, AgentRuntimeEvent, RuntimeSession } from "@rakazo/adapter-kit";
+import { formTools, QuestionForm, QuestionFormInput } from "@rakazo/contracts";
 import { normalizeRunError } from "@rakazo/core";
+import { describe, expect, it, vi } from "vitest";
+import { z } from "zod";
+import { CodexProtocolRuntime } from "./codex-protocol.mjs";
 import { validateCodexQuestion } from "./codex-question-validation.js";
-import { NativeSessionBusyError } from './native-control.js';
+import { NativeSessionBusyError } from "./native-control.js";
 
-const valid = () => ({ question: "Review these decisions", form: { schema: "rakazo/question-form/v1", fields: [
-  { id: "first", label: "First decision", type: "choice", options: ["Keep", "Change"] },
-  { id: "second", label: "Second decision", type: "text" },
-  { id: "third", label: "Third decision", type: "number", min: 0, max: 2 },
-] satisfies [unknown, unknown, unknown] } });
+const valid = () => ({
+  question: "Review these decisions",
+  form: {
+    schema: "rakazo/question-form/v1",
+    fields: [
+      { id: "first", label: "First decision", type: "choice", options: ["Keep", "Change"] },
+      { id: "second", label: "Second decision", type: "text" },
+      { id: "third", label: "Third decision", type: "number", min: 0, max: 2 },
+    ] satisfies [unknown, unknown, unknown],
+  },
+});
 const tooLong = () => {
   const args = valid();
   args.form.fields[1].label = "PRIVATE-SOURCE-".repeat(20);
@@ -18,50 +25,146 @@ const tooLong = () => {
   return args;
 };
 
-function scenario(calls: any[], validator: typeof validateCodexQuestion | null = validateCodexQuestion, replyError?: unknown) {
-  const sent: any[] = [], queue: any[] = [], finished: any[] = [], writes: any[] = [];
+type PlainQuestion = ReturnType<typeof valid>;
+const protocolReply = z.object({
+  success: z.boolean(),
+  contentItems: z.array(z.object({ text: z.string() })),
+});
+const questionNotice = z.object({
+  code: z.string(),
+  issues: z.array(z.object({ path: z.array(z.union([z.string(), z.number()])) })),
+});
+
+function scenario(
+  calls: (PlainQuestion | { native: unknown[] })[],
+  validator: typeof validateCodexQuestion | null = validateCodexQuestion,
+  replyError?: unknown,
+) {
+  const sent: Record<string, unknown>[] = [];
+  const queue: Record<string, unknown>[] = [];
+  const finished: { completed?: boolean; paused?: boolean }[] = [];
+  const writes: Extract<AgentRuntimeEvent, { type: "usage" }>[] = [];
   let closed = 0;
-  const session = {
-    close: async () => { closed++; },
-    send: async (m: any) => {
+  const session: RuntimeSession = {
+    close: async () => {
+      closed++;
+    },
+    send: async (m) => {
       sent.push(m);
-      if (!m.method) { expect(closed).toBe(0); return; }
-      let result: any = {};
-      if (m.method === "model/list") result = { data: [{ id: "fixture", inputModalities: ["text"] }] };
+      if (!m.method) {
+        expect(closed).toBe(0);
+        return;
+      }
+      let result: Record<string, unknown> = {};
+      if (m.method === "model/list")
+        result = { data: [{ id: "fixture", inputModalities: ["text"] }] };
       if (m.method === "skills/list") result = { data: [{ skills: [] }] };
       if (m.method === "configRequirements/read") result = { requirements: null };
       if (m.method === "thread/start") result = { thread: { id: "t" } };
       if (m.method === "turn/start") result = { turn: { id: "v" } };
       queue.push({ id: m.id, result });
-      if (m.method === "turn/start") queue.push(
-        { method: "thread/tokenUsage/updated", params: { threadId: "t", turnId: "v", tokenUsage: { total: { inputTokens: 200, cachedInputTokens: 50, outputTokens: 30, totalTokens: 230 } } } },
-        ...calls.map((call, i) => ({ id: 100 + i, method: call.native ? "item/tool/requestUserInput" : "item/tool/call", params: { threadId: "t", turnId: "v", callId: `q${i}`, tool: "rakazo__ask_form", ...(call.native ? { questions: call.native } : { arguments: call }) } })),
-        ...(replyError ? [{ method: "turn/completed", params: {
-          threadId: "t", turn: { id: "v", status: "failed", error: replyError },
-        } }] : []),
-      );
+      if (m.method === "turn/start")
+        queue.push(
+          {
+            method: "thread/tokenUsage/updated",
+            params: {
+              threadId: "t",
+              turnId: "v",
+              tokenUsage: {
+                total: {
+                  inputTokens: 200,
+                  cachedInputTokens: 50,
+                  outputTokens: 30,
+                  totalTokens: 230,
+                },
+              },
+            },
+          },
+          ...calls.map((call, i) => ({
+            id: 100 + i,
+            method: "native" in call ? "item/tool/requestUserInput" : "item/tool/call",
+            params: {
+              threadId: "t",
+              turnId: "v",
+              callId: `q${i}`,
+              tool: "rakazo__ask_form",
+              ...("native" in call ? { questions: call.native } : { arguments: call }),
+            },
+          })),
+          ...(replyError
+            ? [
+                {
+                  method: "turn/completed",
+                  params: {
+                    threadId: "t",
+                    turn: { id: "v", status: "failed", error: replyError },
+                  },
+                },
+              ]
+            : []),
+        );
     },
-    messages: { async *[Symbol.asyncIterator]() { for (let i = 0; i < 100 && queue.length; i++) yield queue.shift(); } },
+    messages: {
+      async *[Symbol.asyncIterator]() {
+        for (let i = 0; i < 100 && queue.length; i++) yield queue.shift()!;
+      },
+    },
   };
   const request = {
-    runId: "r", botId: "b", threadId: "host", model: { id: "fixture", provider: "codex-foundry" }, history: [], prompt: "Ask for a decision", instructions: "", tools: formTools,
+    runId: "r",
+    botId: "b",
+    threadId: "host",
+    model: { id: "fixture", provider: "codex-foundry" },
+    history: [],
+    prompt: "Ask for a decision",
+    instructions: "",
+    tools: formTools,
     openRuntimeSession: async () => session,
-    executeTool: async () => { throw new Error("No effects may be executed"); },
-    onUsage: async (event: any) => { writes.push(event); },
+    executeTool: async () => {
+      throw new Error("No effects may be executed");
+    },
+    onUsage: async (event: Extract<AgentRuntimeEvent, { type: "usage" }>) => {
+      writes.push(event);
+    },
     nativeControl: {
       mode: "execute",
-      prepare: async () => ({ mode: "execute", action: "none", sessionKey: "a".repeat(64), previous: null, persistent: true }),
+      prepare: async () => ({
+        mode: "execute",
+        action: "none",
+        sessionKey: "a".repeat(64),
+        previous: null,
+        persistent: true,
+      }),
       observe: async () => {},
-      finish: async (v: any) => { finished.push(v); },
-      receipt: async () => { throw new Error("No receipts expected"); },
-      tool: async () => { throw new Error("No native tools expected"); },
+      finish: async (v: { completed?: boolean; paused?: boolean }) => {
+        finished.push(v);
+      },
+      receipt: async () => {
+        throw new Error("No receipts expected");
+      },
+      tool: async () => {
+        throw new Error("No native tools expected");
+      },
     },
   } satisfies AgentRunRequest;
-  const runtime = new CodexProtocolRuntime({ baseUrl: "https://provider.test", models: ["fixture"], key: "x".repeat(64), validateQuestion: validator ?? undefined });
-  const events: any[] = [];
+  const runtime = new CodexProtocolRuntime({
+    baseUrl: "https://provider.test",
+    models: ["fixture"],
+    key: "x".repeat(64),
+    validateQuestion: validator ?? undefined,
+  });
+  const events: AgentRuntimeEvent[] = [];
   const run = async () => {
-    for await (const e of runtime.run(request, { spaceId: "s", userId: "u", botId: "b", runId: "r" })) {
-      if (e.type === "ask") { expect(closed).toBe(1); expect(writes).toHaveLength(1); }
+    for await (const e of runtime.run(request, {
+      spaceId: "s",
+      userId: "u",
+      botId: "b",
+      runId: "r",
+    })) {
+      if (e.type === "ask") {
+        expect(closed).toBe(1);
+        expect(writes).toHaveLength(1);
+      }
       events.push(e);
     }
   };
@@ -70,33 +173,58 @@ function scenario(calls: any[], validator: typeof validateCodexQuestion | null =
 
 describe("model reply failures", () => {
   it.each([
-    ["INFERENCE_OUTPUT_LIMIT", "ROST_MODEL_OUTPUT_LIMIT", "The model reached its output limit before finishing."],
-    ["INFERENCE_RESPONSE_FILTERED", "ROST_MODEL_RESPONSE_FILTERED", "The model service did not deliver a complete reply."],
-    ["INFERENCE_RESPONSE_INVALID", "ROST_MODEL_RESPONSE_INVALID", "The model service returned a reply Rost could not use."],
-  ])("maps %s without rerunning the Codex turn or leaking provider text", async (upstream, code, summary) => {
-    const f = scenario([], null, {
-      message: "Model request failed",
-      additionalDetails: JSON.stringify({ error: { code: upstream, message: "PRIVATE RESPONSE" } }),
-    });
-    let received: Error | undefined;
-    try { await f.run(); } catch (error) { if (error instanceof Error) received = error; }
-    expect(received?.message).toMatch(new RegExp(`^${code}:`));
-    expect(normalizeRunError(received!.message)).toMatchObject({ summary });
-    expect(received!.message).not.toContain("PRIVATE RESPONSE");
-    expect(f.sent.filter(event => event.method === "turn/start")).toHaveLength(1);
-    expect(f.events.some(event => event.type === "done" || event.type === "tool")).toBe(false);
-    expect(f.finished).toEqual([expect.objectContaining({ completed: false })]);
-  });
+    [
+      "INFERENCE_OUTPUT_LIMIT",
+      "ROST_MODEL_OUTPUT_LIMIT",
+      "The model reached its output limit before finishing.",
+    ],
+    [
+      "INFERENCE_RESPONSE_FILTERED",
+      "ROST_MODEL_RESPONSE_FILTERED",
+      "The model service did not deliver a complete reply.",
+    ],
+    [
+      "INFERENCE_RESPONSE_INVALID",
+      "ROST_MODEL_RESPONSE_INVALID",
+      "The model service returned a reply Rost could not use.",
+    ],
+  ])(
+    "maps %s without rerunning the Codex turn or leaking provider text",
+    async (upstream, code, summary) => {
+      const f = scenario([], null, {
+        message: "Model request failed",
+        additionalDetails: JSON.stringify({
+          error: { code: upstream, message: "PRIVATE RESPONSE" },
+        }),
+      });
+      let received: Error | undefined;
+      try {
+        await f.run();
+      } catch (error) {
+        if (error instanceof Error) received = error;
+      }
+      expect(received?.message).toMatch(new RegExp(`^${code}:`));
+      expect(normalizeRunError(received!.message)).toMatchObject({ summary });
+      expect(received!.message).not.toContain("PRIVATE RESPONSE");
+      expect(f.sent.filter((event) => event.method === "turn/start")).toHaveLength(1);
+      expect(f.events.some((event) => event.type === "done" || event.type === "tool")).toBe(false);
+      expect(f.finished).toEqual([expect.objectContaining({ completed: false })]);
+    },
+  );
 });
 
 describe("question preflight", () => {
-  it('opens no model session and emits no usage or tool calls when ownership is busy', async () => {
+  it("opens no model session and emits no usage or tool calls when ownership is busy", async () => {
     const f = scenario([]);
-    f.request.nativeControl.prepare = async () => { throw new NativeSessionBusyError(); };
-    const open = vi.spyOn(f.request, 'openRuntimeSession');
+    f.request.nativeControl.prepare = async () => {
+      throw new NativeSessionBusyError();
+    };
+    const open = vi.spyOn(f.request, "openRuntimeSession");
     await expect(f.run()).rejects.toBeInstanceOf(NativeSessionBusyError);
     expect(open).not.toHaveBeenCalled();
-    expect(f.sent).toEqual([]); expect(f.events).toEqual([]); expect(f.writes).toEqual([]);
+    expect(f.sent).toEqual([]);
+    expect(f.events).toEqual([]);
+    expect(f.writes).toEqual([]);
     expect(f.finished).toEqual([]);
   });
   it("uses the same 200-character contract advertised to the model without truncation", () => {
@@ -111,66 +239,96 @@ describe("question preflight", () => {
   });
 
   it.each([
-    (x: any) => { x.form.fields[1].id = "first"; },
-    (x: any) => { x.form.fields[0].options = ["Keep", "Keep"]; },
-    (x: any) => { x.form.fields[0].options = ["", "Change"]; },
-    (x: any) => { x.form.fields[2].min = 3; },
-    (x: any) => { x.form.fields[1].type = "password"; },
-    (x: any) => { x.form.fields[1].label = "bad\u0000text"; },
-  ])("rejects invalid form meaning through the canonical schema", mutate => {
-    const args = valid(); mutate(args);
-    expect(validateCodexQuestion({ type: "ask", text: args.question, form: args.form }).success).toBe(false);
+    (x: PlainQuestion) => {
+      x.form.fields[1].id = "first";
+    },
+    (x: PlainQuestion) => {
+      x.form.fields[0].options = ["Keep", "Keep"];
+    },
+    (x: PlainQuestion) => {
+      x.form.fields[0].options = ["", "Change"];
+    },
+    (x: PlainQuestion) => {
+      x.form.fields[2].min = 3;
+    },
+    (x: PlainQuestion) => {
+      x.form.fields[1].type = "password";
+    },
+    (x: PlainQuestion) => {
+      x.form.fields[1].label = "bad\u0000text";
+    },
+  ])("rejects invalid form meaning through the canonical schema", (mutate) => {
+    const args = valid();
+    mutate(args);
+    expect(
+      validateCodexQuestion({ type: "ask", text: args.question, form: args.form }).success,
+    ).toBe(false);
   });
 
   it("corrects two oversized labels in the same live turn before pausing and accounting", async () => {
     const f = scenario([tooLong(), valid()]);
     await f.run();
-    const reply = f.sent.find(x => x.id === 100 && x.result);
-    expect(reply.result.success).toBe(false);
-    const notice = JSON.parse(reply.result.contentItems[0].text);
+    const reply = f.sent.find((x) => x.id === 100 && x.result);
+    const result = protocolReply.parse(reply?.result);
+    expect(result.success).toBe(false);
+    const noticeText = result.contentItems[0]!.text;
+    const notice = questionNotice.parse(JSON.parse(noticeText));
     expect(notice.code).toBe("ROST_QUESTION_INPUT_INVALID");
-    expect(notice.issues.map((i: any) => i.path)).toEqual([["form", "fields", 1, "label"], ["form", "fields", 2, "label"]]);
-    expect(JSON.stringify(notice)).not.toContain("PRIVATE-SOURCE");
-    expect(f.sent.filter(x => x.method === "turn/start")).toHaveLength(1);
-    const asks = f.events.filter(x => x.type === "ask");
+    expect(notice.issues.map((i) => i.path)).toEqual([
+      ["form", "fields", 1, "label"],
+      ["form", "fields", 2, "label"],
+    ]);
+    expect(noticeText).not.toContain("PRIVATE-SOURCE");
+    expect(f.sent.filter((x) => x.method === "turn/start")).toHaveLength(1);
+    const asks = f.events.filter((x) => x.type === "ask");
     expect(asks).toHaveLength(1);
-    expect(QuestionForm.safeParse(asks[0].form).success).toBe(true);
+    expect(QuestionForm.safeParse(asks[0]?.form).success).toBe(true);
     expect(f.writes).toHaveLength(1);
-    expect(f.writes[0]).toMatchObject({ provider: "codex-foundry", model: "fixture", totalTokens: 230 });
+    expect(f.writes[0]).toMatchObject({
+      provider: "codex-foundry",
+      model: "fixture",
+      totalTokens: 230,
+    });
     expect(f.finished).toHaveLength(1);
     expect(f.finished[0]).toMatchObject({ paused: true, completed: false });
-    expect(f.events.some(x => x.type === "done")).toBe(false);
+    expect(f.events.some((x) => x.type === "done")).toBe(false);
   });
 
   it("returns invalid native questions as protocol errors, never fabricated answers", async () => {
     const f = scenario([{ native: [{ question: "x".repeat(201) }] }, valid()]);
     await f.run();
-    const reply = f.sent.find(x => x.id === 100 && x.error);
-    expect(reply.error.code).toBe(-32602);
-    expect(reply.result).toBeUndefined();
-    expect(f.events.filter(x => x.type === "ask")).toHaveLength(1);
+    const reply = f.sent.find((x) => x.id === 100 && x.error);
+    expect(reply?.error).toMatchObject({ code: -32602 });
+    expect(reply?.result).toBeUndefined();
+    expect(f.events.filter((x) => x.type === "ask")).toHaveLength(1);
   });
 
   it("bounds failed correction attempts, accounts usage and stops without an answer", async () => {
     const f = scenario([tooLong(), tooLong(), tooLong(), tooLong()]);
     await expect(f.run()).rejects.toThrow("ROST_QUESTION_INPUT_INVALID:");
-    expect(f.sent.filter(x => x.result?.success === false)).toHaveLength(3);
+    expect(
+      f.sent
+        .map((x) => protocolReply.safeParse(x.result))
+        .filter((reply) => reply.success && !reply.data.success),
+    ).toHaveLength(3);
     expect(f.writes).toHaveLength(1);
-    expect(f.events.some(x => x.type === "ask" || x.type === "done")).toBe(false);
-    expect(f.finished[0].completed).toBe(false);
-    expect(f.finished[0].paused).not.toBe(true);
+    expect(f.events.some((x) => x.type === "ask" || x.type === "done")).toBe(false);
+    expect(f.finished[0]?.completed).toBe(false);
+    expect(f.finished[0]?.paused).not.toBe(true);
   });
 
   it("keeps persistence failures distinct after a valid correction", async () => {
     const f = scenario([tooLong(), valid()]);
-    f.request.onUsage = async () => { throw new Error("private ledger error"); };
+    f.request.onUsage = async () => {
+      throw new Error("private ledger error");
+    };
     await expect(f.run()).rejects.toThrow("ROST_USAGE_RECORD_FAILED:");
-    expect(f.events.some(x => x.type === "ask")).toBe(false);
+    expect(f.events.some((x) => x.type === "ask")).toBe(false);
   });
 
   it("fails closed without a question validator", async () => {
     const f = scenario([valid()], null);
     await expect(f.run()).rejects.toThrow("Question validation is unavailable");
-    expect(f.events.some(x => x.type === "ask")).toBe(false);
+    expect(f.events.some((x) => x.type === "ask")).toBe(false);
   });
 });

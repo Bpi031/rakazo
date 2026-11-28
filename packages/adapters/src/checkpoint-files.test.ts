@@ -16,6 +16,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import type { SandboxProvider } from "@rakazo/adapter-kit";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { CheckpointFiles } from "./checkpoints/checkpoint-files.js";
 
@@ -67,7 +68,9 @@ async function fixture() {
   >();
   const inventory = () =>
     [...directories]
-      .map((name) => ({ path: name, type: "directory", mode: modes.get(name) ?? 0o700 }))
+      .map<{ path: string; type: string; mode: number; size?: number; sha256?: string }>(
+        (name) => ({ path: name, type: "directory", mode: modes.get(name) ?? 0o700 }),
+      )
       .concat(
         [...files].map(([name, bytes]) => ({
           path: name,
@@ -75,18 +78,18 @@ async function fixture() {
           mode: modes.get(name) ?? 0o600,
           size: bytes.length,
           sha256: hash(bytes),
-        })) as any,
+        })),
       )
       .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-  const execute = vi.fn(async function* (_computer, request) {
-    const input = JSON.parse(Buffer.from(request.argv.at(-1), "base64").toString());
+  const execute = vi.fn<SandboxProvider["execute"]>(async function* (_computer, request) {
+    const input = JSON.parse(Buffer.from(request.argv.at(-1)!, "base64").toString());
     const managed = (name: string) =>
       !input.roots ||
       input.roots.some((root: string) => name === root || name.startsWith(`${root}/`));
     const selectedInventory = () => inventory().filter((item) => managed(item.path));
     const stage = stages.get(input.stage);
     if (input.path && !managed(input.path)) throw new Error("Unmanaged fixture path");
-    let value: any = {};
+    let value: Record<string, unknown> = {};
     switch (input.operation) {
       case "inventory":
         value = { entries: selectedInventory() };
@@ -161,7 +164,7 @@ async function fixture() {
     yield { type: "stdout", data: JSON.stringify(value) };
     yield { type: "exit", code: 0 };
   });
-  const service = new CheckpointFiles({ sandbox: { execute } as any, dataDir: directory });
+  const service = new CheckpointFiles({ sandbox: { execute }, dataDir: directory });
   return { directory, service, execute, files, directories, modes, inventory, caches };
 }
 
@@ -183,7 +186,7 @@ it("deduplicates unchanged bytes and keeps scope separate", async () => {
   const second = await state.service.capture(actor, "bot", computer);
   expect(first).toEqual(second);
   const calls = state.execute.mock.calls.map(
-    (call) => JSON.parse(Buffer.from(call[1].argv.at(-1), "base64").toString()).operation,
+    (call) => JSON.parse(Buffer.from(call[1].argv.at(-1)!, "base64").toString()).operation,
   );
   expect(calls).toEqual(["inventory", "inventory"]);
   await state.service.capture({ ...actor, userId: "other-owner" }, "bot", computer);
@@ -250,7 +253,7 @@ it("captures and restores only a Team bot's directory, preserving shared files",
   state.execute.mockClear();
   const current = await state.service.capture(actor, "recipient", computer, "team");
   const reads = state.execute.mock.calls
-    .map((call) => JSON.parse(Buffer.from(call[1].argv.at(-1), "base64").toString()))
+    .map((call) => JSON.parse(Buffer.from(call[1].argv.at(-1)!, "base64").toString()))
     .filter((input) => input.operation === "read")
     .map((input) => input.path)
     .sort();
@@ -284,7 +287,7 @@ it("keeps Team bot blob pools independent", async () => {
   state.execute.mockClear();
   await state.service.capture(actor, "recipient", computer, "team");
   const reads = state.execute.mock.calls
-    .map((call) => JSON.parse(Buffer.from(call[1].argv.at(-1), "base64").toString()))
+    .map((call) => JSON.parse(Buffer.from(call[1].argv.at(-1)!, "base64").toString()))
     .filter((input) => input.operation === "read")
     .map((input) => input.path);
   expect(reads).toContain("bots/recipient/private.json");
@@ -512,10 +515,10 @@ it("does not publish a streamed restore after writing only part of the staged tr
   const original = state.execute.getMockImplementation()!;
   state.files.set("input.xlsx", Buffer.from("new workbook"));
   const current = state.inventory();
-  state.execute.mockImplementation(async function* (computer, request) {
-    const input = JSON.parse(Buffer.from(request.argv.at(-1), "base64").toString());
+  state.execute.mockImplementation(async function* (computer, request, context) {
+    const input = JSON.parse(Buffer.from(request.argv.at(-1)!, "base64").toString());
     if (input.operation === "write") throw new Error("Staged transfer interrupted");
-    yield* original(computer, request);
+    yield* original(computer, request, context);
   });
   await expect(state.service.restore(actor, "bot", computer, snapshot)).rejects.toThrow(
     "Staged transfer interrupted",
@@ -533,7 +536,7 @@ it.skipIf(process.platform === "win32")(
     await mkdir(workspace);
     const bytes = Buffer.alloc(120_000, 203);
     await writeFile(workbook, bytes);
-    const execute = vi.fn(async function* (_computer, request: { argv: string[] }) {
+    const execute = vi.fn<SandboxProvider["execute"]>(async function* (_computer, request) {
       const helper = request.argv[3]!.replace(
         "ROOT = '/home/rakazo/workspace'",
         `ROOT = ${JSON.stringify(workspace)}`,
@@ -546,7 +549,7 @@ it.skipIf(process.platform === "win32")(
       };
       yield { type: "exit", code: 0 };
     });
-    const service = new CheckpointFiles({ sandbox: { execute } as any, dataDir });
+    const service = new CheckpointFiles({ sandbox: { execute }, dataDir });
     const snapshot = await service.capture(actor, "bot", computer);
     await writeFile(workbook, "changed");
     await service.restore(actor, "bot", computer, snapshot, "dedicated", 5);
@@ -567,7 +570,10 @@ it.skipIf(process.platform === "win32")(
     await writeFile(workbook, "original workbook");
     await chmod(folder, 0o555);
     vi.stubEnv("CHECKPOINT_DIRECT_DOCKER", "1");
-    const service = new CheckpointFiles({ sandbox: { execute: vi.fn() } as any, dataDir });
+    const service = new CheckpointFiles({
+      sandbox: { execute: vi.fn<SandboxProvider["execute"]>() },
+      dataDir,
+    });
     try {
       const original = await service.capture(actor, "bot", computer);
       await writeFile(workbook, "current workbook");
@@ -598,7 +604,10 @@ it.skipIf(process.platform === "win32")(
     await mkdir(workspace, { recursive: true });
     await writeFile(location, "previously a regular workspace file");
     vi.stubEnv("CHECKPOINT_DIRECT_DOCKER", "1");
-    const service = new CheckpointFiles({ sandbox: { execute: vi.fn() } as any, dataDir });
+    const service = new CheckpointFiles({
+      sandbox: { execute: vi.fn<SandboxProvider["execute"]>() },
+      dataDir,
+    });
     const original = await service.capture(actor, "bot", computer);
     await unlink(location);
     await mkdir(location);
@@ -618,7 +627,7 @@ it("captures identical files once and restores every path", async () => {
   state.files.set("copy-b.txt", Buffer.from("same content"));
   const snapshot = await state.service.capture(actor, "bot", computer);
   const reads = state.execute.mock.calls
-    .map((call) => JSON.parse(Buffer.from(call[1].argv.at(-1), "base64").toString()))
+    .map((call) => JSON.parse(Buffer.from(call[1].argv.at(-1)!, "base64").toString()))
     .filter((input) => input.operation === "read" && input.path.startsWith("copy-"));
   expect(reads).toHaveLength(1);
   state.files.clear();
@@ -670,10 +679,10 @@ it("rejects source changes between inventory and capture", async () => {
   const state = await fixture();
   const original = state.execute.getMockImplementation()!;
   let calls = 0;
-  state.execute.mockImplementation(async function* (computer, request) {
+  state.execute.mockImplementation(async function* (computer, request, context) {
     calls++;
     if (calls === 2) state.files.set("case/policy.rost", Buffer.from("changed"));
-    yield* original(computer, request);
+    yield* original(computer, request, context);
   });
   await expect(state.service.capture(actor, "bot", computer)).rejects.toThrow("changed");
 });
@@ -686,7 +695,7 @@ it("transfers files beyond one argument-sized chunk without truncation", async (
   state.files.clear();
   await state.service.restore(actor, "bot", computer, snapshot);
   expect(state.files.get("large.xlsx")).toEqual(bytes);
-  expect(state.execute.mock.calls.every((call) => call[1].argv.at(-1).length < 110000)).toBe(true);
+  expect(state.execute.mock.calls.every((call) => call[1].argv.at(-1)!.length < 110000)).toBe(true);
 });
 
 it("compresses text and preserves already-compressed formats", async () => {
@@ -762,7 +771,7 @@ it.skipIf(process.platform === "win32")(
     await mkdir(workspace, { recursive: true });
     await writeFile(path.join(workspace, "model.json"), "rules\n".repeat(10000));
     const execute = vi.fn();
-    const service = new CheckpointFiles({ sandbox: { execute } as any, dataDir });
+    const service = new CheckpointFiles({ sandbox: { execute }, dataDir });
     const prior = process.env.CHECKPOINT_DIRECT_DOCKER;
     process.env.CHECKPOINT_DIRECT_DOCKER = "1";
     try {
@@ -796,7 +805,10 @@ it.skipIf(process.platform === "win32")(
     await writeFile(path.join(home, "bots/recipient/private.json"), "recipient private");
     await writeFile(path.join(home, "shared/model.json"), "stable shared model\n".repeat(10000));
     await writeFile(path.join(home, ".codex/auth.json"), "home credential");
-    const service = new CheckpointFiles({ sandbox: { execute: vi.fn() } as any, dataDir });
+    const service = new CheckpointFiles({
+      sandbox: { execute: vi.fn<SandboxProvider["execute"]>() },
+      dataDir,
+    });
     vi.stubEnv("CHECKPOINT_DIRECT_DOCKER", "1");
     await service.capture(actor, "source", computer, "team");
     const recipient = await service.capture(actor, "recipient", computer, "team");
@@ -840,7 +852,10 @@ it.skipIf(process.platform === "win32")(
     temporary.push(dataDir);
     const home = path.join(dataDir, "homes", "bot");
     await mkdir(home, { recursive: true });
-    const service = new CheckpointFiles({ sandbox: { execute: vi.fn() } as any, dataDir });
+    const service = new CheckpointFiles({
+      sandbox: { execute: vi.fn<SandboxProvider["execute"]>() },
+      dataDir,
+    });
     vi.stubEnv("CHECKPOINT_DIRECT_DOCKER", "1");
     const empty = await service.capture(actor, "recipient", computer, "team");
     expect(empty.entries).toEqual([]);
@@ -880,7 +895,7 @@ it.skipIf(process.platform === "win32")(
     await writeFile(path.join(workspace, "stable.json"), "stable model rows\n".repeat(100000));
     await writeFile(path.join(workspace, "changed.json"), "old model");
     const execute = vi.fn();
-    const service = new CheckpointFiles({ sandbox: { execute } as any, dataDir });
+    const service = new CheckpointFiles({ sandbox: { execute }, dataDir });
     vi.stubEnv("CHECKPOINT_DIRECT_DOCKER", "1");
     const initial = await service.capture(actor, "bot", computer);
     const stable = hash("stable model rows\n".repeat(100000));

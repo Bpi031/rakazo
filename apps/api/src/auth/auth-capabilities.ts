@@ -23,9 +23,10 @@ export function mountAuthCapabilities(
   },
 ) {
   app.get("/api/auth/capabilities", async (c) => {
-    const registrationOpen = env.desktopStackToken || env.agentRuntime === "codex"
-      ? await auth.registrationOpen(c.req.raw.headers)
-      : undefined;
+    const registrationOpen =
+      env.desktopStackToken || env.agentRuntime === "codex"
+        ? await auth.registrationOpen(c.req.raw.headers)
+        : undefined;
     return c.json({
       sso: env.oidc
         ? { name: env.oidc.name, availability: auth.ssoAvailability() ?? "checking" }

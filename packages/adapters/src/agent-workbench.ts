@@ -1,51 +1,67 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readManagedRuntimeAsset } from "./storage/managed-runtime-assets.js";
-import {
-  GoalInput,
-  HelperInput,
-  WorkbenchToolInput,
-  safeText,
-  type Actor,
-} from "@rakazo/contracts";
-import { createRepos, readJsonColumn, storedMessageBlocks, type PrismaClient, type Prisma } from "@rakazo/db";
-import type { SandboxProvider, AdapterContext } from "@rakazo/adapter-kit";
-import { memberScope } from "./teams/team-storage.js";
-import { teamDigest } from "./teams/team-policy.js";
-import { toComputerRef } from "./computers/screens/computer-support.js";
-import { workflowText } from "./teams/workflow-text.js";
+import type { AdapterContext, SandboxProvider } from "@rakazo/adapter-kit";
+import type { Actor } from "@rakazo/contracts";
+import { GoalInput, HelperInput, safeText, WorkbenchToolInput } from "@rakazo/contracts";
+import type { Prisma, PrismaClient } from "@rakazo/db";
+import { createRepos, readJsonColumn, storedMessageBlocks } from "@rakazo/db";
 import { z } from "zod";
+import { toComputerRef } from "./computers/screens/computer-support.js";
 import { assertManagedTeamComputer, workspaceRelativeRoots } from "./managed-workspace.js";
+import { readManagedRuntimeAsset } from "./storage/managed-runtime-assets.js";
+import { teamDigest } from "./teams/team-policy.js";
+import { memberScope } from "./teams/team-storage.js";
+import { workflowCachedInputTokens, workflowText } from "./teams/workflow-text.js";
 
 const workbenchFiles = () => readManagedRuntimeAsset("workbench-files.py");
 const filesDigest = () => createHash("sha256").update(workbenchFiles()).digest("hex");
 const json = (value: unknown) => JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
 const namedRecord = z.object({
-  title: z.string().optional(), name: z.string().optional(), path: z.string().optional(),
-  objective: z.string().optional(), hook: z.string().optional(),
+  title: z.string().optional(),
+  name: z.string().optional(),
+  path: z.string().optional(),
+  objective: z.string().optional(),
+  hook: z.string().optional(),
 });
-const skillsRecord = z.object({
-  skills: z.array(z.looseObject({ id: z.string(), path: z.string(), name: z.string() })).max(64),
-});
+const installedSkill = z.looseObject({ id: z.string(), path: z.string(), name: z.string() });
+const skillsRecord = z.looseObject({ skills: z.array(installedSkill).max(64) });
 const goalRecord = z.object({ revision: z.number().int().nonnegative() });
 const changeRecord = z.looseObject({
-  path: z.string(), proposedText: z.string(), helperSha256: z.string(), sourceSha256: z.string(),
+  path: z.string(),
+  proposedText: z.string(),
+  helperSha256: z.string(),
+  sourceSha256: z.string(),
 });
 const analysisOutput = z.looseObject({
-  name: z.string(), text: z.string(), needsApproval: z.boolean(),
-  solveStarted: z.literal(false), policyApprovalGranted: z.literal(false),
+  name: z.string(),
+  text: z.string(),
+  needsApproval: z.boolean(),
+  solveStarted: z.literal(false),
+  policyApprovalGranted: z.literal(false),
 });
 const analysisRecord = z.looseObject({
-  inputDigest: z.string(), scopeDigest: z.string(), result: analysisOutput.optional(),
+  inputDigest: z.string(),
+  scopeDigest: z.string(),
+  result: analysisOutput.optional(),
 });
 const scenarioMessageRecord = z.looseObject({
-  nonce: z.string(), question: z.string(), answer: z.string(), needsApproval: z.boolean(),
+  nonce: z.string(),
+  question: z.string(),
+  answer: z.string(),
+  needsApproval: z.boolean(),
 });
 const scenarioRecord = z.looseObject({
-  title: z.string(), context: z.array(z.json()), messages: z.array(scenarioMessageRecord),
+  title: z.string(),
+  context: z.array(z.json()),
+  messages: z.array(scenarioMessageRecord),
   activeNonce: z.string().optional(),
 });
 function workbenchRecord<T extends z.ZodType>(schema: T, row: { id: string; payload: unknown }) {
-  return readJsonColumn(schema, row.payload, { table: "agent_workbench_records", column: "payload", id: row.id }, "reject");
+  return readJsonColumn(
+    schema,
+    row.payload,
+    { table: "agent_workbench_records", column: "payload", id: row.id },
+    "reject",
+  );
 }
 const now = () => new Date();
 const stableId = (key: string) => {
@@ -85,7 +101,7 @@ export class AgentWorkbench {
   constructor(
     private deps: {
       prisma: PrismaClient;
-      sandbox?: SandboxProvider;
+      sandbox?: Pick<SandboxProvider, "execute">;
       generate?: typeof workflowText;
       helperAuthority?: "native_read_only_worker";
     },
@@ -187,19 +203,14 @@ export class AgentWorkbench {
         .map((r) => {
           const label = workbenchRecord(namedRecord, r);
           return {
-          id: r.id,
-          kind: r.kind,
-          status: r.status,
-          digest: r.digest,
-          createdAt: r.createdAt.toISOString(),
-          title: String(
-            label.title ??
-              label.name ??
-              label.path ??
-              label.objective ??
-              label.hook ??
-              r.kind,
-          ).slice(0, 200),
+            id: r.id,
+            kind: r.kind,
+            status: r.status,
+            digest: r.digest,
+            createdAt: r.createdAt.toISOString(),
+            title: String(
+              label.title ?? label.name ?? label.path ?? label.objective ?? label.hook ?? r.kind,
+            ).slice(0, 200),
           };
         }),
       skills: skills ? workbenchRecord(skillsRecord, skills).skills : [],
@@ -268,7 +279,14 @@ export class AgentWorkbench {
     for await (const event of this.deps.sandbox.execute(
       toComputerRef(bot.computer),
       {
-        argv: ["/opt/office-python/bin/python3", "-I", "-c", workbenchFiles(), encoded, JSON.stringify(workspaceRelativeRoots(bot.computer!.scope, botId))],
+        argv: [
+          "/opt/office-python/bin/python3",
+          "-I",
+          "-c",
+          workbenchFiles(),
+          encoded,
+          JSON.stringify(workspaceRelativeRoots(bot.computer!.scope, botId)),
+        ],
         cwd: "/home/rakazo",
         timeoutMs: 15000,
         unsetEnv: ["PYTHONPATH", "PYTHONHOME", "LD_PRELOAD"],
@@ -288,9 +306,9 @@ export class AgentWorkbench {
     return result;
   }
   async skills(actor: Actor, botId: string) {
-    const result = await this.executeFiles(actor, botId, { operation: "skills" });
-    if (!Array.isArray(result.skills) || result.skills.length > 64)
-      throw new Error("Invalid installed skills");
+    const result = skillsRecord.parse(
+      await this.executeFiles(actor, botId, { operation: "skills" }),
+    );
     const id = teamDigest({ ...this.where(actor, botId), kind: "skills" });
     await this.db.agentWorkbenchRecord.upsert({
       where: { id },
@@ -309,7 +327,7 @@ export class AgentWorkbench {
   async selectSkill(actor: Actor, botId: string, id: string | null) {
     await this.owned(actor, botId);
     const skills = id ? await this.skills(actor, botId) : [];
-    const selected = id ? skills.find((s: any) => s.id === id) : null;
+    const selected = id ? skills.find((s) => s.id === id) : null;
     if (id && !selected) throw new Error("Installed skill changed; refresh first");
     const key = teamDigest({ ...this.where(actor, botId), kind: "skill_selection" });
     const payload = selected ? { ...selected, nextTurnOnly: true } : { selected: null };
@@ -331,14 +349,14 @@ export class AgentWorkbench {
     const run = await this.db.run.findUniqueOrThrow({ where: { id: runId } });
     const actor = { userId: run.userId, spaceId: run.spaceId, email: "", isDeploymentOwner: false };
     const view = await this.view(actor, run.botId);
-    const selected = view.selectedSkill as any;
+    const selected = installedSkill.safeParse(view.selectedSkill);
     let skill: { name: string; path: string } | undefined;
-    if (selected?.id) {
-      const live = (await this.skills(actor, run.botId)).find((s: any) => s.id === selected.id);
+    if (selected.success) {
+      const live = (await this.skills(actor, run.botId)).find((s) => s.id === selected.data.id);
       if (!live) throw new Error("Selected skill changed; choose again");
       const id = teamDigest({ ...this.where(actor, run.botId), kind: "skill_selection" });
       const consumed = await this.db.agentWorkbenchRecord.updateMany({
-        where: { id, digest: teamDigest(selected) },
+        where: { id, digest: teamDigest(selected.data) },
         data: {
           status: "consumed",
           payload: { selected: null },
@@ -456,7 +474,8 @@ export class AgentWorkbench {
       where: { ...this.where(actor, botId), id, kind: "scenario" },
     });
     if (old) {
-      if (workbenchRecord(scenarioRecord, old).title !== title) throw new Error("Scenario replay changed");
+      if (workbenchRecord(scenarioRecord, old).title !== title)
+        throw new Error("Scenario replay changed");
       return old;
     }
     if (
@@ -509,7 +528,7 @@ export class AgentWorkbench {
     const count = (x: unknown) =>
       Number.isSafeInteger(x) && Number(x) >= 0 && Number(x) <= 2147483647 ? Number(x) : null;
     const input = count(usage?.input_tokens),
-      cached = count((usage?.input_tokens_details as any)?.cached_tokens);
+      cached = count(workflowCachedInputTokens(usage));
     const data = {
       ...this.where(actor, botId),
       runId,

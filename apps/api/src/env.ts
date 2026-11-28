@@ -39,7 +39,6 @@ import {
   MAX_SANDBOX_COMMAND_TIMEOUT_MS,
   sandboxCommandTimeoutExceedsMax,
 } from "@rakazo/core/node/sandbox-command";
-import { parseAdditionalWebOrigins } from "./web-origins.js";
 import {
   resolveAuthSecret,
   resolveContentEncryption,
@@ -52,6 +51,7 @@ import type { CreditCode } from "./billing/credit-codes.js";
 import { parseCreditCodes } from "./billing/credit-codes.js";
 import type { DeploymentVoice } from "./voice/deployment-config.js";
 import { deploymentVoiceFromEnv } from "./voice/deployment-config.js";
+import { parseAdditionalWebOrigins } from "./web-origins.js";
 
 export { resolveCloudAgentProvider, resolveSandboxProvider } from "@rakazo/adapters";
 

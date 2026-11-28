@@ -1,5 +1,5 @@
-import { bestEffort } from "@rakazo/logging/best-effort";
 import type { CheckpointStatus, CheckpointView } from "@rakazo/contracts";
+import { bestEffort } from "@rakazo/logging/best-effort";
 import { Button, Input } from "@rakazo/ui-web";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { checkpointError, useCheckpointI18n } from "../lib/checkpoint-i18n";
@@ -60,22 +60,38 @@ export function CheckpointsPanel({
       setOperationError("");
       try {
         if (input.kind === "save") {
-          await checkpointApi("", botId, {
-            ...(input.label ? { label: input.label } : {}), expectedGeneration: input.generation,
-          }, undefined, scope.spaceId);
+          await checkpointApi(
+            "",
+            botId,
+            {
+              ...(input.label ? { label: input.label } : {}),
+              expectedGeneration: input.generation,
+            },
+            undefined,
+            scope.spaceId,
+          );
           if (!scope.isCurrent()) return;
           setName("");
           // Once acknowledged, retry only the read.
           awaitingSavedList.current = true;
           setRefreshing(true);
-          try { await load(); }
-          catch { if (scope.isCurrent()) setSavedListDelayed(true); }
+          try {
+            await load();
+          } catch {
+            if (scope.isCurrent()) setSavedListDelayed(true);
+          }
           return;
         }
         const result = await checkpointApi<RestoreResult>(
-          `/${encodeURIComponent(input.id)}/rollback`, botId, {
-            checkpointId: input.id, expectedGeneration: input.generation, expectedRevision: input.revision,
-          }, undefined, scope.spaceId,
+          `/${encodeURIComponent(input.id)}/rollback`,
+          botId,
+          {
+            checkpointId: input.id,
+            expectedGeneration: input.generation,
+            expectedRevision: input.revision,
+          },
+          undefined,
+          scope.spaceId,
         );
         if (!result.ok) throw new Error(copy.restoreError);
         if (scope.isCurrent()) {
@@ -84,7 +100,8 @@ export function CheckpointsPanel({
         }
       } catch (value) {
         if (scope.isCurrent()) {
-          const message = value instanceof Error ? checkpointError(value.message) : copy.operationError;
+          const message =
+            value instanceof Error ? checkpointError(value.message) : copy.operationError;
           if (message === copy.stale || message === copy.incomplete) setTarget(null);
           setOperationError(message);
           await bestEffort("refresh checkpoints after restore attempt", load());
@@ -188,7 +205,13 @@ export function CheckpointsPanel({
   useVisibleRefresh(() => void refreshStatus.current?.(), 4000, true);
 
   function submit(input: CheckpointWrite) {
-    if (busyRef.current || workspaceBusy || pendingRevision.current !== undefined || awaitingSavedList.current) return;
+    if (
+      busyRef.current ||
+      workspaceBusy ||
+      pendingRevision.current !== undefined ||
+      awaitingSavedList.current
+    )
+      return;
     write.run(input);
   }
 
@@ -219,7 +242,13 @@ export function CheckpointsPanel({
           onChange={(event) => setName(event.target.value)}
           className="min-w-0 flex-1"
         />
-        <Button disabled={operationBusy || !view || view.blocked} onClick={() => { if (view && !view.blocked) submit({ kind: "save", generation: view.generation, label: name.trim() }); }}>
+        <Button
+          disabled={operationBusy || !view || view.blocked}
+          onClick={() => {
+            if (view && !view.blocked)
+              submit({ kind: "save", generation: view.generation, label: name.trim() });
+          }}
+        >
           {copy.set}
         </Button>
       </div>
@@ -256,7 +285,12 @@ export function CheckpointsPanel({
             {copy.description}
           </p>
           <div className="flex gap-2">
-            <Button disabled={operationBusy || confirmationStale} onClick={() => { if (target && !confirmationStale) submit({ kind: "restore", ...target }); }}>
+            <Button
+              disabled={operationBusy || confirmationStale}
+              onClick={() => {
+                if (target && !confirmationStale) submit({ kind: "restore", ...target });
+              }}
+            >
               {copy.restore}
             </Button>
             <Button

@@ -1,16 +1,17 @@
 import { randomUUID } from "node:crypto";
-import { readManagedRuntimeAsset } from "./storage/managed-runtime-assets.js";
 import type { AdapterContext, SandboxProvider } from "@rakazo/adapter-kit";
+import { hasAsciiControl } from "@rakazo/contracts/managed-text";
 import type { PrismaClient } from "@rakazo/db";
 import { assertCheckpointGeneration, CheckpointConflictError } from "@rakazo/db";
 import { z } from "zod";
 import { toComputerRef } from "./computers/screens/computer-support.js";
-import { memberScope } from "./teams/team-storage.js";
 import {
   assertManagedTeamComputer,
   assertWorkspacePath,
   workspaceRelativeRoots,
 } from "./managed-workspace.js";
+import { readManagedRuntimeAsset } from "./storage/managed-runtime-assets.js";
+import { memberScope } from "./teams/team-storage.js";
 
 export const RostJobOut = z
   .string()
@@ -21,7 +22,7 @@ export const RostJobOut = z
       !value.startsWith("/") &&
       value !== "workspace" &&
       !value.startsWith("workspace/") &&
-      !/[\x00-\x1f\x7f\\]/.test(value) &&
+      !(value.includes("\\") || hasAsciiControl(value, { includeDelete: true })) &&
       value.split("/").every((part) => part !== "" && part !== "." && part !== ".."),
     "Use an exact path relative to this bot's workspace",
   );
@@ -70,10 +71,15 @@ const Watch = z
   })
   .strict();
 export const RostWatchIdentity = Watch.pick({
-  schema: true, out: true, computerId: true, checkpointGeneration: true, binding: true, deadlineUtc: true,
+  schema: true,
+  out: true,
+  computerId: true,
+  checkpointGeneration: true,
+  binding: true,
+  deadlineUtc: true,
 }).strip();
 type Scope = { userId: string; spaceId: string; botId: string };
-type Deps = { prisma: PrismaClient; sandbox?: SandboxProvider };
+type Deps = { prisma: PrismaClient; sandbox?: Pick<SandboxProvider, "execute"> };
 
 export class RostJobObservationError extends Error {
   constructor() {
@@ -141,7 +147,14 @@ export async function observeRostJob(deps: Deps, scope: Scope, out: string) {
     for await (const event of deps.sandbox.execute(
       toComputerRef(bot.computer),
       {
-        argv: ["/opt/office-python/bin/python3", "-I", "-c", readManagedRuntimeAsset("rost-job-observer.py"), relative, root],
+        argv: [
+          "/opt/office-python/bin/python3",
+          "-I",
+          "-c",
+          readManagedRuntimeAsset("rost-job-observer.py"),
+          relative,
+          root,
+        ],
         cwd: "/home/rakazo",
         timeoutMs: 15000,
         unsetEnv: ["PYTHONPATH", "PYTHONHOME", "LD_PRELOAD"],
@@ -236,7 +249,7 @@ export async function pollRostJobWatch(deps: Deps, scope: Scope, raw: unknown) {
   });
   if (!bot.thread) throw new StaleRostWatchError();
   await assertCurrentWatch(deps, bot.thread.id, previous.checkpointGeneration);
-  let value;
+  let value: z.infer<typeof Observation> | undefined;
   try {
     const current = await observeRostJob(deps, scope, previous.out);
     if (current.computerId === previous.computerId)

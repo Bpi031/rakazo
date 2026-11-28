@@ -240,8 +240,11 @@ describe("schedule tool persistence", () => {
       }),
     );
     expect(append).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "routine.created",
-        runId: "run-1", payload: { name: "Morning joke" } }),
+      expect.objectContaining({
+        type: "routine.created",
+        runId: "run-1",
+        payload: { name: "Morning joke" },
+      }),
     );
     expect(enqueue).toHaveBeenCalledOnce();
   });
@@ -480,7 +483,8 @@ describe("schedule tool persistence", () => {
 });
 
 function addCheckpointTransaction(prisma: unknown) {
-  const db = prisma as any;
+  if (!prisma || typeof prisma !== "object") throw new Error("Expected a test database");
+  const db = prisma as Record<string, unknown>;
   db.$executeRaw = vi.fn(async () => 1);
   db.thread = {
     findUniqueOrThrow: vi.fn(async () => ({ checkpointGeneration: 0, checkpointBlocked: false })),

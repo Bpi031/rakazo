@@ -1,7 +1,7 @@
-import type { Context, Hono } from "hono";
+import type { TeamLeadershipService, TeamWorkflowService } from "@rakazo/adapters";
 import type { Actor } from "@rakazo/contracts";
-import { workflowDecisionSchema, leadershipDecision } from "@rakazo/contracts";
-import type { TeamWorkflowService, TeamLeadershipService } from "@rakazo/adapters";
+import { leadershipDecision, workflowDecisionSchema } from "@rakazo/contracts";
+import type { Context, Hono } from "hono";
 import { isAllowedWebOrigin } from "./web-origins.js";
 
 export function mountTeamWorkflows(

@@ -1,3 +1,4 @@
+import type { SandboxProvider } from "@rakazo/adapter-kit";
 import { describe, expect, it, vi } from "vitest";
 import { wakeRoutine } from "./runs/assembly/run-routines.js";
 import { createScheduleFromTool } from "./schedule-tools.js";
@@ -9,12 +10,13 @@ vi.mock("./routines/routine-watch.js", () => ({
     throw new Error("A Rost job must not use an upstream change watch");
   }),
 }));
+
 import {
   assertRostWatchTriggers,
   createRostJobWatch,
   pollRostJobWatch,
-  reduceRostWatch,
   RostJobOut,
+  reduceRostWatch,
 } from "./rost-job-watch.js";
 
 const observation = {
@@ -23,7 +25,7 @@ const observation = {
   status: "running",
 };
 const watch = {
-  schema: "rost/job-watch/v1",
+  schema: "rost/job-watch/v1" as const,
   out: "case/owned-job",
   computerId: "computer",
   binding: observation.binding,
@@ -37,7 +39,7 @@ const createRunExecutor = (deps: Parameters<typeof wakeRoutine>[0]) => ({
 });
 function fixture(status = "running") {
   const due = new Date(Date.now() - 1000);
-  const routine: any = {
+  const routine = {
     id: "routine",
     ...scope,
     prompt: "Validate and export the existing result",
@@ -48,7 +50,7 @@ function fixture(status = "running") {
     updatedAt: due,
     lastRunAt: null,
     threadId: "thread",
-    jobWatch: { ...watch },
+    jobWatch: { ...watch } as typeof watch & { lastStatus?: string },
     checkpointGeneration: 0,
     endsAt: null,
     watch: null,
@@ -74,29 +76,45 @@ function fixture(status = "running") {
       providerRef: "private",
     },
   };
-  const taskCreate = vi.fn(async (_input: any) => ({ id: "task" }));
+  const taskCreate = vi.fn(async (_input: { data: { prompt: string } }) => ({ id: "task" }));
   const runCreate = vi.fn(async () => ({ id: "run", taskId: "task" }));
-  const update = vi.fn(async ({ where, data }) => {
-    if (
-      where.nextRunAt?.getTime() !== routine.nextRunAt?.getTime() ||
-      where.active !== routine.active ||
-      (where.updatedAt && where.updatedAt !== routine.updatedAt)
-    )
-      return { count: 0 };
-    Object.assign(routine, data, { updatedAt: new Date() });
-    return { count: 1 };
-  });
-  const db: any = {
+  const update = vi.fn(
+    async ({
+      where,
+      data,
+    }: {
+      where: { nextRunAt?: Date | null; active?: boolean; updatedAt?: Date };
+      data: Partial<typeof routine>;
+    }) => {
+      if (
+        where.nextRunAt?.getTime() !== routine.nextRunAt?.getTime() ||
+        where.active !== routine.active ||
+        (where.updatedAt && where.updatedAt !== routine.updatedAt)
+      )
+        return { count: 0 };
+      Object.assign(routine, data, { updatedAt: new Date() });
+      return { count: 1 };
+    },
+  );
+  const db = {
     space: { findUnique: vi.fn(async () => ({ deletingAt: null })) },
     user: { findUnique: vi.fn(async () => ({ deactivatedAt: null })) },
     spaceMember: {
-      findUnique: vi.fn(async () => ({ organizationId: "org", member: { role: "owner" } })),
+      findUnique: vi.fn(
+        async (): Promise<{ organizationId: string; member: { role: string } } | null> => ({
+          organizationId: "org",
+          member: { role: "owner" },
+        }),
+      ),
     },
     teamMemberControl: { findUnique: vi.fn(async () => null) },
     routine: {
       findUnique: vi.fn(async () => ({ ...routine })),
       updateMany: update,
-      create: vi.fn(async ({ data }: any) => ({ ...data, id: "new-watch" })),
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+        ...data,
+        id: "new-watch",
+      })),
     },
     bot: {
       count: vi.fn(async () => 0),
@@ -105,7 +123,7 @@ function fixture(status = "running") {
     },
     thread: {
       findFirst: vi.fn(async () => bot.thread),
-      findUnique: vi.fn(async () => bot.thread),
+      findUnique: vi.fn(async (): Promise<Partial<typeof bot.thread>> => bot.thread),
       findUniqueOrThrow: vi.fn(async () => bot.thread),
     },
     $executeRaw: vi.fn(async () => 1),
@@ -114,18 +132,28 @@ function fixture(status = "running") {
     task: { create: taskCreate, deleteMany: vi.fn(async () => ({})) },
     run: { create: runCreate, deleteMany: vi.fn(async () => ({})) },
   };
-  db.$transaction = async (f: any) => f(db);
-  const execute = vi.fn(async function* () {
+  const prisma = Object.assign(db, {
+    $transaction: <T>(f: (tx: typeof db) => Promise<T>) => f(db),
+  });
+  const execute = vi.fn<SandboxProvider["execute"]>(async function* () {
     yield { type: "stdout", data: JSON.stringify({ ...observation, status }) };
     yield { type: "exit", code: 0 };
   });
-  const deps: any = {
-    prisma: db,
+  const deps = {
+    prisma,
     sandbox: { execute },
     jobs: { enqueue: vi.fn(async () => {}), cancel: vi.fn(), close: vi.fn() },
     events: { append: vi.fn() },
   };
-  return { deps, db, routine, due, execute, taskCreate, runCreate };
+  return {
+    deps: deps as unknown as typeof deps & Parameters<typeof wakeRoutine>[0],
+    db,
+    routine,
+    due,
+    execute,
+    taskCreate,
+    runCreate,
+  };
 }
 
 describe("token-free owned Rost watch", () => {
@@ -134,9 +162,9 @@ describe("token-free owned Rost watch", () => {
     const bot = await f.db.bot.findFirstOrThrow();
     bot.computer.scope = "team";
     await createRostJobWatch(f.deps, scope, "case/job");
-    expect((f.execute.mock.calls[0] as any)[1].argv.slice(4)).toEqual(["case/job", "bots/bot"]);
+    expect(f.execute.mock.calls[0]![1].argv.slice(4)).toEqual(["case/job", "bots/bot"]);
     await createRostJobWatch(f.deps, scope, "shared/case/job");
-    expect((f.execute.mock.calls[1] as any)[1].argv.slice(4)).toEqual(["case/job", "shared"]);
+    expect(f.execute.mock.calls[1]![1].argv.slice(4)).toEqual(["case/job", "shared"]);
     await expect(createRostJobWatch(f.deps, scope, "bots/other/job")).rejects.toThrow("outside");
     f.db.bot.count.mockResolvedValue(1);
     await expect(createRostJobWatch(f.deps, scope, "case/job")).rejects.toThrow("exclusively");
@@ -325,7 +353,7 @@ describe("token-free owned Rost watch", () => {
     ).toBe("required_decision");
   });
   it("transient missing/malformed/drifted observations retry silently, then ask once without restarting", () => {
-    let current: any = watch;
+    let current: typeof watch & Partial<ReturnType<typeof reduceRostWatch>> = watch;
     for (let i = 1; i <= 3; i++) {
       current = reduceRostWatch(
         current,
@@ -343,7 +371,7 @@ describe("token-free owned Rost watch", () => {
   });
   it("unknown future phases fail closed after bounded token-free polling, never as completion", async () => {
     const f = fixture("future_phase");
-    let current: any = watch;
+    let current: typeof watch & Partial<ReturnType<typeof reduceRostWatch>> = watch;
     for (let attempt = 1; attempt <= 3; attempt++) {
       current = await pollRostJobWatch(f.deps, scope, current);
       expect(current.failures).toBe(attempt);
@@ -368,7 +396,7 @@ describe("token-free owned Rost watch", () => {
   it("read command is fixed and never starts, stops or extends a job", async () => {
     const f = fixture();
     await pollRostJobWatch(f.deps, scope, watch);
-    const args: any = f.execute.mock.calls[0];
+    const args = f.execute.mock.calls[0]!;
     expect(args[1].argv.slice(0, 3)).toEqual(["/opt/office-python/bin/python3", "-I", "-c"]);
     expect(args[1].argv[4]).toBe(watch.out);
     expect(args[1].timeoutMs).toBe(15000);

@@ -1,12 +1,15 @@
 // @vitest-environment jsdom
 import { act } from "react";
-import { createQueryRoot } from "../lib/query/query-root.test-support";
 import { afterEach, expect, it, vi } from "vitest";
+import { createQueryRoot } from "../lib/query/query-root.test-support";
+
 vi.mock("../lib/rpc", () => ({
-  withSpaceHeaders: (extra: any) => ({ ...extra, "x-rakazo-space-id": "s" }),
+  withSpaceHeaders: (extra: Record<string, string>) => ({ ...extra, "x-rakazo-space-id": "s" }),
 }));
+
 import { TeamWorkflowsPanel } from "./TeamWorkflowsPanel";
-(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: ReturnType<typeof createQueryRoot> | undefined;
 let host: HTMLDivElement;
 afterEach(async () => {
@@ -42,8 +45,8 @@ const item = {
   ],
   executions: [],
 };
-async function render(value: any[] = [item]) {
-  const fetcher = vi.fn(async () => Response.json(value));
+async function render(value: unknown[] = [item]) {
+  const fetcher = vi.fn<typeof fetch>(async () => Response.json(value));
   vi.stubGlobal("fetch", fetcher);
   host = document.createElement("div");
   document.body.append(host);
@@ -56,7 +59,7 @@ it("shows the reviewed scope without auto-enabling or requesting a password", as
   expect(host.textContent).toContain("Department brief");
   expect(host.textContent).toContain("No private files");
   expect(fetcher).toHaveBeenCalledTimes(2);
-  expect(fetcher.mock.calls.every((call: any) => call[1].method === "GET")).toBe(true);
+  expect(fetcher.mock.calls.every(([, init]) => init?.method === "GET")).toBe(true);
   expect(host.querySelector('input[type="password"]')).toBeNull();
 });
 it("shows a human grant review and disables confirmation until deliberately checked", async () => {
@@ -132,7 +135,7 @@ it("shows two-party leadership review without exposing private-data transfer con
     workflows: [],
     expiresAt: "2099-01-01T00:00:00Z",
   };
-  const fetcher = vi.fn(async (url: any) =>
+  const fetcher = vi.fn<typeof fetch>(async (url) =>
     Response.json(String(url).includes("team-leadership") ? [handover] : []),
   );
   vi.stubGlobal("fetch", fetcher);
@@ -152,5 +155,5 @@ it("shows two-party leadership review without exposing private-data transfer con
       (b) => b.textContent === "Confirm leadership decision",
     )!.disabled,
   ).toBe(true);
-  expect(fetcher.mock.calls.every((c: any) => c[1].method === "GET")).toBe(true);
+  expect(fetcher.mock.calls.every(([, init]) => init?.method === "GET")).toBe(true);
 });

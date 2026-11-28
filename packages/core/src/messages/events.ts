@@ -1,4 +1,3 @@
-import { AgentStatusFields } from "@rakazo/contracts";
 import type {
   HistoryToolStep,
   MessageBlock,
@@ -6,6 +5,7 @@ import type {
   ToolHistory,
   ToolStepCall,
 } from "@rakazo/contracts";
+import { AgentStatusFields } from "@rakazo/contracts";
 import { preserveIdentitySource } from "../bots/identity-source.js";
 import { cloudAgentBlockFromPayload } from "../integrations/cloud-agent.js";
 import { sliceWellFormed } from "../primitives/utf8.js";
@@ -389,12 +389,17 @@ export function reduceLiveMessageBlocks(
 }
 
 /** Runtime status is presentation evidence, not narrative text or approval. */
-export function updateAgentStatusBlocks(blocks: readonly MessageBlock[], value: unknown): MessageBlock[] {
+export function updateAgentStatusBlocks(
+  blocks: readonly MessageBlock[],
+  value: unknown,
+): MessageBlock[] {
   const parsed = AgentStatusFields.safeParse(value);
   if (!parsed.success) return [...blocks];
   const existing = blocks.find((block) => block.kind === "agent_status");
   const next: MessageBlock = { ...existing, ...parsed.data, kind: "agent_status" };
-  return existing ? blocks.map((block) => block.kind === "agent_status" ? next : block) : [next, ...blocks];
+  return existing
+    ? blocks.map((block) => (block.kind === "agent_status" ? next : block))
+    : [next, ...blocks];
 }
 
 function liveMessageText(blocks: readonly MessageBlock[]): string {

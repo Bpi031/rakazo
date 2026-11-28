@@ -22,13 +22,10 @@ describe("right panel preferences", () => {
     writeRightPanelState("user-a:space-a:bot-a", null, "routine-a");
     expect(readRightPanelState("user-a:space-a:bot-a")).toEqual({ panel: null });
   });
-  it.each(["routines", "pages"])(
-    "reopens a stored %s view on the bot's panel",
-    (panel) => {
-      vi.stubGlobal("localStorage", { getItem: () => JSON.stringify({ panel }) });
-      expect(readRightPanelState("state")).toEqual({ panel: "settings" });
-    },
-  );
+  it.each(["routines", "pages"])("reopens a stored %s view on the bot's panel", (panel) => {
+    vi.stubGlobal("localStorage", { getItem: () => JSON.stringify({ panel }) });
+    expect(readRightPanelState("state")).toEqual({ panel: "settings" });
+  });
   it.each([
     "not json",
     "null",

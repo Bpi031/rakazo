@@ -1,8 +1,8 @@
+import type { CheckpointService } from "@rakazo/adapters";
+import type { Actor } from "@rakazo/contracts";
+import { CheckpointConflictError, IsolationError } from "@rakazo/db";
 import { Hono } from "hono";
 import { describe, expect, it, vi } from "vitest";
-import type { Actor } from "@rakazo/contracts";
-import type { CheckpointService } from "@rakazo/adapters";
-import { CheckpointConflictError, IsolationError } from "@rakazo/db";
 import { mountCheckpointHttp } from "./checkpoints-http.js";
 
 const actor: Actor = { userId: "user", spaceId: "space", email: "", isDeploymentOwner: false };

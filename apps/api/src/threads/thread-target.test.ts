@@ -9,6 +9,7 @@ import { reactToThreadMessage } from "./thread-reactions.js";
 import { threadSnapshot } from "./thread-snapshot.js";
 import { stopThreadRuns } from "./thread-stop.js";
 import type { ThreadTarget } from "./thread-target.js";
+
 function withCheckpointThread<T extends object>(tx: T) {
   const branch = { activeBranchId: null, checkpointGeneration: 0, checkpointBlocked: false };
   return {
@@ -21,6 +22,7 @@ function withCheckpointThread<T extends object>(tx: T) {
     },
   };
 }
+
 import {
   cancelSupersededQueuedRuns,
   latestWaitingRun,

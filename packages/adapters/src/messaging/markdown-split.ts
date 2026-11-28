@@ -41,7 +41,8 @@ function boundedMarkdown(body: string): Node {
   const pending = [{ node: root, depth: 0 }];
   while (pending.length) {
     const { node, depth } = pending.pop()!;
-    if (depth > MAX_REPLY_MARKDOWN_DEPTH) throw new RangeError("Reply Markdown is too deeply nested");
+    if (depth > MAX_REPLY_MARKDOWN_DEPTH)
+      throw new RangeError("Reply Markdown is too deeply nested");
     for (const child of node.children ?? []) pending.push({ node: child, depth: depth + 1 });
   }
   return root;

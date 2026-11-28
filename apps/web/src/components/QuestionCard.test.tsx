@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
-import { deferred } from "@rakazo/core/test-async";
 
-import { act, type ReactNode } from "react";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { createQueryRoot } from "../lib/query/query-root.test-support";
+import { deferred } from "@rakazo/core/test-async";
+import type { ReactNode } from "react";
+import { act } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createQueryRoot } from "../lib/query/query-root.test-support";
 
 vi.mock("@lingui/react/macro", () => ({
   Trans: ({ children }: { children: ReactNode }) => children,
@@ -18,9 +19,14 @@ vi.mock("@rakazo/chat-ui/web", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@rakazo/chat-ui/web")>()),
   ChatMarkdown: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
-vi.mock("../lib/query/rpc", () => ({ rpc: {}, selectedSpaceId: () => null, createSpaceRpc: () => ({}) }));
+vi.mock("../lib/query/rpc", () => ({
+  rpc: {},
+  selectedSpaceId: () => null,
+  createSpaceRpc: () => ({}),
+}));
 
-import { AskCard, type AskBlock } from "./messages/AskCard";
+import type { AskBlock } from "./messages/AskCard";
+import { AskCard } from "./messages/AskCard";
 import { QuestionCard } from "./QuestionCard";
 
 const actions = [

@@ -61,9 +61,7 @@ export function readRightPanelState(key: string): RightPanelState {
  * checkpoints and the managed computer panel each keep their own state.
  */
 function restoredPanel(panel: string | null): Panel {
-  return panel === "routines" || panel === "pages"
-    ? "settings"
-    : (panel as Panel);
+  return panel === "routines" || panel === "pages" ? "settings" : (panel as Panel);
 }
 
 export function writeRightPanelState(key: string, panel: Panel, routineId?: string) {

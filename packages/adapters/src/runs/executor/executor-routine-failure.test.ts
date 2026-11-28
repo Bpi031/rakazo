@@ -728,7 +728,7 @@ function retryHarness(scenario: RetryScenario = {}) {
         activeBranchId: null,
         checkpointGeneration: 0,
         checkpointBlocked: false,
-    })),
+      })),
     },
     task: {
       create: vi.fn(async () => ({ id: "task-2" })),
@@ -1006,7 +1006,7 @@ describe("running a routine retry", () => {
   it("does not retry a routine from a branch that was restored away", async () => {
     const { executor, tx, enqueue } = retryHarness();
     tx.thread.findUniqueOrThrow.mockResolvedValueOnce({
-      ...await tx.thread.findUniqueOrThrow(),
+      ...(await tx.thread.findUniqueOrThrow()),
       checkpointGeneration: 1,
     });
     await executor.retryRoutineRun("run-1");

@@ -15,7 +15,6 @@ import { wuyingScreenPolicy } from "../../packages/adapters/src/providers/comput
 import { createServiceLogger } from "../../packages/logging/src/env.ts";
 import { apiProxy } from "./server/api-proxy.js";
 import { withInstanceThemeLink } from "./server/instance-theme.js";
-import { httpKeepAlive } from "./src/http-keep-alive.js";
 import {
   attachDesktopStackProbe,
   attachNovncProxy,
@@ -25,6 +24,7 @@ import {
 } from "./server/preview-middleware.js";
 import { rakazoPwa } from "./server/pwa-plugin.js";
 import { dedupeTldtsTrie } from "./server/tldts-trie.js";
+import { httpKeepAlive } from "./src/http-keep-alive.js";
 
 export default defineConfig(({ command, mode }) => {
   // Names this build in every API request; the dev server has none, so the handshake stays off.

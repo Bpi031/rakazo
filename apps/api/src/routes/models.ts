@@ -59,6 +59,7 @@ import {
   modelDisconnectPreview,
 } from "../bots/model-pins.js";
 import { mayUsePrivateEndpoint } from "../integrations/mcp-servers.js";
+import { managedCatalog } from "../managed-services.js";
 import {
   getDeploymentModelSettings,
   updateDeploymentModelSettings,
@@ -79,7 +80,6 @@ import {
   saveConnectionModelSettings,
   throwIfAborted,
 } from "../models/model-credentials.js";
-import { managedCatalog } from "../managed-services.js";
 import type { RouterContext } from "./context.js";
 import { organizationModelConnectionRoutes } from "./organization-model-connections.js";
 

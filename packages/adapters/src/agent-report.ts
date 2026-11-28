@@ -1,7 +1,7 @@
-import { readManagedRuntimeAsset } from "./storage/managed-runtime-assets.js";
-import type { SandboxProvider, AdapterContext, ComputerRef } from "@rakazo/adapter-kit";
+import type { AdapterContext, ComputerRef, SandboxProvider } from "@rakazo/adapter-kit";
 import { AgentReportBlock, ReportWorkspacePath } from "@rakazo/contracts";
 import { z } from "zod";
+import { readManagedRuntimeAsset } from "./storage/managed-runtime-assets.js";
 
 export const reportInput = z.union([
   z.object({ help: z.literal(true) }).strict(),
@@ -21,42 +21,98 @@ For charts call render_plot (help:true first), for decisions ask_user and wait, 
 Choose only useful widgets, not every widget. Normal prose is best for short answers. No live model or additional solve is needed to publish an analysis.
 A rejected report is not published. Correct its input or explain the limitation in prose; it must not prevent attaching independently validated and read-back-verified requested files.
 Example: {"schema":"rakazo/agent-report/v1","title":"Weekend distribution","sourcePaths":["workspace/run/solution.json"],"sections":[{"kind":"table","title":"Calls","columns":[{"key":"doctor","label":"Doctor","type":"text"},{"key":"weekends","label":"Weekend calls","type":"number"}],"rows":[{"doctor":"Example only","weekends":null}],"rowQuestion":"Explain this allocation using the cited source."}],"actions":[{"label":"Discuss preferences","request":"Help me review the weekend preferences. Do not change policy yet."}]}`;
-export const reportTools = [{ name: "present_report", description: "Publish an inline interactive report in this chat from your Python-generated JSON: summary metrics, searchable/sortable tables, expandable detail and editable follow-up requests. Choose presentation suited to the user's task, not just rostering. Does not execute report code, change policy, grant approval or start solves. Use help:true for the exact schema and limits.",
-  inputSchema: { type: "object", properties: { help: { type: "boolean" }, report_path: { type: "string" } }, additionalProperties: false } }];
+export const reportTools = [
+  {
+    name: "present_report",
+    description:
+      "Publish an inline interactive report in this chat from your Python-generated JSON: summary metrics, searchable/sortable tables, expandable detail and editable follow-up requests. Choose presentation suited to the user's task, not just rostering. Does not execute report code, change policy, grant approval or start solves. Use help:true for the exact schema and limits.",
+    inputSchema: {
+      type: "object",
+      properties: { help: { type: "boolean" }, report_path: { type: "string" } },
+      additionalProperties: false,
+    },
+  },
+];
 
-const readFailure = z.object({ code: z.enum([
-  "ROST_REPORT_SOURCE_PATH", "ROST_REPORT_SOURCE_READ", "ROST_REPORT_READ_REJECTED",
-]), sourceIndex: z.number().int().min(0).max(7).optional() }).strict();
+const readFailure = z
+  .object({
+    code: z.enum([
+      "ROST_REPORT_SOURCE_PATH",
+      "ROST_REPORT_SOURCE_READ",
+      "ROST_REPORT_READ_REJECTED",
+    ]),
+    sourceIndex: z.number().int().min(0).max(7).optional(),
+  })
+  .strict();
 
-function rejectReport(code: string, sourceIndex?: number): {
-  block?: never; code: string; error: string; sourceIndex?: number;
-  reportPublished: false; solveStarted: false; action: string;
+function rejectReport(
+  code: string,
+  sourceIndex?: number,
+): {
+  block?: never;
+  code: string;
+  error: string;
+  sourceIndex?: number;
+  reportPublished: false;
+  solveStarted: false;
+  action: string;
 } {
-  return { code, error: "Report was not published; correct its bounded input before publishing.",
-    ...(sourceIndex === undefined ? {} : { sourceIndex }), reportPublished: false, solveStarted: false,
-    action: code === "ROST_REPORT_SOURCE_PATH"
-      ? "sourcePaths must cite workspace/... files. For an owned uploaded attachment, preserve the original, copy its unchanged bytes into the private workspace/inputs, verify matching SHA-256 and cite that copy. Never widen access or rerun numerical work."
-      : "Read present_report help:true, inspect the owned report and cited files locally, and correct paths, JSON, schema or finite sizes. No report was published. Keep all source-access guards. Do not restart a solve or change validated data; verified requested downloads can still be attached without this optional report." };
+  return {
+    code,
+    error: "Report was not published; correct its bounded input before publishing.",
+    ...(sourceIndex === undefined ? {} : { sourceIndex }),
+    reportPublished: false,
+    solveStarted: false,
+    action:
+      code === "ROST_REPORT_SOURCE_PATH"
+        ? "sourcePaths must cite workspace/... files. For an owned uploaded attachment, preserve the original, copy its unchanged bytes into the private workspace/inputs, verify matching SHA-256 and cite that copy. Never widen access or rerun numerical work."
+        : "Read present_report help:true, inspect the owned report and cited files locally, and correct paths, JSON, schema or finite sizes. No report was published. Keep all source-access guards. Do not restart a solve or change validated data; verified requested downloads can still be attached without this optional report.",
+  };
 }
 
-export async function readAgentReport(sandbox: SandboxProvider, computer: ComputerRef, context: AdapterContext,
-  input: unknown, redact: (text: string) => string = (s) => s) {
+export async function readAgentReport(
+  sandbox: Pick<SandboxProvider, "execute">,
+  computer: ComputerRef,
+  context: AdapterContext,
+  input: unknown,
+  redact: (text: string) => string = (s) => s,
+) {
   const parsed = reportInput.safeParse(input);
   if (!parsed.success) return rejectReport("ROST_REPORT_ARGUMENTS");
   const args = parsed.data;
   if (args.help === true) return { guide: REPORT_GUIDE };
-  let stdout = ""; let code: number | undefined;
-  for await (const event of sandbox.execute(computer, {
-    argv: ["/opt/office-python/bin/python3", "-I", "-c", readManagedRuntimeAsset("agent-report-reader.py"), Buffer.from(args.report_path).toString("base64")],
-    cwd: "/home/rakazo", timeoutMs: 15_000, unsetEnv: ["PYTHONPATH", "PYTHONHOME", "LD_PRELOAD"],
-  }, context)) {
-    if (event.type === "stdout") { stdout += event.data; if (Buffer.byteLength(stdout) > 400_000) throw new Error("Report output cap exceeded"); }
+  let stdout = "";
+  let code: number | undefined;
+  for await (const event of sandbox.execute(
+    computer,
+    {
+      argv: [
+        "/opt/office-python/bin/python3",
+        "-I",
+        "-c",
+        readManagedRuntimeAsset("agent-report-reader.py"),
+        Buffer.from(args.report_path).toString("base64"),
+      ],
+      cwd: "/home/rakazo",
+      timeoutMs: 15_000,
+      unsetEnv: ["PYTHONPATH", "PYTHONHOME", "LD_PRELOAD"],
+    },
+    context,
+  )) {
+    if (event.type === "stdout") {
+      stdout += event.data;
+      if (Buffer.byteLength(stdout) > 400_000) throw new Error("Report output cap exceeded");
+    }
     if (event.type === "exit") code = event.code;
   }
   if (code !== 0) {
     if (code === 1) {
       let value: unknown;
-      try { value = JSON.parse(stdout); } catch { /* Unknown process failures remain fatal. */ }
+      try {
+        value = JSON.parse(stdout);
+      } catch {
+        /* Unknown process failures remain fatal. */
+      }
       const rejected = readFailure.safeParse(value);
       if (rejected.success) return rejectReport(rejected.data.code, rejected.data.sourceIndex);
     }
@@ -64,12 +120,20 @@ export async function readAgentReport(sandbox: SandboxProvider, computer: Comput
   }
   // Redaction never alters the on-disk evidence or grants numerical authority.
   const value = JSON.parse(redact(stdout));
-  const checked = AgentReportBlock.safeParse({ kind: "agent_report", report: value.report, evidence: {
-    reportPath: args.report_path, reportSha256: value.reportSha256, sources: value.sources,
-    publishedAt: new Date().toISOString(), authority: "agent_analysis",
-  } });
+  const checked = AgentReportBlock.safeParse({
+    kind: "agent_report",
+    report: value.report,
+    evidence: {
+      reportPath: args.report_path,
+      reportSha256: value.reportSha256,
+      sources: value.sources,
+      publishedAt: new Date().toISOString(),
+      authority: "agent_analysis",
+    },
+  });
   if (!checked.success) return rejectReport("ROST_REPORT_SCHEMA");
   const block = checked.data;
-  if (Buffer.byteLength(JSON.stringify(block)) > 300_000) return rejectReport("ROST_REPORT_MESSAGE_CAP");
+  if (Buffer.byteLength(JSON.stringify(block)) > 300_000)
+    return rejectReport("ROST_REPORT_MESSAGE_CAP");
   return { block };
 }

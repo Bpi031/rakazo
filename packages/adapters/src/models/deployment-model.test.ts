@@ -21,14 +21,30 @@ const HOST_CREDENTIAL_ENV = [
 
 describe("resolveDeploymentModel", () => {
   it("uses the protected Codex route without loading a provider master key", () => {
-    const result = resolveDeploymentModel({ AGENT_RUNTIME: "codex", CODEX_DEPLOYMENTS: "primary,secondary",
-      CODEX_CAPABILITY_KEY_FILE: "/run/secrets/capability_key", OPENROUTER_API_KEY: "must-not-use" });
-    expect(result).toEqual({ provider: "codex-foundry", model: "primary", key: undefined, configured: true, hostCredentials: true });
+    const result = resolveDeploymentModel({
+      AGENT_RUNTIME: "codex",
+      CODEX_DEPLOYMENTS: "primary,secondary",
+      CODEX_CAPABILITY_KEY_FILE: "/run/secrets/capability_key",
+      OPENROUTER_API_KEY: "must-not-use",
+    });
+    expect(result).toEqual({
+      provider: "codex-foundry",
+      model: "primary",
+      key: undefined,
+      configured: true,
+      hostCredentials: true,
+    });
   });
   it("rejects unconfigured or out-of-registry Codex defaults without Pi fallback", () => {
     expect(() => resolveDeploymentModel({ AGENT_RUNTIME: "codex" })).toThrow();
-    expect(() => resolveDeploymentModel({ AGENT_RUNTIME: "codex", CODEX_DEPLOYMENTS: "primary",
-      CODEX_DEFAULT_MODEL: "other", CODEX_CAPABILITY_KEY_FILE: "/run/secrets/capability_key" })).toThrow();
+    expect(() =>
+      resolveDeploymentModel({
+        AGENT_RUNTIME: "codex",
+        CODEX_DEPLOYMENTS: "primary",
+        CODEX_DEFAULT_MODEL: "other",
+        CODEX_CAPABILITY_KEY_FILE: "/run/secrets/capability_key",
+      }),
+    ).toThrow();
   });
   beforeEach(() => {
     for (const name of HOST_CREDENTIAL_ENV) vi.stubEnv(name, "");

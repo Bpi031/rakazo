@@ -310,7 +310,9 @@ describe("Composer", () => {
     expect(field.value).toBe("Existing note\n\nReview the distribution");
     rerenderComposer({ reportDraft: { ...reportDraft } });
     expect(field.value).toBe("Existing note\n\nReview the distribution");
-    rerenderComposer({ reportDraft: { ...reportDraft, key: "bot:other", nonce: "report-2", text: "Other bot" } });
+    rerenderComposer({
+      reportDraft: { ...reportDraft, key: "bot:other", nonce: "report-2", text: "Other bot" },
+    });
     expect(field.value).not.toContain("Other bot");
     expect(send).not.toHaveBeenCalled();
   });

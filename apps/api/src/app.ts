@@ -25,9 +25,9 @@ import type {
   UserDeviceGateway,
 } from "@rakazo/adapters";
 import {
+  BillingEmulator,
   CheckpointService,
   CodexAgentRuntime,
-  BillingEmulator,
   CodexCatalogCache,
   closeServerFoundation,
   configuredMessaging,
@@ -73,11 +73,9 @@ import {
   verifyModelServesAgents,
   withHostComputerScreen,
 } from "@rakazo/adapters";
-import { createAuth, emailCopyAvailable, isBlockedAuthPath } from "@rakazo/auth";
+import { createAuth, emailCopyAvailable } from "@rakazo/auth";
 import type { ModelCredential } from "@rakazo/contracts";
-import {
-  isLocalhostOrLoopbackIp,
-} from "@rakazo/contracts";
+import { isLocalhostOrLoopbackIp } from "@rakazo/contracts";
 import { encryptionKeyWarning } from "@rakazo/core/node/secrets-guard";
 import type { Pool, PrismaClient } from "@rakazo/db";
 import {
@@ -104,14 +102,10 @@ import { mountAccountExportRoute } from "./account/account-export.js";
 import { mountAccountImportRoute } from "./account/account-import.js";
 import { mountAuditExportRoute } from "./account/audit-export.js";
 import { mountAuthCapabilities } from "./auth/auth-capabilities.js";
-import {
-  authLibraryLogger,
-  emptyAuthBodyAsJson,
-  withAuthLibraryFailures,
-} from "./auth/auth-library-failures.js";
+import { mountAuthHandler } from "./auth/auth-http.js";
+import { authLibraryLogger } from "./auth/auth-library-failures.js";
 import { scimDirectory } from "./auth/directory-route.js";
 import { requestSessions } from "./auth/request-session.js";
-import { createAuthResponseAudit } from "./auth/security-audit.js";
 import { accountLifecycleHooks } from "./auth/session-hooks.js";
 import { isTrustedOrigin, mobileAuthOrigins } from "./auth/trusted-origins.js";
 import { mountUserDeviceRoutes } from "./auth/user-devices.js";
@@ -133,7 +127,6 @@ import { marketingEmailRoutes, sendWelcomeEmail } from "./email/marketing-email.
 import { sendReferralEmails } from "./email/referral-email.js";
 import type { AppEnv } from "./env.js";
 import { loadEnv, withEnvOverrides } from "./env.js";
-import { initializeManagedSignupPolicy, mountManagedRoutes } from "./http/managed-routes.js";
 import { mountAppAssociation } from "./http/app-association.js";
 import type { AppLifecycle } from "./http/app-lifecycle.js";
 import {
@@ -141,12 +134,12 @@ import {
   createClientIpResolver,
   defaultTrustedProxies,
   requestClientIp,
-  withClientIp,
 } from "./http/client-ip.js";
-import { databaseProbe, healthRoutes } from "./http/health.js";
 import { mountApiCors } from "./http/cors.js";
+import { databaseProbe, healthRoutes } from "./http/health.js";
 import { startHourlySweep } from "./http/hourly-sweep.js";
 import { trackInFlightRequests } from "./http/in-flight-requests.js";
+import { initializeManagedSignupPolicy, mountManagedRoutes } from "./http/managed-routes.js";
 import { mountApiRequestBodyLimits } from "./http/request-body-limit.js";
 import { mountRpcRoute } from "./http/rpc-route.js";
 import { mountScriptAssets } from "./http/script-assets.js";
@@ -420,10 +413,10 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
     (env.agentRuntime === "codex"
       ? new CodexAgentRuntime()
       : env.agentRuntime === "scripted"
-      ? new ScriptedAgentRuntime()
-      : new PiAgentRuntime({
-          sessionRoot: env.piSessionRecording ? piSessionsRoot(env.dataDir) : undefined,
-        }));
+        ? new ScriptedAgentRuntime()
+        : new PiAgentRuntime({
+            sessionRoot: env.piSessionRecording ? piSessionsRoot(env.dataDir) : undefined,
+          }));
   const { pushTokens, notifications, workActivities } = await createPushDelivery({
     prisma,
     jobs,
@@ -498,7 +491,11 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
               headers,
             )
         : undefined,
-    extraOrigins: [...mobileAuthOrigins(env.nodeEnv), ...env.extraAuthOrigins, ...(env.additionalWebOrigins ?? [])],
+    extraOrigins: [
+      ...mobileAuthOrigins(env.nodeEnv),
+      ...env.extraAuthOrigins,
+      ...(env.additionalWebOrigins ?? []),
+    ],
     androidAppCertFingerprints: env.passkeyAndroidCertFingerprints,
     ...accountLifecycleHooks({
       spaceDeletion: spaceDeletionDeps,
@@ -532,9 +529,10 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
   // One cache serves models.list, selection validation, and run-time model
   // resolution alike, so a list call warms the run path in this process.
   const codexCatalog = new CodexCatalogCache();
-  const checkpoints = env.agentRuntime === "codex"
-    ? new CheckpointService({ prisma, sandbox, dataDir: env.dataDir })
-    : undefined;
+  const checkpoints =
+    env.agentRuntime === "codex"
+      ? new CheckpointService({ prisma, sandbox, dataDir: env.dataDir })
+      : undefined;
   // The computers bots may reach: paired desktops, and this server's own screen when it has one.
   const botUserDevices =
     userDevicesOverride ??
@@ -555,7 +553,8 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
       contextStrategy,
       prisma,
       runtime: baseRuntime,
-      pageRevisionRuntime: runtimeOverride ?? (env.agentRuntime === "codex" ? baseRuntime : new PiAgentRuntime()),
+      pageRevisionRuntime:
+        runtimeOverride ?? (env.agentRuntime === "codex" ? baseRuntime : new PiAgentRuntime()),
       codexCatalog,
       sandbox,
       memory,
@@ -803,7 +802,6 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
   mountScriptAssets(app);
   mountSharedPages(app, { prisma, artifacts }, requestClientIp);
   mountPageAppRoutes(app, { ...routerDeps, sessionActor }, requestClientIp);
-  const auditAuthResponse = createAuthResponseAudit();
   for (const [path, reason] of SYSTEM_CONTEXT_PATHS) {
     app.use(path, (_c, next) => runAsSystem(reason, next));
   }
@@ -820,18 +818,7 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
         departure,
       ),
   });
-  app.on(["GET", "POST"], "/api/auth/*", async (c) => {
-    const path = new URL(c.req.url).pathname.replace("/api/auth", "");
-    if (isBlockedAuthPath(path)) {
-      return c.json({ error: "Not available in version 1" }, 404);
-    }
-    const ip = requestClientIp(c);
-    const response = await withAuthLibraryFailures(() =>
-      auth.handler(withClientIp(emptyAuthBodyAsJson(c.req.raw), ip)),
-    );
-    await auditAuthResponse(path, ip, response);
-    return response;
-  });
+  mountAuthHandler(app, auth);
   mountLocalComputerHost(app, {
     token: env.desktopStackToken,
     sandboxProvider: env.sandboxProvider,
@@ -862,10 +849,19 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
     });
   }
   mountManagedRoutes(app, {
-    env, prisma, sandbox, jobs, home, artifacts, events, checkpoints, sessionActor,
+    env,
+    prisma,
+    sandbox,
+    jobs,
+    home,
+    artifacts,
+    events,
+    checkpoints,
+    sessionActor,
     emailEnabled: Boolean(email),
     verifyPassword: async (request, password) =>
-      (await auth.api.verifyPassword({ body: { password }, headers: request.headers })).status === true,
+      (await auth.api.verifyPassword({ body: { password }, headers: request.headers })).status ===
+      true,
   });
   mountRpcRoute(app, router, requestSession, env);
   mountBotAccess(app, { prisma, auth, router, jobs, encryptionKey: env.encryptionKey });

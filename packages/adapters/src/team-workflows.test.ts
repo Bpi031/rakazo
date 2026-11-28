@@ -1,10 +1,13 @@
-import { afterEach, expect, it, vi } from "vitest";
 import { workflowDefinitionSchema, workflowToolInput } from "@rakazo/contracts";
+import { afterEach, expect, it, vi } from "vitest";
+
 const mocks = vi.hoisted(() => ({ scope: vi.fn() }));
 vi.mock("./teams/team-storage.js", () => ({ memberScope: mocks.scope }));
+
 import { TeamWorkflowService } from "./teams/team-workflows.js";
+
 const actor = { userId: "manager", spaceId: "space", email: "", isDeploymentOwner: false };
-export const definition = {
+const definition = {
   name: "Department brief",
   leadBotId: "lead",
   objective: "Consolidate explicit submissions",
@@ -22,35 +25,65 @@ afterEach(() => {
 function fixture(role = "owner") {
   vi.stubEnv("CODEX_DEPLOYMENTS", "approved");
   mocks.scope.mockResolvedValue({ organizationId: "org", role });
-  const db: any = {
+  type BotRow = {
+    userId: string;
+    spaceId: string;
+    thread: { id: string };
+    computer?: { scope: string };
+    id?: string;
+    name?: string;
+  };
+  type RunRow = {
+    status: string;
+    trigger: string;
+    userId: string;
+    spaceId: string;
+    botId?: string;
+  };
+  const db = {
     bot: {
-      findFirst: vi.fn(async ({ where }: any) => ({
-        id: where.id,
-        userId: where.id === "lead" ? "manager" : "member",
-        spaceId: "space",
-        name: where.id,
-        thread: { id: "thread-" + where.id },
-        computer: { scope: "dedicated" },
-      })),
+      findFirst: vi.fn(
+        async ({ where }: { where: { id: string } }): Promise<BotRow | null> => ({
+          id: where.id,
+          userId: where.id === "lead" ? "manager" : "member",
+          spaceId: "space",
+          name: where.id,
+          thread: { id: "thread-" + where.id },
+          computer: { scope: "dedicated" },
+        }),
+      ),
     },
     teamMemberControl: { findUnique: vi.fn(async () => null) },
     teamWorkflow: {
       count: vi.fn(async () => 0),
       findUnique: vi.fn(async () => null),
-      create: vi.fn(async ({ data }: any) => ({ ...data, id: data.id, status: "draft" })),
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> & { id: string } }) => ({
+        ...data,
+        id: data.id,
+        status: "draft",
+      })),
     },
     run: {
-      findUniqueOrThrow: vi.fn(async () => ({
-        status: "running",
-        trigger: "user",
-        userId: "manager",
-        spaceId: "space",
-        botId: "lead",
-      })),
+      findUniqueOrThrow: vi.fn(
+        async (): Promise<RunRow> => ({
+          status: "running",
+          trigger: "user",
+          userId: "manager",
+          spaceId: "space",
+          botId: "lead",
+        }),
+      ),
     },
   };
   const jobs = { enqueue: vi.fn() };
-  return { db, jobs, service: new TeamWorkflowService(db, jobs) };
+  return {
+    db,
+    jobs,
+    service: new TeamWorkflowService(
+      db as unknown as ConstructorParameters<typeof TeamWorkflowService>[0],
+      jobs,
+    ),
+  };
 }
 it("drafts exact scoped grants without waking a bot", async () => {
   const f = fixture();
@@ -58,7 +91,7 @@ it("drafts exact scoped grants without waking a bot", async () => {
   expect(result.status).toBe("draft");
   expect(result.reviewUrl).toContain("?workflows=");
   expect(f.jobs.enqueue).not.toHaveBeenCalled();
-  expect(f.db.teamWorkflow.create.mock.calls[0][0].data.bindings).toHaveLength(2);
+  expect(f.db.teamWorkflow.create.mock.calls[0]![0].data.bindings).toHaveLength(2);
 });
 it("does not let a member grant authority or configure a lead", async () => {
   const f = fixture("member");

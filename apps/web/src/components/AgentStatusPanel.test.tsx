@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it } from "vitest";
 import { AgentStatusPanel } from "./AgentStatusPanel";
+
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 it("renders exact reported steps, unknown counters and safe text without actions", async () => {
@@ -25,15 +26,24 @@ it("renders exact reported steps, unknown counters and safe text without actions
   expect(host.querySelector("details")?.open).toBe(true);
   expect(host.textContent).toContain("0/1 steps");
   expect(host.textContent).toContain("110 tokens");
-  expect(host.querySelector('[aria-label="Token counter scope"]')?.textContent).toContain("Session total (legacy record)");
+  expect(host.querySelector('[data-testid="token-counter-scope"]')?.textContent).toContain(
+    "Session total (legacy record)",
+  );
   expect(host.textContent).toContain("Unavailable");
   expect(host.querySelector("img")).toBeNull();
   expect(host.querySelector("button")).toBeNull();
   await act(async () => root.render(<AgentStatusPanel value={value} live={false} />));
   expect(host.querySelector("details")?.open).toBe(false);
   expect(host.textContent).toContain("unfinished");
-  await act(async () => root.render(<AgentStatusPanel value={{...value, usage: {...value.usage, scope: "turn"}}} live={false} />));
-  expect(host.querySelector('[aria-label="Token counter scope"]')?.textContent).toBe("This turn");
+  await act(async () =>
+    root.render(
+      <AgentStatusPanel
+        value={{ ...value, usage: { ...value.usage, scope: "turn" } }}
+        live={false}
+      />,
+    ),
+  );
+  expect(host.querySelector('[data-testid="token-counter-scope"]')?.textContent).toBe("This turn");
   await act(async () => root.unmount());
   host.remove();
 });

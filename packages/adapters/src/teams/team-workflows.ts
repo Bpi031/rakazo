@@ -1,47 +1,84 @@
 import { randomUUID } from "node:crypto";
+import type { JobPublisher } from "@rakazo/adapter-kit";
 import type { Actor, WorkflowDefinition } from "@rakazo/contracts";
 import { workflowDefinitionSchema, workflowToolInput } from "@rakazo/contracts";
+import type { Prisma, PrismaClient } from "@rakazo/db";
 import {
   appendEventInTransaction,
   checkpointRunFields,
   createThreadMessageInTransaction,
   readJsonColumn,
-  type Prisma,
-  type PrismaClient,
 } from "@rakazo/db";
-import type { JobPublisher } from "@rakazo/adapter-kit";
 import { z } from "zod";
 import { wakeRun } from "../runs/wakeups/wake-run.js";
-import { memberScope } from "./team-storage.js";
 import { managerRole, teamDigest, teamMessagingEnabled } from "./team-policy.js";
-import { workflowText, type WorkflowTextInput, type WorkflowTextResult } from "./workflow-text.js";
+import { memberScope } from "./team-storage.js";
+import type { WorkflowTextInput, WorkflowTextResult } from "./workflow-text.js";
+import { workflowCachedInputTokens, workflowText } from "./workflow-text.js";
 
 const bindingSchema = z.object({
-  botId: z.string(), userId: z.string(), spaceId: z.string(), threadId: z.string(),
-  name: z.string(), role: z.string(), version: z.number().int().nonnegative(),
+  botId: z.string(),
+  userId: z.string(),
+  spaceId: z.string(),
+  threadId: z.string(),
+  name: z.string(),
+  role: z.string(),
+  version: z.number().int().nonnegative(),
 });
 const bindingsSchema = z.array(bindingSchema).min(1);
 const consentsSchema = z.record(z.string(), z.boolean());
-const stepsSchema = z.array(z.object({
-  botId: z.string(), userId: z.string(), spaceId: z.string(), threadId: z.string(),
-  runId: z.string(), lead: z.boolean(),
-  status: z.enum(["queued", "started", "done", "needs_approval", "needs_review"]),
-  text: z.string().optional(),
-}).passthrough());
+const stepsSchema = z.array(
+  z
+    .object({
+      botId: z.string(),
+      userId: z.string(),
+      spaceId: z.string(),
+      threadId: z.string(),
+      runId: z.string(),
+      lead: z.boolean(),
+      status: z.enum(["queued", "started", "done", "needs_approval", "needs_review"]),
+      text: z.string().optional(),
+    })
+    .passthrough(),
+);
 type Binding = z.infer<typeof bindingSchema>;
 type Step = z.infer<typeof stepsSchema>[number];
 type Flow = Awaited<ReturnType<PrismaClient["teamWorkflow"]["findUniqueOrThrow"]>>;
 type Tx = Prisma.TransactionClient;
 const json = (value: unknown) => value as Prisma.InputJsonValue;
-const bindingsOf = (flow: Flow) => readJsonColumn(bindingsSchema, flow.bindings, {
-  table: "team_workflows", column: "bindings", id: flow.id,
-}, "reject");
-const consentsOf = (flow: Flow) => readJsonColumn(consentsSchema, flow.consents, {
-  table: "team_workflows", column: "consents", id: flow.id,
-}, "reject");
-const stepsOf = (execution: { id: string; tasks: unknown }) => readJsonColumn(stepsSchema, execution.tasks, {
-  table: "team_workflow_executions", column: "tasks", id: execution.id,
-}, "reject");
+const bindingsOf = (flow: Flow) =>
+  readJsonColumn(
+    bindingsSchema,
+    flow.bindings,
+    {
+      table: "team_workflows",
+      column: "bindings",
+      id: flow.id,
+    },
+    "reject",
+  );
+const consentsOf = (flow: Flow) =>
+  readJsonColumn(
+    consentsSchema,
+    flow.consents,
+    {
+      table: "team_workflows",
+      column: "consents",
+      id: flow.id,
+    },
+    "reject",
+  );
+const stepsOf = (execution: { id: string; tasks: unknown }) =>
+  readJsonColumn(
+    stepsSchema,
+    execution.tasks,
+    {
+      table: "team_workflow_executions",
+      column: "tasks",
+      id: execution.id,
+    },
+    "reject",
+  );
 const direct = (trigger: string) => ["user", "follow_up"].includes(trigger);
 
 export class TeamWorkflowService {
@@ -478,7 +515,7 @@ export class TeamWorkflowService {
   }
 
   async continueRun(runId: string) {
-    let execution = await this.db.teamWorkflowExecution.findFirst({
+    const execution = await this.db.teamWorkflowExecution.findFirst({
       where: { runIds: { has: runId } },
     });
     if (!execution) throw new Error("Workflow run has no owned execution");
@@ -558,7 +595,7 @@ export class TeamWorkflowService {
       const result = await this.generate(input);
       const count = (x: unknown) =>
         Number.isSafeInteger(x) && Number(x) >= 0 && Number(x) <= 2147483647 ? Number(x) : null;
-      const cached = count((result.usage?.input_tokens_details as any)?.cached_tokens);
+      const cached = count(workflowCachedInputTokens(result.usage));
       const totalInput = count(result.usage?.input_tokens);
       const usage = {
         userId: input.userId,
@@ -597,9 +634,14 @@ export class TeamWorkflowService {
         const step = steps.find((s) => s.runId === runId)!;
         if (step.status !== "started") throw new Error("Workflow delivery already settled");
         const currentRun = await tx.run.findUniqueOrThrow({ where: { id: runId } });
-        if (currentRun.status !== "running" || currentRun.trigger !== "team_workflow" ||
-            currentRun.botId !== step.botId || currentRun.userId !== step.userId ||
-            currentRun.spaceId !== step.spaceId || currentRun.threadId !== step.threadId)
+        if (
+          currentRun.status !== "running" ||
+          currentRun.trigger !== "team_workflow" ||
+          currentRun.botId !== step.botId ||
+          currentRun.userId !== step.userId ||
+          currentRun.spaceId !== step.spaceId ||
+          currentRun.threadId !== step.threadId
+        )
           throw new Error("Workflow run cancelled or changed before delivery");
         if (
           !result.text.trim() ||
@@ -631,7 +673,11 @@ export class TeamWorkflowService {
         const run = await tx.run.findUniqueOrThrow({ where: { id: runId } });
         await tx.task.update({ where: { id: run.taskId }, data: { status: "completed" } });
         const next: string[] = [];
-        let status = result.needsApproval ? "needs_approval" : step.lead ? "completed" : "running";
+        const status = result.needsApproval
+          ? "needs_approval"
+          : step.lead
+            ? "completed"
+            : "running";
         if (!result.needsApproval && !step.lead && steps.every((s) => s.status === "done")) {
           const lead = await this.queue(
             tx,

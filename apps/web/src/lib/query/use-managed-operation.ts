@@ -1,6 +1,6 @@
-import type { RpcClient } from "./rpc";
 import type { SaveScope } from "./query";
 import { useSave } from "./query";
+import type { RpcClient } from "./rpc";
 
 /** Run a managed JSON write (and its reconciliation) in the space selected at submission. */
 export function useManagedOperation<Saved = void>() {

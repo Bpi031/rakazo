@@ -1,13 +1,13 @@
-import type { Hono } from "hono";
-import type { Actor, AccountAdminView } from "@rakazo/contracts";
+import type { TeamService } from "@rakazo/adapters";
+import { managerRole, memberScope, teamActionSchema, teamDigest } from "@rakazo/adapters";
+import type { AccountAdminView, Actor } from "@rakazo/contracts";
 import {
-  registrationSettingsInput as registrationInput,
-  accountConfirmationInput as confirmationInput,
   accountProposalInput,
+  accountConfirmationInput as confirmationInput,
+  registrationSettingsInput as registrationInput,
 } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
-import type { TeamService } from "@rakazo/adapters";
-import { teamActionSchema, teamDigest, memberScope, managerRole } from "@rakazo/adapters";
+import type { Hono } from "hono";
 import { isAllowedWebOrigin } from "./web-origins.js";
 
 const accountKinds = new Set(["invite", "invite_revoke", "member_role", "member_state"]);
@@ -88,7 +88,7 @@ export class AccountAdminService {
         protected:
           member.userId === actor.userId ||
           ownerRole(member.role) ||
-            (!ownerRole(scope.role) && managerRole(member.role)),
+          (!ownerRole(scope.role) && managerRole(member.role)),
       })),
       invitations: invitations.map((invite) => ({
         ...invite,
@@ -115,7 +115,10 @@ export class AccountAdminService {
       const live = await memberScope(tx as unknown as PrismaClient, actor.userId, actor.spaceId);
       if (live.organizationId !== originalScope.organizationId || !managerRole(live.role))
         throw new Error("Manager authorization changed");
-      if (settings?.ownerUserId !== actor.userId || this.policy(policy, actor.userId).digest !== input.digest)
+      if (
+        settings?.ownerUserId !== actor.userId ||
+        this.policy(policy, actor.userId).digest !== input.digest
+      )
         throw new Error("Registration policy changed; review again");
       const allowlist = [...new Set(input.allowlist)];
       const data = {

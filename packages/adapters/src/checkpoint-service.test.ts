@@ -1,6 +1,9 @@
+import type { SandboxProvider } from "@rakazo/adapter-kit";
 import { callIdFromClientNonce } from "@rakazo/core";
+import type { PrismaClient } from "@rakazo/db";
 import { resolveCheckpointSegments } from "@rakazo/db";
 import { beforeEach, expect, it, vi } from "vitest";
+import type { CheckpointFileManifest } from "./checkpoints/checkpoint-files.js";
 import { CheckpointService } from "./checkpoints/checkpoint-service.js";
 
 const stopped = vi.hoisted(() => vi.fn(async () => undefined));
@@ -23,9 +26,77 @@ const actor = {
 const copy = <T>(value: T): T => structuredClone(value);
 beforeEach(() => stopped.mockReset().mockResolvedValue(undefined));
 
+type FixtureMessage = {
+  id: string;
+  seq: number;
+  branchId: string;
+  role: string;
+  createdAt: Date;
+  blocks: { kind: "text"; text: string }[];
+  authorUserId?: string;
+  runId?: string;
+  clientNonce?: string;
+};
+type FixtureBranch = {
+  id: string;
+  threadId: string;
+  parentBranchId: string | null;
+  parentCutoffMessageSeq: number | null;
+  parentCutoffEventSeq: number | null;
+};
+type FixtureCheckpoint = {
+  id: string;
+  threadId: string;
+  botId: string;
+  branchId: string;
+  workspaceKey?: string | null;
+  kind: string;
+  createdAt: Date;
+  businessState: { transcript: FixtureMessage[] };
+};
+type FixtureAudit = {
+  id: string;
+  createdAt: Date;
+  branchId?: string;
+  status: string;
+  rescueCheckpointId?: string;
+  details: { rescueReused?: boolean; error?: string };
+};
+type FixtureArtifact = {
+  id: string;
+  checkpointHidden: boolean;
+  groupId?: string | null;
+  hash?: string;
+  storageKey?: string;
+};
+type FixtureRun = { id: string; taskId: string; status: string; trigger: string };
+type WorkspaceWhere = {
+  workspaceKey?: string | null;
+  OR?: Array<{ workspaceKey?: string | null }>;
+};
+type Binding = { policy: string; selection: null };
+type Builder = {
+  where: WorkspaceWhere & { id?: string; botId?: string; threadId?: string; branchId?: string };
+  orderBy?: unknown;
+};
+type FixtureQuery = {
+  where: {
+    id?: { in: string[] };
+    status?: { in: string[] };
+    groupId?: string | null;
+    checkpointHidden?: boolean;
+  };
+  data: Record<string, unknown>;
+};
+type FixtureFiles = {
+  version: 1;
+  digest: string;
+  entries: Extract<CheckpointFileManifest["entries"][number], { type: "file" }>[];
+};
+
 function fixture() {
   let serial = 0;
-  let state: any = {
+  let state = {
     thread: {
       id: "thread",
       botId: "bot",
@@ -35,8 +106,8 @@ function fixture() {
       checkpointGeneration: 0,
       checkpointBlocked: false,
       historyCompactionGeneration: 0,
-      historyCompactionSummary: null,
-      historyCompactedUpToSeq: null,
+      historyCompactionSummary: null as string | null,
+      historyCompactedUpToSeq: null as number | null,
       nextMessageSeq: 1,
       nextEventSeq: 0,
     },
@@ -48,13 +119,15 @@ function fixture() {
         parentCutoffMessageSeq: null,
         parentCutoffEventSeq: null,
       },
-    ],
+    ] as FixtureBranch[],
     bot: { id: "bot", instructions: "clean instructions", instructionHistory: [] },
-    checkpoints: [],
-    audits: [],
-    runs: [],
-    routines: [],
-    artifacts: [{ id: "input", hash: "input-hash", storageKey: "input", checkpointHidden: false }],
+    checkpoints: [] as FixtureCheckpoint[],
+    audits: [] as FixtureAudit[],
+    runs: [] as FixtureRun[],
+    routines: [] as { active: boolean }[],
+    artifacts: [
+      { id: "input", hash: "input-hash", storageKey: "input", checkpointHidden: false },
+    ] as FixtureArtifact[],
     messages: [
       {
         id: "m0",
@@ -64,27 +137,33 @@ function fixture() {
         createdAt: new Date(),
         blocks: [{ kind: "text", text: "clean inputs" }],
       },
-    ],
+    ] as FixtureMessage[],
   };
-  let files: any = {
+  let files: FixtureFiles = {
     version: 1,
     digest: "a".repeat(64),
     entries: [{ type: "file", path: "policy.rost", sha256: "a".repeat(64), mode: 384, size: 1 }],
   };
-  let binding: any = { policy: "policy A", selection: null };
+  let binding: Binding = { policy: "policy A", selection: null };
   let workspaceKey = "a".repeat(64);
-  const matchesWorkspace = (row: any, where: any) =>
+  const matchesWorkspace = (row: FixtureCheckpoint, where: WorkspaceWhere) =>
     (where.workspaceKey === undefined || (row.workspaceKey ?? null) === where.workspaceKey) &&
-    (!where.OR || where.OR.some((item: any) => (row.workspaceKey ?? null) === item.workspaceKey));
-  const assign = (row: any, data: any) => {
-    for (const [key, value] of Object.entries(data))
-      row[key] =
-        value && typeof value === "object" && "increment" in value
-          ? (row[key] ?? 0) + (value as any).increment
-          : value;
+    (!where.OR || where.OR.some((item) => (row.workspaceKey ?? null) === item.workspaceKey));
+  const assign = <Row extends object>(row: Row, data: Record<string, unknown>) => {
+    for (const [key, value] of Object.entries(data)) {
+      if (value && typeof value === "object" && "increment" in value) {
+        const previous: unknown = Reflect.get(row, key);
+        if (
+          typeof value.increment !== "number" ||
+          (previous != null && typeof previous !== "number")
+        )
+          throw new Error("Invalid test counter update");
+        Reflect.set(row, key, (previous ?? 0) + value.increment);
+      } else Reflect.set(row, key, value);
+    }
     return copy(row);
   };
-  const db: any = {
+  const tables = {
     $executeRaw: vi.fn(async () => 1),
     $queryRaw: vi.fn(async () => [{ id: "thread" }]),
     thread: {
@@ -103,12 +182,12 @@ function fixture() {
       }),
     },
     checkpoint: {
-      findFirst: vi.fn(async ({ where }) =>
+      findFirst: vi.fn(async ({ where }: Builder) =>
         copy(
           [...state.checkpoints]
             .reverse()
             .find(
-              (row: any) =>
+              (row) =>
                 (!where.id || row.id === where.id) &&
                 (!where.botId || row.botId === where.botId) &&
                 (!where.threadId || row.threadId === where.threadId) &&
@@ -117,21 +196,21 @@ function fixture() {
             ) ?? null,
         ),
       ),
-      create: vi.fn(async ({ data }) => {
+      create: vi.fn(async ({ data }: { data: Omit<FixtureCheckpoint, "id" | "createdAt"> }) => {
         const row = { ...copy(data), id: `cp${++serial}`, createdAt: new Date() };
         state.checkpoints.push(row);
         return copy(row);
       }),
       findFirstOrThrow: vi.fn(async ({ where }) =>
-        copy(state.checkpoints.find((row: any) => row.id === where.id)),
+        copy(state.checkpoints.find((row) => row.id === where.id)),
       ),
-      findMany: vi.fn(async ({ orderBy, where }) => {
-        const rows = state.checkpoints.filter((row: any) => matchesWorkspace(row, where));
+      findMany: vi.fn(async ({ orderBy, where }: Builder) => {
+        const rows = state.checkpoints.filter((row) => matchesWorkspace(row, where));
         return copy(Array.isArray(orderBy) ? rows.reverse() : rows);
       }),
     },
     conversationBranch: {
-      create: vi.fn(async ({ data }) => {
+      create: vi.fn(async ({ data }: { data: Omit<FixtureBranch, "id"> }) => {
         const row = { ...data, id: `branch${++serial}` };
         state.branches.push(row);
         return copy(row);
@@ -142,7 +221,7 @@ function fixture() {
       findMany: vi.fn(async ({ where }) =>
         copy(
           state.artifacts.filter(
-            (row: any) =>
+            (row) =>
               (where.checkpointHidden === undefined ||
                 row.checkpointHidden === where.checkpointHidden) &&
               (!where.id || where.id.in.includes(row.id)) &&
@@ -152,20 +231,22 @@ function fixture() {
       ),
       updateMany: vi.fn(async ({ where, data }) => {
         const matching = state.artifacts.filter(
-          (row: any) =>
+          (row) =>
             (!where.id || where.id.in.includes(row.id)) &&
             (where.groupId !== null || row.groupId === null || row.groupId === undefined),
         );
-        matching.forEach((row: any) => assign(row, data));
+        matching.forEach((row) => {
+          assign(row, data);
+        });
         return { count: matching.length };
       }),
     },
     run: {
-      count: vi.fn(async () => state.runs.filter((row: any) => row.status === "running").length),
+      count: vi.fn(async () => state.runs.filter((row) => row.status === "running").length),
       findMany: vi.fn(async ({ where }) =>
         copy(
           state.runs.filter(
-            (row: any) =>
+            (row) =>
               (!where.id || where.id.in.includes(row.id)) &&
               (!where.status || where.status.in.includes(row.status)),
           ),
@@ -173,17 +254,15 @@ function fixture() {
       ),
       findUniqueOrThrow: vi.fn(async () => copy(state.runs[0])),
       updateMany: vi.fn(async ({ data }) => {
-        state.runs.forEach((row: any) => {
+        state.runs.forEach((row) => {
           assign(row, data);
         });
         return { count: state.runs.length };
       }),
-      updateManyAndReturn: vi.fn(async ({ where, data }) =>
+      updateManyAndReturn: vi.fn(async ({ where, data }: FixtureQuery) =>
         state.runs
-          .filter(
-            (row: any) => where.id.in.includes(row.id) && where.status.in.includes(row.status),
-          )
-          .map((row: any) => assign(row, data)),
+          .filter((row) => where.id?.in.includes(row.id) && where.status?.in.includes(row.status))
+          .map((row) => assign(row, data)),
       ),
     },
     externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
@@ -195,14 +274,14 @@ function fixture() {
     routine: {
       count: vi.fn(async () => 0),
       updateMany: vi.fn(async ({ data }) => {
-        state.routines.forEach((row: any) => {
+        state.routines.forEach((row) => {
           assign(row, data);
         });
         return { count: state.routines.length };
       }),
     },
     rollbackAuditLog: {
-      create: vi.fn(async ({ data }) => {
+      create: vi.fn(async ({ data }: { data: Omit<FixtureAudit, "id" | "createdAt"> }) => {
         const row = { ...copy(data), id: `audit${++serial}`, createdAt: new Date() };
         state.audits.push(row);
         return row;
@@ -212,7 +291,7 @@ function fixture() {
         copy(
           state.audits
             .filter(
-              (row: any) =>
+              (row) =>
                 row.status === "completed" && (!where.branchId || row.branchId === where.branchId),
             )
             .at(-1) ?? null,
@@ -220,67 +299,87 @@ function fixture() {
       ),
     },
     bot: {
+      findFirst: vi.fn(async () => null),
       findUniqueOrThrow: vi.fn(async () => copy(state.bot)),
       update: vi.fn(async ({ data }) => assign(state.bot, data)),
     },
     message: {
-      findMany: vi.fn(async ({ where }) =>
-        copy(
-          state.messages.filter(
-            (message: any) =>
-              (!where.runId || where.runId.in.includes(message.runId)) &&
-              (!where.role || where.role === message.role) &&
-              (!where.OR ||
-                where.OR.some(
-                  (segment: any) =>
-                    segment.branchId === message.branchId &&
-                    (!segment.seq || message.seq <= segment.seq.lte),
-                )),
+      findMany: vi.fn(
+        async ({
+          where,
+        }: {
+          where: {
+            runId?: { in: string[] };
+            role?: string;
+            OR?: Array<{ branchId: string; seq?: { lte: number } }>;
+          };
+        }) =>
+          copy(
+            state.messages.filter(
+              (message) =>
+                (!where.runId ||
+                  (message.runId !== undefined && where.runId.in.includes(message.runId))) &&
+                (!where.role || where.role === message.role) &&
+                (!where.OR ||
+                  where.OR.some(
+                    (segment) =>
+                      segment.branchId === message.branchId &&
+                      (!segment.seq || message.seq <= segment.seq.lte),
+                  )),
+            ),
           ),
-        ),
       ),
-      createMany: vi.fn(async ({ data }) => {
+      createMany: vi.fn(async ({ data }: { data: FixtureMessage[] }) => {
         state.messages.push(...copy(data));
         return { count: data.length };
       }),
     },
   };
-  db.$transaction = async (callback: any) => {
-    const before = copy(state);
-    try {
-      return await callback(db);
-    } catch (error) {
-      state = before;
-      throw error;
-    }
+  type FixtureClient = typeof tables & {
+    $transaction: <Result>(callback: (client: FixtureClient) => Promise<Result>) => Promise<Result>;
+  };
+  const db: FixtureClient = {
+    ...tables,
+    $transaction: async (callback) => {
+      const before = copy(state);
+      try {
+        return await callback(db);
+      } catch (error) {
+        state = before;
+        throw error;
+      }
+    },
   };
   const service = new CheckpointService({
-    prisma: db,
-    sandbox: {} as any,
+    prisma: db as unknown as PrismaClient,
+    sandbox: {} as SandboxProvider,
     dataDir: "unused-test-directory",
   });
-  vi.spyOn(service as any, "owned").mockImplementation(async () => ({
+  const owned = vi.fn(async () => ({
     thread: copy(state.thread),
     computer: { id: "computer" },
     computerId: "computer",
     workspaceKey,
-    scope: "dedicated",
+    scope: "dedicated" as const,
   }));
   const fileStore = {
     capture: vi.fn(async () => copy(files)),
-    restore: vi.fn(async (_actor, _bot, _computer, manifest) => {
-      files = copy(manifest);
-    }),
+    restore: vi.fn(
+      async (_actor: typeof actor, _bot: string, _computer: unknown, manifest: FixtureFiles) => {
+        files = copy(manifest);
+      },
+    ),
   };
-  (service as any).files = fileStore;
-  (service as any).priorities = {
+  const priorities = {
     captureCheckpointBinding: vi.fn(async () => copy(binding)),
-    restoreCheckpointBinding: vi.fn(async (_actor, _bot, value) => {
+    restoreCheckpointBinding: vi.fn(async (_actor: typeof actor, _bot: string, value: Binding) => {
       binding = copy(value);
     }),
   };
+  Object.assign(service, { owned, files: fileStore, priorities });
   return {
     service,
+    owned,
     db,
     fileStore,
     get state() {
@@ -300,7 +399,7 @@ function fixture() {
         ...files,
         digest: "b".repeat(64),
         entries: [
-          { ...files.entries[0], sha256: "b".repeat(64) },
+          { ...files.entries[0]!, sha256: "b".repeat(64) },
           { type: "file", path: "wrong.xlsx", sha256: "c".repeat(64), mode: 384, size: 2 },
         ],
       };
@@ -319,14 +418,14 @@ function fixture() {
     visible() {
       const segments = resolveCheckpointSegments(state.branches, state.thread.activeBranchId);
       return state.messages
-        .filter((message: any) =>
+        .filter((message) =>
           segments.some(
             (segment) =>
               segment.branchId === message.branchId &&
               (segment.messageSeq === null || message.seq <= segment.messageSeq),
           ),
         )
-        .map((message: any) => message.blocks[0].text);
+        .map((message) => message.blocks[0]!.text);
     },
     save(label?: string) {
       return service.create(actor, {
@@ -357,16 +456,16 @@ it("A1 restores files, rule binding and artifact visibility together", async () 
   expect((await f.restore(a.id)).ok).toBe(true);
   expect(f.files).toEqual(files);
   expect(f.binding).toEqual(binding);
-  expect(
-    f.state.artifacts.filter((row: any) => !row.checkpointHidden).map((row: any) => row.id),
-  ).toEqual(["input"]);
+  expect(f.state.artifacts.filter((row) => !row.checkpointHidden).map((row) => row.id)).toEqual([
+    "input",
+  ]);
   expect(f.visible()).toEqual(["clean inputs"]);
 });
 
 it("captures its own files without borrowing another Bot's checkpoint", async () => {
   const f = fixture();
   await f.save();
-  Object.assign(f.state.checkpoints[0], {
+  Object.assign(f.state.checkpoints[0]!, {
     botId: "other-bot",
     threadId: "other-thread",
     branchId: "other-branch",
@@ -398,14 +497,14 @@ it("A2 repeated forks retain history without exposing sibling branches", async (
 
 it("restores message origin for background filtering and voice grouping without reusing retry nonces", async () => {
   const f = fixture();
-  Object.assign(f.state.messages[0], {
+  Object.assign(f.state.messages[0]!, {
     authorUserId: actor.userId,
     runId: "original-run",
     clientNonce: "call:consultation:original",
   });
   const a = await f.save();
   expect((await f.restore(a.id)).ok).toBe(true);
-  const restored = f.state.messages.at(-1);
+  const restored = f.state.messages.at(-1)!;
   expect(restored.authorUserId).toBe(actor.userId);
   expect(restored.runId).toBe("original-run");
   expect(callIdFromClientNonce(restored.clientNonce)).toBe("consultation");
@@ -421,9 +520,7 @@ it("does not capture or hide another group conversation's artifacts", async () =
   const a = await f.save();
   f.state.artifacts.push({ id: "group-output", groupId: "group", checkpointHidden: false });
   expect((await f.restore(a.id)).ok).toBe(true);
-  expect(f.state.artifacts.find((row: any) => row.id === "group-output").checkpointHidden).toBe(
-    false,
-  );
+  expect(f.state.artifacts.find((row) => row.id === "group-output")?.checkpointHidden).toBe(false);
   expect(f.state.checkpoints).toHaveLength(1);
 });
 
@@ -440,8 +537,8 @@ it("A3 restores the rescue checkpoint from history without restarting tasks", as
   expect((await f.restore(rollback.rescueCheckpointId)).ok).toBe(true);
   expect(f.files).toEqual(before);
   expect(f.visible()).toEqual(["clean inputs", "before rollback"]);
-  expect(f.state.runs[0].status).toBe("cancelled");
-  expect(f.state.routines[0].active).toBe(false);
+  expect(f.state.runs[0]!.status).toBe("cancelled");
+  expect(f.state.routines[0]!.active).toBe(false);
 });
 
 it("reuses the restored state on unchanged jumps and keeps real changes", async () => {
@@ -453,13 +550,13 @@ it("reuses the restored state on unchanged jumps and keeps real changes", async 
   const count = f.state.checkpoints.length;
   await f.restore(b.id);
   expect(f.state.checkpoints).toHaveLength(count);
-  expect(f.state.audits.at(-1).rescueCheckpointId).toBe(a.id);
-  expect(f.state.audits.at(-1).details.rescueReused).toBe(true);
+  expect(f.state.audits.at(-1)!.rescueCheckpointId).toBe(a.id);
+  expect(f.state.audits.at(-1)!.details.rescueReused).toBe(true);
   // A prompt-only change must still be preserved, even with identical files.
   f.message("new instruction");
   await f.restore(a.id);
   expect(f.state.checkpoints).toHaveLength(count + 1);
-  expect(f.state.checkpoints.at(-1).businessState.transcript.at(-1).blocks[0].text).toBe(
+  expect(f.state.checkpoints.at(-1)!.businessState.transcript.at(-1)!.blocks[0]!.text).toBe(
     "new instruction",
   );
 });
@@ -476,7 +573,7 @@ it("returns branch ancestry and the last user prompt timestamp", async () => {
   expect(view.checkpoints.find((row) => row.id === b.id)).toMatchObject({
     parentCheckpointId: a.id,
     promptPreview: "new branch prompt",
-    promptCreatedAt: f.state.messages.at(-1).createdAt.toISOString(),
+    promptCreatedAt: f.state.messages.at(-1)!.createdAt.toISOString(),
   });
   expect(view.branches.find((row) => row.id === branch)?.parentCheckpointId).toBe(a.id);
   expect(view).not.toHaveProperty("undoCheckpointId");
@@ -511,7 +608,7 @@ it("does not let an identical snapshot from a replaced workspace hide the valid 
   expect(view.revision).toBe((await f.service.status(actor, "bot")).revision);
   await expect(f.restore(previous.id)).rejects.toThrow("different workspace");
   await expect(f.restore(current.id)).resolves.toMatchObject({ ok: true });
-  expect(f.state.checkpoints.some((row: any) => row.id === previous.id)).toBe(true);
+  expect(f.state.checkpoints.some((row) => row.id === previous.id)).toBe(true);
 });
 
 it("shows the latest optional name when equivalent checkpoints are merged", async () => {
@@ -531,7 +628,7 @@ it("shows the latest optional name when equivalent checkpoints are merged", asyn
 it("shows an explicit save as manual without moving its existing automatic node", async () => {
   const f = fixture();
   const original = await f.save();
-  f.state.checkpoints[0].kind = "auto_turn_boundary";
+  f.state.checkpoints[0]!.kind = "auto_turn_boundary";
   const saved = await f.save();
   const view = await f.service.list(actor, "bot");
   expect(view.currentCheckpointId).toBe(original.id);
@@ -545,13 +642,13 @@ it("shows an explicit save as manual without moving its existing automatic node"
     },
   ]);
   expect(saved.id).not.toBe(original.id);
-  expect(f.state.checkpoints[0].kind).toBe("auto_turn_boundary");
+  expect(f.state.checkpoints[0]!.kind).toBe("auto_turn_boundary");
 });
 
 it("keeps historical turn checkpoints available to restore", async () => {
   const f = fixture();
   const original = await f.save();
-  f.state.checkpoints[0].kind = "auto_turn_boundary";
+  f.state.checkpoints[0]!.kind = "auto_turn_boundary";
   expect((await f.service.list(actor, "bot")).checkpoints).toMatchObject([
     { id: original.id, kind: "auto_turn_boundary" },
   ]);
@@ -600,16 +697,16 @@ it.each(["file", "binding", "artifact", "instructions", "answer"])(
     const count = f.state.checkpoints.length;
     if (change === "file") {
       f.files.digest = "d".repeat(64);
-      f.files.entries[0].sha256 = "d".repeat(64);
+      f.files.entries[0]!.sha256 = "d".repeat(64);
     }
     if (change === "binding") f.binding.policy = "changed binding";
     if (change === "artifact")
       f.state.artifacts.push({ id: "new artifact", checkpointHidden: false });
     if (change === "instructions") f.state.bot.instructions = "changed instructions";
-    if (change === "answer") f.state.messages.at(-1).blocks[0].text = "edited answer";
+    if (change === "answer") f.state.messages.at(-1)!.blocks[0]!.text = "edited answer";
     expect((await f.restore(a.id)).ok).toBe(true);
     expect(f.state.checkpoints).toHaveLength(count + 1);
-    expect(f.state.audits.at(-1).details.rescueReused).toBe(false);
+    expect(f.state.audits.at(-1)!.details.rescueReused).toBe(false);
   },
 );
 
@@ -620,7 +717,7 @@ it("A4 resets the abandoned summary and native-session generation", async () => 
   f.state.thread.historyCompactionSummary = "wrong unique rule";
   f.state.thread.historyCompactedUpToSeq = 1;
   f.state.bot.instructions = "wrong unique rule";
-  f.state.messages[0].blocks[0].text = "mutated after checkpoint";
+  f.state.messages[0]!.blocks[0]!.text = "mutated after checkpoint";
   await f.restore(a.id);
   expect(f.state.thread.historyCompactionSummary).toBeNull();
   expect(f.state.thread.historyCompactedUpToSeq).toBeNull();
@@ -647,8 +744,7 @@ it("A13 exports rescue references, branch history, file changes and task observa
   });
   expect(
     audit.checkpoints.some(
-      (row: any) =>
-        row.id === audit.audits[0]!.rescueCheckpointId && row.kind === "auto_pre_rollback",
+      (row) => row.id === audit.audits[0]!.rescueCheckpointId && row.kind === "auto_pre_rollback",
     ),
   ).toBe(true);
 });
@@ -656,15 +752,15 @@ it("A13 exports rescue references, branch history, file changes and task observa
 it("reads retained research snapshots and hidden artifact metadata without a live workspace", async () => {
   const f = fixture();
   const checkpoint = await f.save();
-  f.state.artifacts[0].checkpointHidden = true;
+  f.state.artifacts[0]!.checkpointHidden = true;
   f.state.messages = [];
-  const owned = vi.mocked((f.service as any).owned).mockRejectedValue(new Error("Bot deleted"));
+  const owned = f.owned.mockRejectedValue(new Error("Bot deleted"));
   owned.mockClear();
 
   const audit = await f.service.audit(actor, "bot");
 
   expect(owned).not.toHaveBeenCalled();
-  expect(audit.checkpoints.map((row: any) => row.id)).toEqual([checkpoint.id]);
+  expect(audit.checkpoints.map((row) => row.id)).toEqual([checkpoint.id]);
   expect(audit.checkpoints[0]!.businessState).toMatchObject({
     transcript: [{ blocks: [{ kind: "text", text: "clean inputs" }] }],
   });
@@ -695,8 +791,8 @@ it("preserves the committed rescue and blocks further work when restore fails", 
   f.fileStore.restore.mockRejectedValue(new Error("file transfer failed"));
   expect((await f.restore(a.id)).ok).toBe(false);
   expect(f.state.thread.checkpointBlocked).toBe(true);
-  expect(f.state.checkpoints.some((row: any) => row.kind === "auto_pre_rollback")).toBe(true);
-  expect(f.state.audits.at(-1).status).toBe("failed");
+  expect(f.state.checkpoints.some((row) => row.kind === "auto_pre_rollback")).toBe(true);
+  expect(f.state.audits.at(-1)!.status).toBe("failed");
   await expect(f.save()).rejects.toThrow(/refresh/);
 });
 
@@ -709,14 +805,14 @@ it.each(["missing", "changed"])(
     const current = copy(f.files);
     f.state.runs.push({ id: "existing-run", taskId: "task", status: "running", trigger: "user" });
     if (damage === "missing") f.state.artifacts = [];
-    else f.state.artifacts[0].hash = "different artifact bytes";
+    else f.state.artifacts[0]!.hash = "different artifact bytes";
     await expect(f.restore(original.id)).rejects.toThrow(
       "Saved checkpoint attachments are unavailable",
     );
     expect(f.files).toEqual(current);
     expect(f.fileStore.restore).not.toHaveBeenCalled();
     expect(stopped).not.toHaveBeenCalled();
-    expect(f.state.runs[0].status).toBe("running");
+    expect(f.state.runs[0]!.status).toBe("running");
     expect(f.state.thread).toMatchObject({ checkpointGeneration: 0, checkpointBlocked: false });
   },
 );
@@ -728,6 +824,6 @@ it("records SQL failures on a fresh transaction while preserving the rescue", as
   f.db.conversationBranch.create.mockRejectedValueOnce(new Error("database unavailable"));
   expect((await f.restore(a.id)).ok).toBe(false);
   expect(f.state.thread.checkpointBlocked).toBe(true);
-  expect(f.state.checkpoints.some((row: any) => row.kind === "auto_pre_rollback")).toBe(true);
-  expect(f.state.audits.at(-1).details.error).toBe("database unavailable");
+  expect(f.state.checkpoints.some((row) => row.kind === "auto_pre_rollback")).toBe(true);
+  expect(f.state.audits.at(-1)!.details.error).toBe("database unavailable");
 });

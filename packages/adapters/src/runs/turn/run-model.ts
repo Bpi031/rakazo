@@ -31,7 +31,6 @@ import {
   matchingAdminDeploymentModel,
   resolveDeploymentModel,
 } from "../../models/deployment-model.js";
-import { modelAcceptsImageInput } from "../../models/model-vision.js";
 import {
   CLOUDFLARE_AI_GATEWAY_CONFIG_MESSAGE,
   CLOUDFLARE_WORKERS_AI_PROVIDER_ID,
@@ -72,6 +71,7 @@ import {
   validateModelAuthAvailability,
 } from "../../models/model-selection.js";
 import { connectionModelSettings } from "../../models/model-settings.js";
+import { modelAcceptsImageInput } from "../../models/model-vision.js";
 import { codexLiveModel } from "../../runtime/pi/models/pi-codex-catalog.js";
 import { LOCAL_PROVIDER_ID } from "../../runtime/pi/models/pi-local-provider.js";
 import {

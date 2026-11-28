@@ -177,11 +177,15 @@ export async function claimCheckpointWorkspace(
           computer.controlBotId === input.botId &&
           (input.restore ||
             (input.allowedRunId &&
-              await tx.computerExecutionLease.findFirst({
-                where: { computerId: input.computerId, botId: input.botId,
-                  runId: input.allowedRunId, expiresAt: { gt: now } },
+              (await tx.computerExecutionLease.findFirst({
+                where: {
+                  computerId: input.computerId,
+                  botId: input.botId,
+                  runId: input.allowedRunId,
+                  expiresAt: { gt: now },
+                },
                 select: { id: true },
-              })))
+              }))))
         ))
     )
       throw new CheckpointConflictError("Release workspace control before checkpointing");

@@ -1,7 +1,8 @@
-import { useId, useState } from "react";
-import { ArrowRight, CircleHelp, X } from "lucide-react";
-import { validateQuestionAnswer, type QuestionForm } from "@rakazo/contracts";
+import type { QuestionForm } from "@rakazo/contracts";
+import { validateQuestionAnswer } from "@rakazo/contracts";
 import { OptionSelect } from "@rakazo/ui-web";
+import { ArrowRight, CircleHelp, X } from "lucide-react";
+import { useId, useState } from "react";
 import { useSave } from "../lib/query/query";
 
 export function QuestionFormCard({
@@ -16,7 +17,10 @@ export function QuestionFormCard({
   const [values, setValues] = useState<Record<string, string>>({});
   const [hidden, setHidden] = useState(false);
   const [done, setDone] = useState(false);
-  const save = useSave({ save: (response: string) => onAnswer(response), onSaved: () => setDone(true) });
+  const save = useSave({
+    save: (response: string) => onAnswer(response),
+    onSaved: () => setDone(true),
+  });
   const busy = save.pending;
   const error = save.error ? "The answer was not confirmed. Please review and submit again." : "";
   const formId = useId();
@@ -37,6 +41,7 @@ export function QuestionFormCard({
   if (hidden)
     return (
       <button
+        type="button"
         className="inline-flex items-center gap-2 rounded border border-border px-3 py-2 text-body"
         onClick={() => setHidden(false)}
       >
@@ -52,6 +57,7 @@ export function QuestionFormCard({
       <header className="flex items-start justify-between gap-3">
         <h3 className="min-w-0 break-words text-body font-semibold">{question}</h3>
         <button
+          type="button"
           title="Answer later"
           aria-label="Answer later"
           className="shrink-0 p-1"

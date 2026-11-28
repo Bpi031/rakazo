@@ -1,8 +1,8 @@
 import { MCP_APP_MIME_TYPE, STEP_SCREENSHOT_MIME_TYPES } from "@rakazo/contracts";
+import { usesManagedComputers } from "../computers/computers.js";
 import type { PrismaClient } from "../database/client.js";
 import { Prisma } from "../database/client.js";
 import { isUniqueViolation } from "../database/prisma-errors.js";
-import { usesManagedComputers } from "../computers/computers.js";
 import { IsolationError } from "../database/scope.js";
 
 /**
@@ -99,7 +99,5 @@ export async function withResolvedArtifactVersion<T>(
 function artifactVersionLockKey(params: ArtifactVersionScope): string {
   const keys = [params.spaceId, params.botId, params.groupId ?? "", params.name.toLowerCase()];
   if (usesManagedComputers()) keys.push(params.userId ?? "");
-  return keys.join(
-    "\u001f",
-  );
+  return keys.join("\u001f");
 }

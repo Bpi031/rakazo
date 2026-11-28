@@ -1,7 +1,7 @@
 import type { Actor } from "@rakazo/contracts";
 import { expect, it, vi } from "vitest";
-import type { PrismaClient } from "./database/client.js";
 import { createRepos } from "./bots/bot-repository.js";
+import type { PrismaClient } from "./database/client.js";
 
 const actor: Actor = { userId: "owner", spaceId: "space", email: "", isDeploymentOwner: false };
 

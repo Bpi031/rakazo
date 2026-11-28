@@ -1302,7 +1302,11 @@ describe("pauseRunForInput", () => {
             .mockResolvedValueOnce({ nextMessageSeq: 4 })
             .mockResolvedValueOnce({ nextEventSeq: 8 })
             .mockResolvedValueOnce({ nextEventSeq: 9 })
-            .mockResolvedValue({ activeBranchId: null, checkpointGeneration: 0, checkpointBlocked: false }),
+            .mockResolvedValue({
+              activeBranchId: null,
+              checkpointGeneration: 0,
+              checkpointBlocked: false,
+            }),
         },
         message: { create: vi.fn().mockResolvedValue({ id: "message-1" }) },
         event: {
@@ -1421,7 +1425,11 @@ describe("pauseRunForInput", () => {
           .mockResolvedValueOnce({ nextMessageSeq: 4 })
           .mockResolvedValueOnce({ nextEventSeq: 8 })
           .mockResolvedValueOnce({ nextEventSeq: 9 })
-          .mockResolvedValue({ activeBranchId: null, checkpointGeneration: 0, checkpointBlocked: false }),
+          .mockResolvedValue({
+            activeBranchId: null,
+            checkpointGeneration: 0,
+            checkpointBlocked: false,
+          }),
       },
       message: { create: vi.fn().mockResolvedValue({ id: "message-1" }) },
       event: {
@@ -4076,7 +4084,9 @@ describe("queue admission beside pending cards", () => {
       text: "hi all",
     };
     const tx = {
-      thread: { update: vi.fn().mockResolvedValue({ activeBranchId: null, checkpointGeneration: 0 }) },
+      thread: {
+        update: vi.fn().mockResolvedValue({ activeBranchId: null, checkpointGeneration: 0 }),
+      },
       run: {
         findFirst: vi.fn().mockResolvedValue(null),
         create: vi.fn().mockResolvedValue({ id: "continuation" }),
@@ -4135,7 +4145,9 @@ describe("queue admission beside pending cards", () => {
     });
     const continuation = async (rows: ReturnType<typeof row>[]) => {
       const tx = {
-        thread: { update: vi.fn().mockResolvedValue({ activeBranchId: null, checkpointGeneration: 0 }) },
+        thread: {
+          update: vi.fn().mockResolvedValue({ activeBranchId: null, checkpointGeneration: 0 }),
+        },
         run: {
           findFirst: vi.fn().mockResolvedValue(null),
           create: vi.fn().mockResolvedValue({ id: "continuation" }),
@@ -4187,7 +4199,9 @@ describe("queue admission beside pending cards", () => {
 
   it("creates a pending steering continuation without attaching it to a paused run", async () => {
     const tx = {
-      thread: { update: vi.fn().mockResolvedValue({ activeBranchId: null, checkpointGeneration: 0 }) },
+      thread: {
+        update: vi.fn().mockResolvedValue({ activeBranchId: null, checkpointGeneration: 0 }),
+      },
       run: {
         findFirst: vi.fn(async ({ where }: { where: { status: { in: string[] } } }) =>
           where.status.in.includes("waiting_input") ? { id: "paused" } : null,

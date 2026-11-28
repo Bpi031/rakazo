@@ -7,6 +7,7 @@ import {
   protectedComputerLifecycleRefusal,
 } from "../../providers/computer/desktop/desktop-command-guard.js";
 import { findRoutinesTarget } from "../../routines/routine-target.js";
+import { createScheduleFromTool as createRostSchedule } from "../../schedule-tools.js";
 import {
   addScratchpadItemFromTool,
   completeScratchpadItemFromTool,
@@ -23,7 +24,6 @@ import {
   updateTicket,
 } from "../../tasks/ticket-tools.js";
 import { cardName } from "../../tools/fleet-tools.js";
-import { createScheduleFromTool as createRostSchedule } from "../../schedule-tools.js";
 import type { ScheduleToolDeps } from "../../tools/schedule-tools.js";
 import {
   cancelScheduleFromTool,

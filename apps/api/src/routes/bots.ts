@@ -79,12 +79,12 @@ import {
   botEmailAddresses,
   claimBotEmailAddress,
 } from "../email/bot-email-address.js";
+import { managedChoiceAllowed } from "../managed-services.js";
 import type { RouterDeps } from "../router.js";
 import { resumeRoutinesAfterRestore } from "../routines/routine-resume.js";
 import { changedBotSettings } from "../telemetry/bot-setting-analytics.js";
 import { purgeClearedThreadMemory } from "../threads/thread-memory.js";
 import { loadMessagePage } from "../threads/thread-message-pages.js";
-import { managedChoiceAllowed } from "../managed-services.js";
 import type { RouterContext } from "./context.js";
 import { computerContext, modelSetup, THREAD_MESSAGE_PAGE_SIZE } from "./shared.js";
 

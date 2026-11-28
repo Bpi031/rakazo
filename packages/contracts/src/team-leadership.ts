@@ -1,4 +1,5 @@
 import { z } from "zod";
+
 const id = z.string().regex(/^[A-Za-z0-9_-]{1,160}$/);
 export const leadershipProposal = z
   .object({ successorBotId: id, workflowIds: z.array(id).max(20) })

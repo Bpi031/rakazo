@@ -256,7 +256,14 @@ async function claimLifecycleComputer(
   const assigned = await deps.prisma.computer.findUnique({
     where: bot.computerId
       ? { id: bot.computerId }
-      : { scopeKey: computerScopeKey({ mode: "dedicated", spaceId: bot.spaceId, userId: bot.userId, botId: bot.id }) },
+      : {
+          scopeKey: computerScopeKey({
+            mode: "dedicated",
+            spaceId: bot.spaceId,
+            userId: bot.userId,
+            botId: bot.id,
+          }),
+        },
   });
   if (!assigned || (assigned.scope !== "dedicated" && assigned.scope !== "team")) return null;
   return deps.prisma.$transaction(async (tx) => {
@@ -292,7 +299,10 @@ async function releaseLifecycleComputer(
 }
 
 /** Management stays within the current space, whichever member created the bot. */
-export function managedBotsWhere(caller: { spaceId: string; userId: string }): Prisma.BotWhereInput {
+export function managedBotsWhere(caller: {
+  spaceId: string;
+  userId: string;
+}): Prisma.BotWhereInput {
   return { spaceId: caller.spaceId, ...(usesManagedComputers() ? { userId: caller.userId } : {}) };
 }
 
@@ -443,7 +453,11 @@ async function archiveBotWithComputer(
   const currentDedicated = dedicated
     ? await deps.prisma.computer.findUnique({ where: { id: dedicated.id } })
     : null;
-  if (dedicated?.scope !== "team" && currentDedicated?.providerRef && currentDedicated.state === "running") {
+  if (
+    dedicated?.scope !== "team" &&
+    currentDedicated?.providerRef &&
+    currentDedicated.state === "running"
+  ) {
     const ref = toComputerRef(currentDedicated);
     await checkpointAndStopComputer(deps, currentDedicated, ref, context);
     await deps.prisma.computer.updateMany({
@@ -513,7 +527,9 @@ async function destroyBotWithComputer(
   );
   if (dedicated?.scope !== "team" && dedicated?.providerRef) {
     const destroyed = deps.sandbox.destroy(toComputerRef(dedicated), context);
-    await (usesManagedComputers() || options.strictTeardown ? destroyed : destroyed.catch(() => undefined));
+    await (usesManagedComputers() || options.strictTeardown
+      ? destroyed
+      : destroyed.catch(() => undefined));
   }
   // Keep the bot deletion transaction from committing if raw transcript cleanup fails.
   await removePiBotSessions(deps.dataDir, bot.userId, bot.id);
@@ -631,7 +647,8 @@ async function destroyBotWithComputer(
           where: { id: webhookSecretId, kind: "webhook", spaceId: bot.spaceId },
         });
       }
-      if (dedicated?.scope === "dedicated") await tx.computer.delete({ where: { id: dedicated.id } });
+      if (dedicated?.scope === "dedicated")
+        await tx.computer.delete({ where: { id: dedicated.id } });
       return {
         artifactKeys: [
           ...botArtifacts

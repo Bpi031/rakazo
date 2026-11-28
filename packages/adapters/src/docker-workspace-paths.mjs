@@ -12,8 +12,11 @@ export function normalizeDockerWorkspacePath(value) {
     throw new Error("Path escapes the computer workspace");
   }
   const canonical = `${portable.startsWith("/") ? "/" : ""}${segments.join("/")}`;
-  const relative = canonical === DOCKER_HOME ? ""
-    : canonical.startsWith(`${DOCKER_HOME}/`) ? canonical.slice(DOCKER_HOME.length + 1)
-    : segments.join("/");
+  const relative =
+    canonical === DOCKER_HOME
+      ? ""
+      : canonical.startsWith(`${DOCKER_HOME}/`)
+        ? canonical.slice(DOCKER_HOME.length + 1)
+        : segments.join("/");
   return relative;
 }

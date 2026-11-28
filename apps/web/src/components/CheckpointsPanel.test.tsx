@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
-import { deferred } from "@rakazo/core/test-async";
 
 import { i18n } from "@lingui/core";
+import { deferred } from "@rakazo/core/test-async";
 import { act } from "react";
-import { createQueryRoot } from "../lib/query/query-root.test-support";
 import { afterEach, expect, it, vi } from "vitest";
+import { createQueryRoot } from "../lib/query/query-root.test-support";
 
 vi.mock("../lib/query/rpc", () => ({
   rpc: {},
@@ -168,9 +168,7 @@ it("keeps a reopened panel disabled while a workspace operation is still running
 it("does not reload a different chat when an unmounted restore completes", async () => {
   const completion = deferred<Response>();
   const fetcher = vi.fn((_url: string, init: RequestInit) =>
-    init.method === "POST"
-      ? completion.promise
-      : Promise.resolve(Response.json(view)),
+    init.method === "POST" ? completion.promise : Promise.resolve(Response.json(view)),
   );
   vi.stubGlobal("fetch", fetcher);
   const restored = vi.fn();
@@ -188,7 +186,9 @@ it("does not reload a different chat when an unmounted restore completes", async
   expect(busy).toHaveBeenLastCalledWith(true);
   await act(async () => root!.unmount());
   root = undefined;
-  await act(async () => completion.resolve(Response.json({ ok: true, generation: 4, branchId: "new" })));
+  await act(async () =>
+    completion.resolve(Response.json({ ok: true, generation: 4, branchId: "new" })),
+  );
   expect(restored).not.toHaveBeenCalled();
   expect(busy).toHaveBeenLastCalledWith(false);
 });

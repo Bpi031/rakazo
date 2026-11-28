@@ -22,15 +22,19 @@ export function AgentStatusPanel({ value, live }: { value: AgentStatusFields; li
     >
       <summary className="cursor-pointer select-none text-muted-foreground">
         Agent status
-        {value.plan?.length ? <span className="ml-2 text-label">{completed}/{value.plan.length} steps</span> : null}
-        {value.usage?.totalTokens != null ? <span className="ml-2 text-label">{number(value.usage.totalTokens)} tokens</span> : null}
+        {value.plan?.length ? (
+          <span className="ml-2 text-label">
+            {completed}/{value.plan.length} steps
+          </span>
+        ) : null}
+        {value.usage?.totalTokens != null ? (
+          <span className="ml-2 text-label">{number(value.usage.totalTokens)} tokens</span>
+        ) : null}
       </summary>
       <div className="mt-2 space-y-3">
         {value.configuration && (
-          <p
-            className="break-words text-label text-muted-foreground"
-            aria-label="Active turn configuration"
-          >
+          <p className="break-words text-label text-muted-foreground">
+            <span className="sr-only">Active turn configuration: </span>
             {value.configuration.model}
             <span className="ml-2">{value.configuration.effort} effort</span>
             <span className="ml-2">This turn</span>
@@ -74,17 +78,19 @@ export function AgentStatusPanel({ value, live }: { value: AgentStatusFields; li
         {value.activity ? (
           <p className="text-muted-foreground" role="status">
             Last {activityNames[value.activity.kind]}: {value.activity.status}
-            {value.activity.durationMs != null
-              ? <span className="ml-2 text-label">{(value.activity.durationMs / 1000).toFixed(1)}s</span>
-              : null}
-            {value.activity.filesChanged != null
-              ? <span className="ml-2 text-label">{number(value.activity.filesChanged)} files</span>
-              : null}
+            {value.activity.durationMs != null ? (
+              <span className="ml-2 text-label">
+                {(value.activity.durationMs / 1000).toFixed(1)}s
+              </span>
+            ) : null}
+            {value.activity.filesChanged != null ? (
+              <span className="ml-2 text-label">{number(value.activity.filesChanged)} files</span>
+            ) : null}
           </p>
         ) : null}
         {value.usage ? (
           <>
-            <p className="text-label text-muted-foreground" aria-label="Token counter scope">
+            <p className="text-label text-muted-foreground" data-testid="token-counter-scope">
               {value.usage.scope === "turn" ? "This turn" : "Session total (legacy record)"}
             </p>
             {value.usage.contextUsedTokens != null &&

@@ -1,7 +1,10 @@
-import { useRef, useState } from "react";
-import { createRoot } from "react-dom/client";
 import { i18n } from "@lingui/core";
 import { I18nProvider } from "@lingui/react";
+import { ThreadMessageSchema } from "@rakazo/contracts";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { ComponentProps } from "react";
+import { useRef, useState } from "react";
+import { createRoot } from "react-dom/client";
 import { rpc } from "../lib/query/rpc";
 import { Transcript } from "../pages/shell/chat/transcript";
 import { ManagedModelPicker } from "./ManagedModelPicker";
@@ -49,26 +52,32 @@ const block = {
   evidence: {
     reportPath: "workspace/synthetic-report.json",
     reportSha256: "a".repeat(64),
+    publishedAt: "2026-10-20T00:00:00Z",
     sources: [{ path: "workspace/synthetic.json", sha256: "b".repeat(64), bytes: 1 }],
     authority: "agent_analysis",
   },
 };
 const messages = [
-  {
+  ThreadMessageSchema.parse({
     id: "synthetic-report",
     threadId: "synthetic",
     botId: "b",
+    seq: 1,
     role: "bot",
     createdAt: "2026-10-20T00:00:00Z",
     blocks: [block],
-  },
-] as any;
+  }),
+];
 const nothing = () => {};
 const asyncNothing = async () => {};
 function Fixture() {
   const pane = new URLSearchParams(location.search).has("pane");
   const scroll = useRef<HTMLDivElement>(null);
-  const [bot, setBot] = useState<any>({ id: "b", modelId: "flash", thinkingLevel: null });
+  const [bot, setBot] = useState<ComponentProps<typeof ManagedModelPicker>["bot"]>({
+    id: "b",
+    modelId: "flash",
+    thinkingLevel: null,
+  });
   const [tick, setTick] = useState(0);
   return (
     <I18nProvider i18n={i18n}>
@@ -85,7 +94,9 @@ function Fixture() {
             padding: "0 12px",
           }}
         >
-          <button onClick={() => setTick((n) => n + 1)}>Refresh metadata {tick}</button>
+          <button type="button" onClick={() => setTick((n) => n + 1)}>
+            Refresh metadata {tick}
+          </button>
           <ManagedModelPicker bot={bot} defaultModel="flash" onChange={setBot} />
         </header>
         <div
@@ -133,14 +144,14 @@ function Fixture() {
             onReleaseComputer={asyncNothing}
             rpc={rpc}
           />
-          {pane && (
-            <aside style={{ borderLeft: "1px solid #777", padding: 16 }}>
-              Synthetic document pane
-            </aside>
-          )}
+          {pane && <aside className="border-l border-border p-4">Synthetic document pane</aside>}
         </div>
       </div>
     </I18nProvider>
   );
 }
-createRoot(document.getElementById("root")!).render(<Fixture />);
+createRoot(document.getElementById("root")!).render(
+  <QueryClientProvider client={new QueryClient()}>
+    <Fixture />
+  </QueryClientProvider>,
+);

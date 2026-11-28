@@ -113,13 +113,21 @@ async function render(mode: "in" | "up" | "forgot" = "in", entry = "/") {
   );
 }
 it("does not offer signup to an existing user when registration is closed", async () => {
-  vi.mocked(fetchAuthCapabilities).mockResolvedValue({ ...capabilities, passwordAuth: true, registrationEnabled: false });
+  vi.mocked(fetchAuthCapabilities).mockResolvedValue({
+    ...capabilities,
+    passwordAuth: true,
+    registrationEnabled: false,
+  });
   await render("in", "/sign-in/email");
   expect(host.querySelector('a[href^="/sign-up"]')).toBeNull();
   expect(host.querySelector('input[name="email"]')).not.toBeNull();
 });
 it("does not show an account form at a direct closed signup link", async () => {
-  vi.mocked(fetchAuthCapabilities).mockResolvedValue({ ...capabilities, passwordAuth: true, registrationEnabled: false });
+  vi.mocked(fetchAuthCapabilities).mockResolvedValue({
+    ...capabilities,
+    passwordAuth: true,
+    registrationEnabled: false,
+  });
   await render("up");
   expect(host.textContent).toContain("Registration is closed");
   expect(host.querySelector("input")).toBeNull();

@@ -6,7 +6,6 @@ import { createBrowserProvider } from "../../browser/browser-provider-factory.js
 import { createMediaGenerationProvider } from "../../media/media-generation-factory.js";
 import { createPaidServiceProvider } from "../../payments/paid-services-factory.js";
 import { promptTaskCallback } from "../../tasks/task-callbacks.js";
-import { wakeRun } from "../wakeups/wake-run.js";
 import { teamMessagingEnabled } from "../../teams/team-policy.js";
 import { memberScope, TeamMembershipError } from "../../teams/team-storage.js";
 import { TeamWorkflowService } from "../../teams/team-workflows.js";
@@ -28,6 +27,7 @@ import {
 import { retryRunSetup, runEndedForThisWorker } from "../lifecycle/run-lifecycle.js";
 import { resolveConnectedRunModel, resolveRunModel } from "../turn/run-model.js";
 import { runModelTurn } from "../turn/run-model-turn.js";
+import { wakeRun } from "../wakeups/wake-run.js";
 import type { ExecutorDeps } from "./executor-deps.js";
 
 export function createRunExecutor(executorDeps: ExecutorDeps) {

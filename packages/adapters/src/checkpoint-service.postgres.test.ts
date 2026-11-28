@@ -1,4 +1,3 @@
-import { deferred } from "@rakazo/core/test-async";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -6,6 +5,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { AdapterContext, JobPublisher, SandboxProvider } from "@rakazo/adapter-kit";
 import type { Actor } from "@rakazo/contracts";
+import { deferred } from "@rakazo/core/test-async";
 import type { PrismaClient } from "@rakazo/db";
 import {
   assertRunCanWriteHistory,
@@ -20,10 +20,10 @@ import {
   withCheckpointRestoreLock,
 } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { LocalArtifactStore } from "./storage/artifacts.js";
+import { destroyBot } from "./bots/child-bots.js";
 import type { CheckpointFileManifest } from "./checkpoints/checkpoint-files.js";
 import { CheckpointService } from "./checkpoints/checkpoint-service.js";
-import { destroyBot } from "./bots/child-bots.js";
+import { LocalArtifactStore } from "./storage/artifacts.js";
 import { LocalAgentHomeStore } from "./storage/home.js";
 
 // Opt in with a dedicated, fully migrated disposable database. Never use DATABASE_URL.

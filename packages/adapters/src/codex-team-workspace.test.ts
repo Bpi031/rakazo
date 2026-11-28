@@ -1,33 +1,40 @@
+import type { AgentRunRequest, AgentRuntimeEvent, RuntimeSession } from "@rakazo/adapter-kit";
 import { deferred } from "@rakazo/core/test-async";
 import { expect, it, vi } from "vitest";
+import { z } from "zod";
 import { canonicalToolPaths } from "./bot-path-contract.mjs";
 import { CodexProtocolRuntime } from "./codex-protocol.mjs";
 import { safeNativeDiff } from "./native-protocol.mjs";
 
+const params = (frame?: Record<string, unknown>) =>
+  z.record(z.string(), z.unknown()).parse(frame?.params);
+
 function protocolSession() {
-  const queue: any[] = [];
+  const queue: Record<string, unknown>[] = [];
   let wake: (() => void) | undefined;
   let closed = false;
-  const push = (value: any) => {
+  const push = (value: Record<string, unknown>) => {
     queue.push(value);
     wake?.();
     wake = undefined;
   };
-  const send = vi.fn(async (frame: any) => {
+  const send = vi.fn<RuntimeSession["send"]>(async (frame) => {
     if (!frame.id) return;
-    let result: any = {};
+    let result: Record<string, unknown> = {};
     if (frame.method === "thread/start") result = { thread: { id: "native-thread" } };
     if (frame.method === "turn/start") result = { turn: { id: "native-turn" } };
     if (frame.method === "model/list" || frame.method === "skills/list") result = { data: [] };
     push({ id: frame.id, result });
-    if (frame.method === "fs/watch")
+    if (frame.method === "fs/watch") {
+      const watch = z.object({ watchId: z.string(), path: z.string() }).parse(params(frame));
       push({
         method: "fs/changed",
         params: {
-          watchId: frame.params.watchId,
-          changedPaths: [frame.params.path + "/valid.py", "/home/rakazo/bots/other/private.py"],
+          watchId: watch.watchId,
+          changedPaths: [`${watch.path}/valid.py`, "/home/rakazo/bots/other/private.py"],
         },
       });
+    }
     if (frame.method === "turn/start") {
       push({
         method: "item/completed",
@@ -57,7 +64,7 @@ function protocolSession() {
           wake = waiting.resolve;
           await waiting.promise;
         }
-        while (queue.length) yield queue.shift();
+        while (queue.length) yield queue.shift()!;
       }
     })(),
   };
@@ -73,7 +80,7 @@ it.each([false, true])(
     };
     const control = {
       mode: "execute" as const,
-      prepare: vi.fn(async () => ({
+      prepare: vi.fn<NonNullable<AgentRunRequest["nativeControl"]>["prepare"]>(async () => ({
         workspace,
         mode: "execute",
         action: "none",
@@ -91,7 +98,7 @@ it.each([false, true])(
       key: "k".repeat(32),
       baseUrl: "http://inference.invalid",
     });
-    const events: any[] = [];
+    const events: AgentRuntimeEvent[] = [];
     for await (const event of runtime.run(
       {
         runId: "run",
@@ -110,23 +117,28 @@ it.each([false, true])(
     ))
       events.push(event);
     const frames = session.send.mock.calls.map(([frame]) => frame);
-    expect(frames.find((frame) => frame.method === "thread/start").params.cwd).toBe(workspace.cwd);
-    expect(frames.find((frame) => frame.method === "thread/start").params.developerInstructions)
-      .toContain(`Path contract: shell cwd is ${workspace.cwd}`);
+    expect(params(frames.find((frame) => frame.method === "thread/start")).cwd).toBe(workspace.cwd);
     expect(
-      frames.find((frame) => frame.method === "turn/start").params.sandboxPolicy.writableRoots,
-    ).toEqual(workspace.roots);
-    expect(events.at(-1).type).toBe("done");
+      params(frames.find((frame) => frame.method === "thread/start")).developerInstructions,
+    ).toContain(`Path contract: shell cwd is ${workspace.cwd}`);
+    expect(
+      params(frames.find((frame) => frame.method === "turn/start")).sandboxPolicy,
+    ).toMatchObject({
+      writableRoots: workspace.roots,
+    });
+    expect(events.at(-1)?.type).toBe("done");
     if (native) {
       expect(
-        frames.filter((frame) => frame.method === "fs/watch").map((frame) => frame.params.path),
+        frames.filter((frame) => frame.method === "fs/watch").map((frame) => params(frame).path),
       ).toEqual(workspace.roots);
-      expect(frames.find((frame) => frame.method === "skills/list").params.cwds).toEqual(
+      expect(params(frames.find((frame) => frame.method === "skills/list")).cwds).toEqual(
         workspace.roots,
       );
       const changed = control.observe.mock.calls
         .filter(([kind]) => kind === "files")
-        .flatMap(([, value]: any) => value.changedPaths);
+        .flatMap(
+          ([, value]) => z.object({ changedPaths: z.array(z.string()) }).parse(value).changedPaths,
+        );
       expect(changed).toEqual(["bots/a/valid.py", "shared/valid.py"]);
     }
     expect(session.close).toHaveBeenCalledOnce();
@@ -134,22 +146,44 @@ it.each([false, true])(
 );
 
 it("normalizes only authorized Team paths while preserving dedicated aliases", () => {
-  const workspace = { cwd: "/home/rakazo/bots/a", roots: ["/home/rakazo/bots/a", "/home/rakazo/shared"] };
-  expect(canonicalToolPaths("rule_priorities", {
-    policy: "/home/rakazo/bots/a/case/policy.rost", workingDirectory: "shared",
-  }, workspace)).toEqual({ args: { policy: "bots/a/case/policy.rost", workingDirectory: "shared" } });
-  expect(canonicalToolPaths("workspace_read", { path: "shared/input.csv" }, workspace))
-    .toEqual({ args: { path: "shared/input.csv" } });
-  for (const [raw, canonical] of [["case/job", "case/job"], ["/home/rakazo/shared/case/job", "shared/case/job"]]) {
-    expect(canonicalToolPaths("schedule_create", { rostJobOut: raw }, workspace))
-      .toEqual({ args: { rostJobOut: canonical } });
+  const workspace = {
+    cwd: "/home/rakazo/bots/a",
+    roots: ["/home/rakazo/bots/a", "/home/rakazo/shared"],
+  };
+  expect(
+    canonicalToolPaths(
+      "rule_priorities",
+      {
+        policy: "/home/rakazo/bots/a/case/policy.rost",
+        workingDirectory: "shared",
+      },
+      workspace,
+    ),
+  ).toEqual({ args: { policy: "bots/a/case/policy.rost", workingDirectory: "shared" } });
+  expect(canonicalToolPaths("workspace_read", { path: "shared/input.csv" }, workspace)).toEqual({
+    args: { path: "shared/input.csv" },
+  });
+  for (const [raw, canonical] of [
+    ["case/job", "case/job"],
+    ["/home/rakazo/shared/case/job", "shared/case/job"],
+  ]) {
+    expect(canonicalToolPaths("schedule_create", { rostJobOut: raw }, workspace)).toEqual({
+      args: { rostJobOut: canonical },
+    });
   }
-  for (const wrong of ["bots/other/case/job", "/home/rakazo/bots/ab/case/job", "shared/../job", "shared"]) {
-    expect(canonicalToolPaths("schedule_create", { rostJobOut: wrong }, workspace))
-      .toMatchObject({ error: { code: "ROST_TOOL_PATH", toolExecuted: false } });
+  for (const wrong of [
+    "bots/other/case/job",
+    "/home/rakazo/bots/ab/case/job",
+    "shared/../job",
+    "shared",
+  ]) {
+    expect(canonicalToolPaths("schedule_create", { rostJobOut: wrong }, workspace)).toMatchObject({
+      error: { code: "ROST_TOOL_PATH", toolExecuted: false },
+    });
   }
-  expect(canonicalToolPaths("schedule_create", { rostJobOut: "/home/rakazo/workspace/case/job" }))
-    .toEqual({ args: { rostJobOut: "case/job" } });
+  expect(
+    canonicalToolPaths("schedule_create", { rostJobOut: "/home/rakazo/workspace/case/job" }),
+  ).toEqual({ args: { rostJobOut: "case/job" } });
 });
 
 it("keeps native diff evidence within the server's allowed Team roots", () => {

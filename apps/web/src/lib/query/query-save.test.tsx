@@ -27,7 +27,8 @@ vi.mock("./rpc", () => {
   };
 });
 
-import { QueryUserProvider, type SaveScope, useSave } from "./query";
+import type { SaveScope } from "./query";
+import { QueryUserProvider, useSave } from "./query";
 import type { RpcClient } from "./rpc";
 import { SpaceRpcProvider } from "./space-rpc";
 
@@ -45,10 +46,16 @@ let boundSpaceId: string | null | undefined;
 let screen: ReturnType<typeof useSave<string, string>> & { name: unknown };
 function Screen() {
   const { data } = useQuery({ queryKey: READ, queryFn: read });
-  screen = { ...useSave({
-    ...(scoped ? { saveScoped: scopedSave, rememberInput: false } : { save }),
-    stale, onSaved, onFailed, closesScreen,
-  }), name: data };
+  screen = {
+    ...useSave({
+      ...(scoped ? { saveScoped: scopedSave, rememberInput: false } : { save }),
+      stale,
+      onSaved,
+      onFailed,
+      closesScreen,
+    }),
+    name: data,
+  };
   return null;
 }
 
@@ -133,7 +140,9 @@ it("pins a managed operation to its bound space without retaining credential inp
   await render();
   const response = deferred<string>();
   scopedSave.mockReturnValue(response.promise);
-  await act(async () => { screen.run("synthetic credential"); });
+  await act(async () => {
+    screen.run("synthetic credential");
+  });
   expect(screen.pending).toBe(true);
   expect(screen.input).toBeUndefined();
   const [, , context] = scopedSave.mock.calls[0]!;

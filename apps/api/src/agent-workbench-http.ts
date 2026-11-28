@@ -1,15 +1,14 @@
-import type { Hono } from "hono";
+import type { AgentWorkbench, NativeControl } from "@rakazo/adapters";
 import type { Actor } from "@rakazo/contracts";
-import { WorkbenchBrowserInput, NativeDecision } from "@rakazo/contracts";
-import type { NativeControl } from "@rakazo/adapters";
-import type { AgentWorkbench } from "@rakazo/adapters";
+import { NativeDecision, WorkbenchBrowserInput } from "@rakazo/contracts";
+import type { Hono } from "hono";
 import { isAllowedWebOrigin } from "./web-origins.js";
 
 export function mountAgentWorkbench(
   app: Hono,
   deps: {
     service: AgentWorkbench;
-    isDeveloper: (actor:Actor)=>boolean;
+    isDeveloper: (actor: Actor) => boolean;
     native?: NativeControl;
     actor: (request: Request) => Promise<Actor | null>;
     verifyPassword: (request: Request, password: string) => Promise<boolean>;
@@ -23,7 +22,7 @@ export function mountAgentWorkbench(
     try {
       const actor = await deps.actor(c.req.raw);
       if (!actor) return c.json({ error: "Sign in required" }, 401);
-      if(!deps.isDeveloper(actor))return c.json({error:'Developer mode required'},403);
+      if (!deps.isDeveloper(actor)) return c.json({ error: "Developer mode required" }, 403);
       const url = new URL(c.req.url),
         route = url.pathname.split("/").at(-1);
       if (c.req.method === "GET") {
@@ -74,36 +73,39 @@ export function mountAgentWorkbench(
       if ((old?.count ?? 0) >= 10 || (!old && attempts.size >= 1000))
         return c.json({ error: "Workbench operation rate limit" }, 429);
       attempts.set(actor.userId, { at: old?.at ?? now, count: (old?.count ?? 0) + 1 });
-      let result: unknown;
       if (input.operation === "native_settings") {
         if (!deps.native) return c.json({ error: "Native capabilities unavailable" }, 409);
-        result = await deps.native.decide(actor, input);
-      } else if (input.operation === "save_draft") {
+        return c.json(await deps.native.decide(actor, input));
+      }
+      if (input.operation === "save_draft") {
         if (!(await deps.verifyPassword(c.req.raw, input.password)))
           return c.json({ error: "Current password required" }, 403);
-        result = await deps.service.saveDraft(actor, input.botId, input.id, input.digest);
-      } else if (input.operation === "goal")
-        result = await deps.service.goal(actor, input.botId, input.revision, input.goal);
-      else if (input.operation === "scenario") {
+        return c.json(await deps.service.saveDraft(actor, input.botId, input.id, input.digest));
+      }
+      if (input.operation === "goal")
+        return c.json(await deps.service.goal(actor, input.botId, input.revision, input.goal));
+      if (input.operation === "scenario") {
         const row = await deps.service.scenario(
           actor,
           input.botId,
           input.title,
           "browser:" + input.nonce,
         );
-        result = { id: row.id };
-      } else if (input.operation === "scenario_message")
-        result = await deps.service.scenarioMessage(
-          actor,
-          input.botId,
-          input.id,
-          input.message,
-          input.nonce,
+        return c.json({ id: row.id });
+      }
+      if (input.operation === "scenario_message")
+        return c.json(
+          await deps.service.scenarioMessage(
+            actor,
+            input.botId,
+            input.id,
+            input.message,
+            input.nonce,
+          ),
         );
-      else if (input.operation === "refresh_skills")
-        result = await deps.service.skills(actor, input.botId);
-      else result = await deps.service.selectSkill(actor, input.botId, input.id);
-      return c.json(result as any);
+      if (input.operation === "refresh_skills")
+        return c.json(await deps.service.skills(actor, input.botId));
+      return c.json(await deps.service.selectSkill(actor, input.botId, input.id));
     } catch {
       return c.json(
         {

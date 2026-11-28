@@ -1,13 +1,14 @@
-import { expect, it, vi } from "vitest";
 import { Hono } from "hono";
+import { expect, it, vi } from "vitest";
 import { mountTeamWorkflows } from "./team-workflows-http.js";
+
 function fixture(authenticated = true) {
   const app = new Hono();
   const service = { list: vi.fn(async () => []), decide: vi.fn(async () => ({ ok: true })) };
   const password = vi.fn(async (_r: Request, p: string) => p === "correct");
   mountTeamWorkflows(app, {
-    service: service as any,
-    leadership: service as any,
+    service: service as unknown as Parameters<typeof mountTeamWorkflows>[1]["service"],
+    leadership: service as unknown as Parameters<typeof mountTeamWorkflows>[1]["leadership"],
     actor: async () =>
       authenticated ? { userId: "u", spaceId: "s", email: "", isDeploymentOwner: false } : null,
     verifyPassword: password,

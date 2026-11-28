@@ -716,15 +716,43 @@ export interface RuntimeSession {
   close(): Promise<void>;
 }
 
+export type NativeUsageCounters = Partial<
+  Record<
+    "inputTokens" | "cachedInputTokens" | "outputTokens" | "reasoningOutputTokens" | "totalTokens",
+    number | null
+  >
+>;
+
+export interface NativeSessionPreparation {
+  mode: "plan" | "execute";
+  action: "none" | "compact" | "fork" | "review";
+  sessionKey: string;
+  persistent: boolean;
+  previous: {
+    threadId?: string | null;
+    turnId?: string | null;
+    usage?: NativeUsageCounters | null;
+  } | null;
+  workspace?: { cwd: string; roots: string[] };
+}
+
+export interface NativeSessionFinish {
+  completed: boolean;
+  paused?: boolean;
+  threadId?: string | null;
+  turnId?: string | null;
+  usage?: NativeUsageCounters | null;
+}
+
 export interface AgentRunRequest {
   /** Server-derived managed workspace binding, never accepted from model/browser input. */
   workspace?: { cwd: string; roots: string[] };
   nativeWorker?: boolean;
   nativeControl?: {
     mode: "plan" | "execute";
-    prepare: (fingerprint: string) => Promise<any>;
+    prepare: (fingerprint: string) => Promise<NativeSessionPreparation>;
     observe: (kind: string, payload: unknown) => Promise<unknown>;
-    finish: (value: any) => Promise<void>;
+    finish: (value: NativeSessionFinish) => Promise<void>;
     receipt: (raw: unknown) => Promise<{ message: string; status: string }>;
     tool: (name: string, args: Record<string, unknown>) => Promise<unknown>;
   };

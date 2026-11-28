@@ -10,9 +10,9 @@ import { ACTIVE_RUN_STATUSES, callIdFromClientNonce } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
 import {
   assertCheckpointRestoreOwner,
+  CheckpointConflictError,
   cancelRunsInTransaction,
   checkpointArtifactIds,
-  CheckpointConflictError,
   checkpointMessageWhere,
   checkpointThreadLock,
   claimCheckpointWorkspace,
@@ -27,21 +27,21 @@ import {
   writeBotInstructions,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
-import type { CheckpointFileScope } from "./checkpoint-files.js";
-import { checkpointFileManifestSchema, CheckpointFiles } from "./checkpoint-files.js";
-import { assertCheckpointWritersIdle, stopCheckpointWriters } from "./checkpoint-processes.js";
 import { toComputerRef } from "../computers/screens/computer-support.js";
 import { PriorityService } from "../policy/policy-priorities.js";
+import type { CheckpointBusiness } from "../storage/checkpoint-state.js";
 import {
   checkpointAuditSource,
   checkpointBusiness,
-  type CheckpointBusiness,
   checkpointBusinessOf,
   checkpointPromptMetadata,
   checkpointTranscript,
 } from "../storage/checkpoint-state.js";
-
 import { checkpointFileDiff, stateDigest } from "./checkpoint-digest.js";
+import type { CheckpointFileScope } from "./checkpoint-files.js";
+import { CheckpointFiles, checkpointFileManifestSchema } from "./checkpoint-files.js";
+import { assertCheckpointWritersIdle, stopCheckpointWriters } from "./checkpoint-processes.js";
+
 export { checkpointFileDiff } from "./checkpoint-digest.js";
 
 const json = (value: unknown): Prisma.InputJsonValue => JSON.parse(JSON.stringify(value));
@@ -53,9 +53,16 @@ type CaptureInput = {
 };
 
 function auditFileManifest(row: { id: string; fileManifest: unknown }) {
-  return readJsonColumn(checkpointFileManifestSchema, row.fileManifest, {
-    table: "checkpoints", column: "fileManifest", id: row.id,
-  }, "reject");
+  return readJsonColumn(
+    checkpointFileManifestSchema,
+    row.fileManifest,
+    {
+      table: "checkpoints",
+      column: "fileManifest",
+      id: row.id,
+    },
+    "reject",
+  );
 }
 
 function unavailableAttachments() {
@@ -846,10 +853,7 @@ export class CheckpointService {
               targetBranchId: target.branchId,
               cutoffMessageSeq: target.cutoffMessageSeq,
               cancelledTasks: preparation.tasks,
-              files: checkpointFileDiff(
-                auditFileManifest(rescue),
-                auditFileManifest(target),
-              ),
+              files: checkpointFileDiff(auditFileManifest(rescue), auditFileManifest(target)),
               rulesBefore: checkpointBusinessOf(rescue).binding,
               rulesAfter: business.binding,
               solveStarted: false,

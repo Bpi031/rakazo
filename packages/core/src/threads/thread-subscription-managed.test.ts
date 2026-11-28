@@ -1,6 +1,6 @@
-import { deferred } from "../primitives/async.test-support.js";
 import type { ProductEvent } from "@rakazo/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { deferred } from "../primitives/async.test-support.js";
 import { HEAD_RECHECK_MS, IDLE_TIMEOUT_MS, runThreadSubscription } from "./thread-subscription.js";
 
 const head = { threadId: "thread", cursor: 10 };

@@ -1,13 +1,14 @@
 // Only an empty, disposable, isolated database; no real accounts, model or solver.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { RunTriggerSchema } from "@rakazo/contracts";
 import { createDb, createRepos, readJsonColumn, sendUserMessage } from "@rakazo/db";
 import { z } from "zod";
-import { RunTriggerSchema } from "@rakazo/contracts";
-import { TeamWorkflowService } from "./team-workflows.js";
-import { TeamLeadershipService } from "./team-leadership.js";
 import { workbenchChecks } from "../agent-workbench-postgres-checks.js";
 import { nativeChecks } from "../native-postgres-checks.js";
+import { TeamLeadershipService } from "./team-leadership.js";
+import { TeamWorkflowService } from "./team-workflows.js";
+
 const url = new URL(process.env.DATABASE_URL ?? "http://invalid");
 if (
   process.env.ROST_DISPOSABLE_WORKFLOWS_DB !== "1" ||
@@ -338,7 +339,7 @@ try {
     ).role === "admin",
   );
   ok((await db.bot.findUniqueOrThrow({ where: { id: peer!.id } })).userId === member!.userId);
-  ok((await leadership.decide(second!, transfer.id, transfer.digest, "accept")) as any);
+  ok(await leadership.decide(second!, transfer.id, transfer.digest, "accept"));
   const successorLead = await createRepos(db).createBot(second!, {
     name: "Successor lead",
     description: "",
@@ -364,8 +365,12 @@ try {
   const transferred = await db.teamLeadershipTransfer.findUniqueOrThrow({
     where: { id: ownerTransfer.id },
   });
-  const copies = readJsonColumn(z.object({ newWorkflows: z.array(z.string()).length(1) }),
-    transferred.result, { table: "team_leadership_transfers", column: "result", id: transferred.id }, "reject").newWorkflows;
+  const copies = readJsonColumn(
+    z.object({ newWorkflows: z.array(z.string()).length(1) }),
+    transferred.result,
+    { table: "team_leadership_transfers", column: "result", id: transferred.id },
+    "reject",
+  ).newWorkflows;
   ok(copies.length === 1);
   const copy = await db.teamWorkflow.findUniqueOrThrow({ where: { id: copies[0]! } });
   ok(copy.managerUserId === second!.userId && copy.status === "draft");
@@ -373,8 +378,8 @@ try {
   ok((await db.teamWorkflowExecution.count({ where: { workflowId: copy.id } })) === 0);
   ok((await db.teamWorkflow.findUniqueOrThrow({ where: { id: changed.id } })).status === "paused");
   const workbench = await workbenchChecks(db, member!, manager!, peer!.id);
-  const native = await nativeChecks(db,member!,manager!,peer!.id);
-  console.log(
+  const native = await nativeChecks(db, member!, manager!, peer!.id);
+  process.stdout.write(
     JSON.stringify({
       status: "passed",
       checks,
@@ -384,7 +389,7 @@ try {
       provider_request_sent: false,
       solver_started: false,
       license_read: false,
-    }),
+    }) + "\n",
   );
 } finally {
   await db.$disconnect();

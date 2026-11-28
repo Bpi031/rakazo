@@ -1,9 +1,19 @@
-import { formTools, leadershipTools, nativeReadTools, workbenchTools, workflowTools } from "@rakazo/contracts";
-import { AgentWorkbench, workbenchEnabled } from "../../agent-workbench.js";
+import {
+  formTools,
+  leadershipTools,
+  nativeReadTools,
+  workbenchTools,
+  workflowTools,
+} from "@rakazo/contracts";
 import { reportTools } from "../../agent-report.js";
+import { AgentWorkbench, workbenchEnabled } from "../../agent-workbench.js";
 import { nativeEnabled } from "../../native-control.js";
 import { PriorityService, priorityTools } from "../../policy/policy-priorities.js";
-import { managerChatPolicy, PolicyWorkflow, policyWorkflowTools } from "../../policy/policy-workflow.js";
+import {
+  managerChatPolicy,
+  PolicyWorkflow,
+  policyWorkflowTools,
+} from "../../policy/policy-workflow.js";
 import { TeamLeadershipService } from "../../teams/team-leadership.js";
 import { observeTeamComputers } from "../../teams/team-observer.js";
 import { teamMessagingEnabled, teamTools } from "../../teams/team-policy.js";

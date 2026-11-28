@@ -35,10 +35,10 @@ import { useEventListener } from "../../lib/use-event-listener";
 import { AccountAdminPanel } from "../AccountAdminPanel";
 import { accountAdminApi } from "../account-admin-api";
 import { ManagedMemoryPanel, ManagedModelsPanel } from "../ManagedSettingsPanels";
-import { WorkspaceStoragePanel, WorkspaceTeamPanel, WorkspaceUsagePanel } from "../WorkspaceViews";
 import { ModelSettingsOverlay } from "../model-settings/ModelSettingsOverlay";
 import type { SettingsSpace } from "../shell/create-delete-dialogs";
 import type { SettingsSection } from "../shell/shell-overlay-url";
+import { WorkspaceStoragePanel, WorkspaceTeamPanel, WorkspaceUsagePanel } from "../WorkspaceViews";
 import {
   ComputerSettingsPanel,
   GeneralSettingsPanels,

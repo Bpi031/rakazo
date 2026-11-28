@@ -1,106 +1,301 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readManagedRuntimeAsset } from "../storage/managed-runtime-assets.js";
 import { lstat, mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { AdapterContext, SandboxProvider } from "@rakazo/adapter-kit";
 import type { Actor } from "@rakazo/contracts";
+import { hasAsciiControl } from "@rakazo/contracts/managed-text";
 import type { PrismaClient } from "@rakazo/db";
-import { CheckpointConflictError, checkpointThreadLock, createRepos, IsolationError, withCheckpointWorkspaceWriteInTransaction } from "@rakazo/db";
+import {
+  CheckpointConflictError,
+  checkpointThreadLock,
+  createRepos,
+  IsolationError,
+  withCheckpointWorkspaceWriteInTransaction,
+} from "@rakazo/db";
 import { z } from "zod";
 import { toComputerRef } from "../computers/screens/computer-support.js";
+import {
+  assertManagedTeamComputer,
+  assertWorkspacePath,
+  workspaceRelativeRoots,
+} from "../managed-workspace.js";
+import { readManagedRuntimeAsset } from "../storage/managed-runtime-assets.js";
 import { teamDigest } from "../teams/team-policy.js";
-import { assertManagedTeamComputer, assertWorkspacePath, workspaceRelativeRoots } from "../managed-workspace.js";
 
-const relative = z.string().max(1024).refine((value) => /^(workspace|bots|shared)\//.test(value) && !/[\\\x00-\x1f]/.test(value) &&
-  value.split("/").every((part) => part !== "" && part !== "." && part !== ".."), "Use an exact workspace-relative path");
+const relative = z
+  .string()
+  .max(1024)
+  .refine(
+    (value) =>
+      /^(workspace|bots|shared)\//.test(value) &&
+      !(value.includes("\\") || hasAsciiControl(value)) &&
+      value.split("/").every((part) => part !== "" && part !== "." && part !== ".."),
+    "Use an exact workspace-relative path",
+  );
 const workingDirectory = z.union([z.literal("workspace"), z.literal("shared"), relative]);
 const hex = z.string().regex(/^[a-f0-9]{64}$/);
-const rule = z.object({ id: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/), weight: z.string().regex(/^[1-9][0-9]{0,15}$/)
-  .refine((value) => value.length < 16 || value <= "9007199254740991", "Exact positive safe integer required"),
-  priority: z.enum(["critical", "high", "normal", "low"]) }).strict();
+const rule = z
+  .object({
+    id: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
+    weight: z
+      .string()
+      .regex(/^[1-9][0-9]{0,15}$/)
+      .refine(
+        (value) => value.length < 16 || value <= "9007199254740991",
+        "Exact positive safe integer required",
+      ),
+    priority: z.enum(["critical", "high", "normal", "low"]),
+  })
+  .strict();
 export const prioritySchemas = {
-  inspect: z.object({ botId: z.string().min(1).max(160), policy: relative, workingDirectory }).strict(),
-  review: z.object({ botId: z.string().min(1).max(160), policy: relative, workingDirectory,
-    sourceSha256: hex, changes: z.array(rule).min(1).max(200) }).strict(),
-  apply: z.object({ id: z.uuid(), digest: hex, password: z.string().min(1).max(1024), phrase: z.string().max(100) }).strict(),
+  inspect: z
+    .object({ botId: z.string().min(1).max(160), policy: relative, workingDirectory })
+    .strict(),
+  review: z
+    .object({
+      botId: z.string().min(1).max(160),
+      policy: relative,
+      workingDirectory,
+      sourceSha256: hex,
+      changes: z.array(rule).min(1).max(200),
+    })
+    .strict(),
+  apply: z
+    .object({
+      id: z.uuid(),
+      digest: hex,
+      password: z.string().min(1).max(1024),
+      phrase: z.string().max(100),
+    })
+    .strict(),
 };
 const priorityHelper = () => readManagedRuntimeAsset("policy-priority-helper.py");
 const helperSha256 = () => createHash("sha256").update(priorityHelper()).digest("hex");
-type Data = Record<string, any>;
+type Data = Record<string, unknown>;
+const objectData = z.record(z.string(), z.unknown());
+const objectRows = z.array(objectData);
+const arrayLength = (value: unknown) => (Array.isArray(value) ? value.length : 0);
+function readOptionalObject(value: unknown) {
+  return value == null ? null : objectData.parse(value);
+}
 type BotReader = Pick<PrismaClient, "bot">;
 export const MAX_PRIORITY_AGENT_BYTES = 48 * 1024;
-const detailQuery = z.object({ section: z.enum(["groups", "rules"]), sourceSha256: hex, snapshotSha256: hex,
-  offset: z.number().int().min(0).max(1_000_000).default(0), limit: z.number().int().min(1).max(25).default(20),
-  groupId: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).max(200).optional() }).strict();
+const detailQuery = z
+  .object({
+    section: z.enum(["groups", "rules"]),
+    sourceSha256: hex,
+    snapshotSha256: hex,
+    offset: z.number().int().min(0).max(1_000_000).default(0),
+    limit: z.number().int().min(1).max(25).default(20),
+    groupId: z
+      .string()
+      .regex(/^[A-Za-z_][A-Za-z0-9_]*$/)
+      .max(200)
+      .optional(),
+  })
+  .strict();
 function argumentError(fields: string[]) {
-  return { code: "ROST_RULE_PRIORITIES_ARGUMENTS", error: "Invalid rule-priority tool arguments.", fields,
-    action: fields.some(field => ["changes", "sourceSha256"].includes(field)) ?
-      "Soft-priority review requires the current sourceSha256 and at least one changed soft weight/tier. Empty changes cannot create approval. For a hard-rule modelling correction use policy_workflow review with separate baseline/candidate files. This tool never checks or grants policy approval." :
-      "Use exact workspace-relative policy/cwd paths without traversal; preserve the real input-resolution directory and do not guess a replacement. For paged details include current sourceSha256/snapshotSha256. This presentation tool is not an approval or numerical readiness gate.",
-    solveStarted: false, policyApprovalGranted: false };
+  return {
+    code: "ROST_RULE_PRIORITIES_ARGUMENTS",
+    error: "Invalid rule-priority tool arguments.",
+    fields,
+    action: fields.some((field) => ["changes", "sourceSha256"].includes(field))
+      ? "Soft-priority review requires the current sourceSha256 and at least one changed soft weight/tier. Empty changes cannot create approval. For a hard-rule modelling correction use policy_workflow review with separate baseline/candidate files. This tool never checks or grants policy approval."
+      : "Use exact workspace-relative policy/cwd paths without traversal; preserve the real input-resolution directory and do not guess a replacement. For paged details include current sourceSha256/snapshotSha256. This presentation tool is not an approval or numerical readiness gate.",
+    solveStarted: false,
+    policyApprovalGranted: false,
+  };
 }
 function boundedAgentResult(value: Data): Data {
   if (Buffer.byteLength(JSON.stringify(value)) <= MAX_PRIORITY_AGENT_BYTES) return value;
-  return { code: "ROST_RULE_PRIORITIES_RESULT_LIMIT", error: "Policy detail exceeds the finite agent result limit.",
-    action: "Use a smaller detail page or inspect exact source/CNL files with bounded file tools. Do not repeat a solve or raise transport limits.",
-    solveStarted: false, policyApprovalGranted: false };
+  return {
+    code: "ROST_RULE_PRIORITIES_RESULT_LIMIT",
+    error: "Policy detail exceeds the finite agent result limit.",
+    action:
+      "Use a smaller detail page or inspect exact source/CNL files with bounded file tools. Do not repeat a solve or raise transport limits.",
+    solveStarted: false,
+    policyApprovalGranted: false,
+  };
 }
-function selectedDraft(value: Data | null | undefined) {
-  if (!value) return null;
-  return Object.fromEntries(["state", "reviewId", "digest", "policyPath", "cnlPath", "manifestPath", "sourceSha256",
-    "selectedBy", "selectedAt", "selectionKind", "policyApprovalGranted", "solveStarted"]
-    .filter((key) => Object.hasOwn(value, key)).map((key) => [key, value[key]]));
+function selectedDraft(raw: unknown) {
+  const value = readOptionalObject(raw);
+  if (value === null) return null;
+  return Object.fromEntries(
+    [
+      "state",
+      "reviewId",
+      "digest",
+      "policyPath",
+      "cnlPath",
+      "manifestPath",
+      "sourceSha256",
+      "selectedBy",
+      "selectedAt",
+      "selectionKind",
+      "policyApprovalGranted",
+      "solveStarted",
+    ]
+      .filter((key) => Object.hasOwn(value, key))
+      .map((key) => [key, value[key]]),
+  );
 }
 /** Browser reviews keep full evidence; model context receives explicit bounded projections. */
 export function priorityAgentResult(value: Data, query?: z.infer<typeof detailQuery>): Data {
-  if (value.status === "not_registered") return { status: value.status, botId: value.botId, selection: null,
-    action: "No policy is registered for this bot. Use inspect with exact workspace policy/cwd if a presentation binding is needed.",
-    solveStarted: false, policyApprovalGranted: false };
-  if (typeof value.id === "string") return boundedAgentResult({ id: value.id, botId: value.botId, digest: value.digest,
-    createdAt: value.createdAt, expiresAt: value.expiresAt, reviewUrl: value.reviewUrl, applied: selectedDraft(value.applied),
-    changesCount: value.review?.changes?.length ?? 0, reviewInline: false,
-    action: "The exact protected review is in the inline chat card. Full CNL and diff remain in the browser review; no policy approval or solve is granted." });
-  const rules: Data[] = Array.isArray(value.rules) ? value.rules : [];
-  const groups: Data[] = Array.isArray(value.groups) ? value.groups : [];
-  const summary: Data = { status: value.status ?? "inspected", policy: value.policy, workingDirectory: value.workingDirectory,
-    sourceSha256: value.sourceSha256, compilerSha256: value.compilerSha256, selection: selectedDraft(value.selection),
-    ruleCounts: { total: rules.length, hard: rules.filter((r) => r.tier !== "soft").length, soft: rules.filter((r) => r.tier === "soft").length },
-    groupCount: groups.length, presentationStatus: value.presentationStatus, inputCount: value.inputs?.length ?? 0,
-    inputsSha256: teamDigest(value.inputs ?? []), cnlSha256: typeof value.cnl === "string" ? createHash("sha256").update(value.cnl).digest("hex") : null,
-    ruleDetailsInline: false, solveStarted: false, policyApprovalGranted: false, approvalStatus: "not_evaluated_by_this_tool",
-    action: "Use list with section groups or rules, sourceSha256/snapshotSha256 and optional groupId/offset/limit for bounded details. Full CNL and review evidence are not inline; current only reconciles the registered policy." };
-  summary.snapshotSha256 = teamDigest({ policy: value.policy, workingDirectory: value.workingDirectory,
-    sourceSha256: value.sourceSha256, compilerSha256: value.compilerSha256, helperSha256: helperSha256(),
-    inputsSha256: summary.inputsSha256, cnlSha256: summary.cnlSha256, groupsSha256: teamDigest(groups), selection: summary.selection });
+  if (value.status === "not_registered")
+    return {
+      status: value.status,
+      botId: value.botId,
+      selection: null,
+      action:
+        "No policy is registered for this bot. Use inspect with exact workspace policy/cwd if a presentation binding is needed.",
+      solveStarted: false,
+      policyApprovalGranted: false,
+    };
+  if (typeof value.id === "string")
+    return boundedAgentResult({
+      id: value.id,
+      botId: value.botId,
+      digest: value.digest,
+      createdAt: value.createdAt,
+      expiresAt: value.expiresAt,
+      reviewUrl: value.reviewUrl,
+      applied: selectedDraft(value.applied),
+      changesCount: arrayLength(readOptionalObject(value.review)?.changes),
+      reviewInline: false,
+      action:
+        "The exact protected review is in the inline chat card. Full CNL and diff remain in the browser review; no policy approval or solve is granted.",
+    });
+  const rules = Array.isArray(value.rules) ? objectRows.parse(value.rules) : [];
+  const groups = Array.isArray(value.groups) ? objectRows.parse(value.groups) : [];
+  const summary: Data = {
+    status: value.status ?? "inspected",
+    policy: value.policy,
+    workingDirectory: value.workingDirectory,
+    sourceSha256: value.sourceSha256,
+    compilerSha256: value.compilerSha256,
+    selection: selectedDraft(value.selection),
+    ruleCounts: {
+      total: rules.length,
+      hard: rules.filter((r) => r.tier !== "soft").length,
+      soft: rules.filter((r) => r.tier === "soft").length,
+    },
+    groupCount: groups.length,
+    presentationStatus: value.presentationStatus,
+    inputCount: arrayLength(value.inputs),
+    inputsSha256: teamDigest(value.inputs ?? []),
+    cnlSha256:
+      typeof value.cnl === "string" ? createHash("sha256").update(value.cnl).digest("hex") : null,
+    ruleDetailsInline: false,
+    solveStarted: false,
+    policyApprovalGranted: false,
+    approvalStatus: "not_evaluated_by_this_tool",
+    action:
+      "Use list with section groups or rules, sourceSha256/snapshotSha256 and optional groupId/offset/limit for bounded details. Full CNL and review evidence are not inline; current only reconciles the registered policy.",
+  };
+  summary.snapshotSha256 = teamDigest({
+    policy: value.policy,
+    workingDirectory: value.workingDirectory,
+    sourceSha256: value.sourceSha256,
+    compilerSha256: value.compilerSha256,
+    helperSha256: helperSha256(),
+    inputsSha256: summary.inputsSha256,
+    cnlSha256: summary.cnlSha256,
+    groupsSha256: teamDigest(groups),
+    selection: summary.selection,
+  });
   if (!query) return boundedAgentResult(summary);
-  if (value.sourceSha256 !== query.sourceSha256 || summary.snapshotSha256 !== query.snapshotSha256) return { code: "ROST_RULE_PRIORITIES_SOURCE_CHANGED",
-    error: "Policy source, inputs or review context changed between detail pages.", action: "Call current and review the new context before requesting more pages. Do not combine different revisions.",
-    solveStarted: false, policyApprovalGranted: false };
-  if (query.groupId && (query.section !== "rules" || !groups.some((group) => group.id === query.groupId)))
+  if (value.sourceSha256 !== query.sourceSha256 || summary.snapshotSha256 !== query.snapshotSha256)
+    return {
+      code: "ROST_RULE_PRIORITIES_SOURCE_CHANGED",
+      error: "Policy source, inputs or review context changed between detail pages.",
+      action:
+        "Call current and review the new context before requesting more pages. Do not combine different revisions.",
+      solveStarted: false,
+      policyApprovalGranted: false,
+    };
+  if (
+    query.groupId &&
+    (query.section !== "rules" || !groups.some((group) => group.id === query.groupId))
+  )
     return argumentError(["groupId"]);
-  const rows = query.section === "groups" ? groups.map(({ id, label, description, ruleIds }) => ({ id, label, description, ruleCount: ruleIds.length })) :
-    rules.filter((r) => !query.groupId || r.groupId === query.groupId).map(({ id, tier, weight, priority, summary, sourceLine, locked, groupId }) =>
-      ({ id, tier, weight, priority, summary, sourceLine, locked, groupId }));
-  const result = { ...summary, ruleDetailsInline: query.section === "rules", section: query.section, groupId: query.groupId, total: rows.length,
-    offset: query.offset, nextOffset: query.offset < rows.length ? query.offset : null, rows: [] as Data[] };
+  const rows =
+    query.section === "groups"
+      ? groups.map(({ id, label, description, ruleIds }) => ({
+          id,
+          label,
+          description,
+          ruleCount: arrayLength(ruleIds),
+        }))
+      : rules
+          .filter((r) => !query.groupId || r.groupId === query.groupId)
+          .map(({ id, tier, weight, priority, summary, sourceLine, locked, groupId }) => ({
+            id,
+            tier,
+            weight,
+            priority,
+            summary,
+            sourceLine,
+            locked,
+            groupId,
+          }));
+  const result = {
+    ...summary,
+    ruleDetailsInline: query.section === "rules",
+    section: query.section,
+    groupId: query.groupId,
+    total: rows.length,
+    offset: query.offset,
+    nextOffset: query.offset < rows.length ? query.offset : null,
+    rows: [] as Data[],
+  };
   for (const row of rows.slice(query.offset, query.offset + query.limit)) {
-    result.rows.push(row); result.nextOffset = query.offset + result.rows.length < rows.length ? query.offset + result.rows.length : null;
+    result.rows.push(row);
+    result.nextOffset =
+      query.offset + result.rows.length < rows.length ? query.offset + result.rows.length : null;
     if (Buffer.byteLength(JSON.stringify(result)) > MAX_PRIORITY_AGENT_BYTES) {
-      result.rows.pop(); result.nextOffset = query.offset + result.rows.length; break;
+      result.rows.pop();
+      result.nextOffset = query.offset + result.rows.length;
+      break;
     }
   }
-  if (!result.rows.length && query.offset < rows.length) return boundedAgentResult({ ...result, error: "A detail row exceeds the finite agent limit.",
-    action: "Read the exact source/CNL using bounded file tools; do not loop the same empty page." });
+  if (!result.rows.length && query.offset < rows.length)
+    return boundedAgentResult({
+      ...result,
+      error: "A detail row exceeds the finite agent limit.",
+      action:
+        "Read the exact source/CNL using bounded file tools; do not loop the same empty page.",
+    });
   return boundedAgentResult(result);
 }
-type Stored = { id: string; actorUserId: string; spaceId: string; botId: string; computerId: string;
-  helperSha256: string; createdAt: string; expiresAt: string; review: Data; digest: string;
-  bindingDigest: string; applied?: Data };
+type Stored = {
+  id: string;
+  actorUserId: string;
+  spaceId: string;
+  botId: string;
+  computerId: string;
+  helperSha256: string;
+  createdAt: string;
+  expiresAt: string;
+  review: Data;
+  digest: string;
+  bindingDigest: string;
+  applied?: Data;
+};
 
 export class PriorityService {
-  constructor(private readonly deps: { prisma: PrismaClient; sandbox: SandboxProvider; dataDir: string }) {}
+  constructor(
+    private readonly deps: {
+      prisma: PrismaClient;
+      sandbox: Pick<SandboxProvider, "execute">;
+      dataDir: string;
+    },
+  ) {}
   /** Internal checkpoint boundary: capture the exact presentation binding, without running policy code. */
-  async captureCheckpointBinding(actor: Actor, botId: string, db?: BotReader): Promise<Data | null> {
+  async captureCheckpointBinding(
+    actor: Actor,
+    botId: string,
+    db?: BotReader,
+  ): Promise<Data | null> {
     await this.owned(actor, botId, db);
     return this.withBotLock(actor, botId, async () => {
       const { value } = await this.binding(actor, botId);
@@ -108,7 +303,12 @@ export class PriorityService {
     });
   }
   /** Restore only after workspace files. A selected draft never grants approval or compute. */
-  async restoreCheckpointBinding(actor: Actor, botId: string, snapshot: unknown, db?: BotReader): Promise<void> {
+  async restoreCheckpointBinding(
+    actor: Actor,
+    botId: string,
+    snapshot: unknown,
+    db?: BotReader,
+  ): Promise<void> {
     const bot = await this.owned(actor, botId, db);
     if (snapshot !== null) {
       if (
@@ -139,18 +339,22 @@ export class PriorityService {
         return;
       }
       const value = JSON.parse(JSON.stringify(snapshot)) as Data;
-      if (value.selection)
-        value.selection = { ...value.selection, policyApprovalGranted: false, solveStarted: false };
+      const selection = readOptionalObject(value.selection);
+      if (selection)
+        value.selection = { ...selection, policyApprovalGranted: false, solveStarted: false };
       await this.saveBinding(binding.file, value);
     });
   }
   private async owned(actor: Actor, botId: string, db?: BotReader) {
-    const bot = db ? await db.bot.findFirst({
-      where: { id: botId, userId: actor.userId, spaceId: actor.spaceId, archivedAt: null },
-      include: { computer: true },
-    }) : await createRepos(this.deps.prisma).getBot(actor, botId);
+    const bot = db
+      ? await db.bot.findFirst({
+          where: { id: botId, userId: actor.userId, spaceId: actor.spaceId, archivedAt: null },
+          include: { computer: true },
+        })
+      : await createRepos(this.deps.prisma).getBot(actor, botId);
     if (!bot) throw new IsolationError();
-    if (!bot.computer || bot.computer.state !== "running" || !bot.computer.providerRef) throw new Error("Start the bot computer first");
+    if (!bot.computer || bot.computer.state !== "running" || !bot.computer.providerRef)
+      throw new Error("Start the bot computer first");
     await assertManagedTeamComputer(db ?? this.deps.prisma, bot.computer, actor);
     return bot;
   }
@@ -159,7 +363,9 @@ export class PriorityService {
     await mkdir(base, { recursive: true, mode: 0o700 });
     if ((await lstat(base)).isSymbolicLink()) throw new Error("Invalid review storage");
     const dir = path.join(base, teamDigest({ space: actor.spaceId, user: actor.userId }));
-    await mkdir(dir, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => { if (error.code !== "EEXIST") throw error; });
+    await mkdir(dir, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "EEXIST") throw error;
+    });
     if ((await lstat(dir)).isSymbolicLink()) throw new Error("Invalid review storage");
     return dir;
   }
@@ -171,20 +377,34 @@ export class PriorityService {
     const file = path.join(await this.directory(actor), teamDigest(botId) + ".binding.json");
     try {
       if ((await lstat(file)).isSymbolicLink()) throw new Error("Invalid binding");
-      const value = JSON.parse(await readFile(file, "utf8"));
+      const value = objectData.parse(JSON.parse(await readFile(file, "utf8")));
       if (value.botId !== botId) throw new Error("Invalid binding");
-      return { file, value: value as Data };
-    } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return { file, value: null }; throw error; }
+      return { file, value };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { file, value: null };
+      throw error;
+    }
   }
   private async saveBinding(file: string, value: Data) {
     const temporary = file + "." + randomUUID() + ".tmp";
-    await writeFile(temporary, JSON.stringify(value), { flag: "wx", mode: 0o600 }); await rename(temporary, file);
+    await writeFile(temporary, JSON.stringify(value), { flag: "wx", mode: 0o600 });
+    await rename(temporary, file);
   }
-  private async withBotLock<T>(actor: Actor, botId: string, operation: () => Promise<T>): Promise<T> {
+  private async withBotLock<T>(
+    actor: Actor,
+    botId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
     const file = path.join(await this.directory(actor), teamDigest(botId) + ".binding.lock");
-    const lock = await open(file, "wx", 0o600).catch(() => { throw new Error("Policy review is busy; inspect before retrying"); });
-    try { return await operation(); }
-    finally { await lock.close(); await unlink(file); }
+    const lock = await open(file, "wx", 0o600).catch(() => {
+      throw new Error("Policy review is busy; inspect before retrying");
+    });
+    try {
+      return await operation();
+    } finally {
+      await lock.close();
+      await unlink(file);
+    }
   }
   private async withCheckpointMutation<T>(
     actor: Actor,
@@ -212,7 +432,8 @@ export class PriorityService {
               AND "computerId" = ${bot.computer!.id} AND "computerSwitching" = false
             FOR SHARE
           `;
-          if (assigned.length !== 1) throw new CheckpointConflictError("Workspace assignment changed");
+          if (assigned.length !== 1)
+            throw new CheckpointConflictError("Workspace assignment changed");
           return this.withBotLock(actor, botId, () => operation(tx));
         });
       },
@@ -220,129 +441,310 @@ export class PriorityService {
     );
   }
   private bindingValue(botId: string, value: Data) {
-    return { botId, policy: value.policy, workingDirectory: value.workingDirectory, sourceSha256: value.sourceSha256,
-      inputs: value.inputs, compilerSha256: value.compilerSha256 };
+    return {
+      botId,
+      policy: value.policy,
+      workingDirectory: value.workingDirectory,
+      sourceSha256: value.sourceSha256,
+      inputs: value.inputs,
+      compilerSha256: value.compilerSha256,
+    };
   }
-  private selection(value: Data | null, current: Data, computerId: string) {
+  private selection(raw: unknown, current: Data, computerId: string) {
+    const value = readOptionalObject(raw);
     if (!value) return null;
-    const modelInputs = (rows: Data[]) => rows.filter((row) => row.kind !== "rule_presentation");
-    const sameInputs = teamDigest(modelInputs(value.baselineInputs)) === teamDigest(modelInputs(current.inputs)) && value.compilerSha256 === current.compilerSha256;
-    const state = value.computerId !== computerId || !sameInputs ? "stale" :
-      value.baselineDigest === teamDigest(current) ? "pending_agent_adoption" :
-      value.policyPath === current.policy && value.sourceSha256 === current.sourceSha256 ? "adopted" : "stale";
+    const modelInputs = (rows: unknown) =>
+      objectRows.parse(rows).filter((row) => row.kind !== "rule_presentation");
+    const sameInputs =
+      teamDigest(modelInputs(value.baselineInputs)) === teamDigest(modelInputs(current.inputs)) &&
+      value.compilerSha256 === current.compilerSha256;
+    const state =
+      value.computerId !== computerId || !sameInputs
+        ? "stale"
+        : value.baselineDigest === teamDigest(current)
+          ? "pending_agent_adoption"
+          : value.policyPath === current.policy && value.sourceSha256 === current.sourceSha256
+            ? "adopted"
+            : "stale";
     return { ...value, state };
   }
   private async execute(actor: Actor, botId: string, input: Data, db?: BotReader) {
     const bot = await this.owned(actor, botId, db);
     const roots = workspaceRelativeRoots(bot.computer!.scope, botId);
-    const paths = input.operation === "apply" ? input.review : input;
+    const paths = input.operation === "apply" ? objectData.parse(input.review) : input;
     assertWorkspacePath(paths.policy, roots);
     assertWorkspacePath(paths.workingDirectory, roots);
-    const context: AdapterContext = { userId: actor.userId, spaceId: actor.spaceId, botId,
-      operationId: "priorities:" + randomUUID(), traceId: "priority-review", signal: AbortSignal.timeout(100_000) };
+    const context: AdapterContext = {
+      userId: actor.userId,
+      spaceId: actor.spaceId,
+      botId,
+      operationId: "priorities:" + randomUUID(),
+      traceId: "priority-review",
+      signal: AbortSignal.timeout(100_000),
+    };
     const encoded = Buffer.from(JSON.stringify(input)).toString("base64");
     if (encoded.length > 120_000) throw new Error("Review exceeds the finite transport cap");
-    let stdout = ""; let status: number | undefined;
-    for await (const event of this.deps.sandbox.execute(toComputerRef(bot.computer!), {
-      argv: ["/opt/office-python/bin/python3", "-I", "-c", priorityHelper(), encoded, JSON.stringify(roots)], cwd: "/home/rakazo", timeoutMs: 95_000,
-      unsetEnv: ["PYTHONPATH", "PYTHONHOME", "LD_PRELOAD"] }, context)) {
-      if (event.type === "stdout") { stdout += event.data; if (Buffer.byteLength(stdout) > 4_194_304) throw new Error("Review output cap reached"); }
+    let stdout = "";
+    let status: number | undefined;
+    for await (const event of this.deps.sandbox.execute(
+      toComputerRef(bot.computer!),
+      {
+        argv: [
+          "/opt/office-python/bin/python3",
+          "-I",
+          "-c",
+          priorityHelper(),
+          encoded,
+          JSON.stringify(roots),
+        ],
+        cwd: "/home/rakazo",
+        timeoutMs: 95_000,
+        unsetEnv: ["PYTHONPATH", "PYTHONHOME", "LD_PRELOAD"],
+      },
+      context,
+    )) {
+      if (event.type === "stdout") {
+        stdout += event.data;
+        if (Buffer.byteLength(stdout) > 4_194_304) throw new Error("Review output cap reached");
+      }
       if (event.type === "exit") status = event.code;
     }
     let value: Data;
-    try { value = JSON.parse(stdout); } catch { throw new Error("Rost rule review did not return a complete result"); }
-    if (status !== 0 || value.error) throw new Error(typeof value.error === "string" ? value.error.slice(0,300) : "Rost rule review failed");
+    try {
+      value = objectData.parse(JSON.parse(stdout));
+    } catch {
+      throw new Error("Rost rule review did not return a complete result");
+    }
+    if (status !== 0 || value.error)
+      throw new Error(
+        typeof value.error === "string" ? value.error.slice(0, 300) : "Rost rule review failed",
+      );
     return { value, computerId: bot.computerId! };
   }
-  async inspect(actor: Actor, input: z.infer<typeof prioritySchemas.inspect>, expectedGeneration?: number) {
+  async inspect(
+    actor: Actor,
+    input: z.infer<typeof prioritySchemas.inspect>,
+    expectedGeneration?: number,
+  ) {
     input = prioritySchemas.inspect.parse(input);
-    return this.withCheckpointMutation(actor, input.botId, async (db) => {
-    const { value: result, computerId } = await this.execute(actor, input.botId, { ...input, operation: "inspect" }, db);
-    const binding = await this.binding(actor, input.botId);
-    const value = this.bindingValue(input.botId, result);
-    const selection = this.selection(binding.value?.selection, value, computerId);
-    await this.saveBinding(binding.file, { ...value, selection });
-    return { ...result, selection, viewUrl: "/app/" + encodeURIComponent(input.botId) + "?rules=current" };
-    }, expectedGeneration);
+    return this.withCheckpointMutation(
+      actor,
+      input.botId,
+      async (db) => {
+        const { value: result, computerId } = await this.execute(
+          actor,
+          input.botId,
+          { ...input, operation: "inspect" },
+          db,
+        );
+        const binding = await this.binding(actor, input.botId);
+        const value = this.bindingValue(input.botId, result);
+        const selection = this.selection(binding.value?.selection, value, computerId);
+        await this.saveBinding(binding.file, { ...value, selection });
+        return {
+          ...result,
+          selection,
+          viewUrl: "/app/" + encodeURIComponent(input.botId) + "?rules=current",
+        };
+      },
+      expectedGeneration,
+    );
   }
   async current(actor: Actor, botId: string, expectedGeneration?: number) {
     await this.owned(actor, botId);
-    return this.withCheckpointMutation(actor, botId, async (db) => {
-    const binding = await this.binding(actor, botId);
-    if (!binding.value) return { status: "not_registered", botId, selection: null };
-    const { value, computerId } = await this.execute(actor, botId, { operation: "inspect", policy: binding.value.policy,
-      workingDirectory: binding.value.workingDirectory }, db);
-    const current = this.bindingValue(botId, value);
-    const selection = this.selection(binding.value.selection, current, computerId);
-    await this.saveBinding(binding.file, { ...current, selection });
-    return { status: "current", ...value, selection, viewUrl: "/app/" + encodeURIComponent(botId) + "?rules=current" };
-    }, expectedGeneration);
+    return this.withCheckpointMutation(
+      actor,
+      botId,
+      async (db) => {
+        const binding = await this.binding(actor, botId);
+        if (!binding.value) return { status: "not_registered", botId, selection: null };
+        const { value, computerId } = await this.execute(
+          actor,
+          botId,
+          {
+            operation: "inspect",
+            policy: binding.value.policy,
+            workingDirectory: binding.value.workingDirectory,
+          },
+          db,
+        );
+        const current = this.bindingValue(botId, value);
+        const selection = this.selection(binding.value.selection, current, computerId);
+        await this.saveBinding(binding.file, { ...current, selection });
+        return {
+          status: "current",
+          ...value,
+          selection,
+          viewUrl: "/app/" + encodeURIComponent(botId) + "?rules=current",
+        };
+      },
+      expectedGeneration,
+    );
   }
-  async review(actor: Actor, input: z.infer<typeof prioritySchemas.review>, expectedGeneration?: number) {
+  async review(
+    actor: Actor,
+    input: z.infer<typeof prioritySchemas.review>,
+    expectedGeneration?: number,
+  ) {
     input = prioritySchemas.review.parse(input);
-    return this.withCheckpointMutation(actor, input.botId, async (db) => {
-    const { value, computerId } = await this.execute(actor, input.botId, { ...input, operation: "review" }, db);
-    const binding = await this.binding(actor, input.botId);
-    const expectedBinding = this.bindingValue(input.botId, value);
-    if (binding.value && teamDigest(this.bindingValue(input.botId, binding.value)) !== teamDigest(expectedBinding))
-      throw new Error("The agent's current policy changed; reload the current policy");
-    if (!binding.value) await this.saveBinding(binding.file, expectedBinding);
-    const now = Date.now(); const id = randomUUID();
-    const row: Stored = { id, actorUserId: actor.userId, spaceId: actor.spaceId, botId: input.botId, computerId,
-      helperSha256: helperSha256(), bindingDigest: teamDigest(expectedBinding), createdAt: new Date(now).toISOString(), expiresAt: new Date(now + 30 * 60_000).toISOString(), review: value, digest: "" };
-    row.digest = this.digest(row);
-    const directory = await this.directory(actor);
-    const { readdir } = await import("node:fs/promises");
-    if ((await readdir(directory)).filter((name) => name.endsWith(".json")).length >= 1000) throw new Error("Review archive limit reached; operator archival required");
-    await writeFile(path.join(directory, id + ".json"), JSON.stringify(row), { flag: "wx", mode: 0o600 });
-    return this.dto(row);
-    }, expectedGeneration);
+    return this.withCheckpointMutation(
+      actor,
+      input.botId,
+      async (db) => {
+        const { value, computerId } = await this.execute(
+          actor,
+          input.botId,
+          { ...input, operation: "review" },
+          db,
+        );
+        const binding = await this.binding(actor, input.botId);
+        const expectedBinding = this.bindingValue(input.botId, value);
+        if (
+          binding.value &&
+          teamDigest(this.bindingValue(input.botId, binding.value)) !== teamDigest(expectedBinding)
+        )
+          throw new Error("The agent's current policy changed; reload the current policy");
+        if (!binding.value) await this.saveBinding(binding.file, expectedBinding);
+        const now = Date.now();
+        const id = randomUUID();
+        const row: Stored = {
+          id,
+          actorUserId: actor.userId,
+          spaceId: actor.spaceId,
+          botId: input.botId,
+          computerId,
+          helperSha256: helperSha256(),
+          bindingDigest: teamDigest(expectedBinding),
+          createdAt: new Date(now).toISOString(),
+          expiresAt: new Date(now + 30 * 60_000).toISOString(),
+          review: value,
+          digest: "",
+        };
+        row.digest = this.digest(row);
+        const directory = await this.directory(actor);
+        const { readdir } = await import("node:fs/promises");
+        if ((await readdir(directory)).filter((name) => name.endsWith(".json")).length >= 1000)
+          throw new Error("Review archive limit reached; operator archival required");
+        await writeFile(path.join(directory, id + ".json"), JSON.stringify(row), {
+          flag: "wx",
+          mode: 0o600,
+        });
+        return this.dto(row);
+      },
+      expectedGeneration,
+    );
   }
   private dto(row: Stored) {
-    return { id: row.id, botId: row.botId, digest: row.digest, createdAt: row.createdAt, expiresAt: row.expiresAt,
-      review: row.review, applied: row.applied ?? null, reviewUrl: "/app/" + encodeURIComponent(row.botId) + "?priorityReview=" + row.id };
+    return {
+      id: row.id,
+      botId: row.botId,
+      digest: row.digest,
+      createdAt: row.createdAt,
+      expiresAt: row.expiresAt,
+      review: row.review,
+      applied: row.applied ?? null,
+      reviewUrl: "/app/" + encodeURIComponent(row.botId) + "?priorityReview=" + row.id,
+    };
   }
   private async load(actor: Actor, id: string) {
-    z.uuid().parse(id); const file = path.join(await this.directory(actor), id + ".json");
+    z.uuid().parse(id);
+    const file = path.join(await this.directory(actor), id + ".json");
     if ((await lstat(file)).isSymbolicLink()) throw new Error("Invalid review record");
-    const raw = await readFile(file, "utf8"); if (Buffer.byteLength(raw) > 4_194_304) throw new Error("Invalid review record");
+    const raw = await readFile(file, "utf8");
+    if (Buffer.byteLength(raw) > 4_194_304) throw new Error("Invalid review record");
     const row = JSON.parse(raw) as Stored;
-    if (row.id !== id || row.actorUserId !== actor.userId || row.spaceId !== actor.spaceId || row.digest !== this.digest(row) || row.helperSha256 !== helperSha256())
+    if (
+      row.id !== id ||
+      row.actorUserId !== actor.userId ||
+      row.spaceId !== actor.spaceId ||
+      row.digest !== this.digest(row) ||
+      row.helperSha256 !== helperSha256()
+    )
       throw new Error("Review identity or version changed");
     return { row, file };
   }
-  async get(actor: Actor, id: string) { const { row } = await this.load(actor, id); await this.owned(actor, row.botId); return this.dto(row); }
+  async get(actor: Actor, id: string) {
+    const { row } = await this.load(actor, id);
+    await this.owned(actor, row.botId);
+    return this.dto(row);
+  }
   /** Called only by the reauthenticated browser boundary, never an agent tool. */
   async apply(actor: Actor, id: string, digest: string) {
     const initial = await this.load(actor, id);
     return this.withCheckpointMutation(actor, initial.row.botId, async (db) => {
-    const { row, file } = await this.load(actor, id);
-    if (row.digest !== digest) throw new Error("Review digest changed");
-    const bot = await this.owned(actor, row.botId, db);
-    if (bot.computerId !== row.computerId) throw new Error("Computer changed; obtain a fresh review");
-    const binding = await this.binding(actor, row.botId);
-    const selected = () => ({ reviewId: id, digest, ...row.applied, baselineDigest: row.bindingDigest,
-      baselineInputs: row.review.inputs, compilerSha256: row.review.compilerSha256, computerId: row.computerId });
-    if (row.applied) {
-      // Reconcile a lost binding write without replacing a later human selection.
-      if (binding.value && !binding.value.selection && teamDigest(this.bindingValue(row.botId, binding.value)) === row.bindingDigest)
+      const { row, file } = await this.load(actor, id);
+      if (row.digest !== digest) throw new Error("Review digest changed");
+      const bot = await this.owned(actor, row.botId, db);
+      if (bot.computerId !== row.computerId)
+        throw new Error("Computer changed; obtain a fresh review");
+      const binding = await this.binding(actor, row.botId);
+      const selected = () => ({
+        reviewId: id,
+        digest,
+        ...row.applied,
+        baselineDigest: row.bindingDigest,
+        baselineInputs: row.review.inputs,
+        compilerSha256: row.review.compilerSha256,
+        computerId: row.computerId,
+      });
+      if (row.applied) {
+        // Reconcile a lost binding write without replacing a later human selection.
+        if (
+          binding.value &&
+          !binding.value.selection &&
+          teamDigest(this.bindingValue(row.botId, binding.value)) === row.bindingDigest
+        )
+          await this.saveBinding(binding.file, { ...binding.value, selection: selected() });
+        return this.dto(row);
+      }
+      if (
+        !binding.value ||
+        teamDigest(this.bindingValue(row.botId, binding.value)) !== row.bindingDigest
+      )
+        throw new Error("The agent's current policy changed");
+      if (Date.parse(row.expiresAt) <= Date.now())
+        throw new Error("Review expired; obtain a fresh review");
+      const lock = await open(file + ".lock", "wx", 0o600).catch(() => {
+        throw new Error("Review is already being applied; inspect its receipt");
+      });
+      try {
+        if (Date.parse(row.expiresAt) <= Date.now()) throw new Error("Review expired");
+        const pinned = Object.fromEntries(
+          [
+            "policy",
+            "workingDirectory",
+            "sourceSha256",
+            "inputs",
+            "compilerSha256",
+            "candidateSha256",
+            "candidateCnlSha256",
+            "changes",
+          ].map((key) => [key, row.review[key]]),
+        );
+        const { value } = await this.execute(
+          actor,
+          row.botId,
+          { operation: "apply", id, review: pinned },
+          db,
+        );
+        row.applied = {
+          ...value,
+          selectedBy: actor.userId,
+          selectedAt: new Date().toISOString(),
+          selectionKind: "draft_revision",
+          policyApprovalGranted: false,
+          solveStarted: false,
+        };
+        const temporary = file + "." + randomUUID() + ".tmp";
+        await writeFile(temporary, JSON.stringify(row), { flag: "wx", mode: 0o600 });
+        await rename(temporary, file);
         await this.saveBinding(binding.file, { ...binding.value, selection: selected() });
-      return this.dto(row);
-    }
-    if (!binding.value || teamDigest(this.bindingValue(row.botId, binding.value)) !== row.bindingDigest) throw new Error("The agent's current policy changed");
-    if (Date.parse(row.expiresAt) <= Date.now()) throw new Error("Review expired; obtain a fresh review");
-    const lock = await open(file + ".lock", "wx", 0o600).catch(() => { throw new Error("Review is already being applied; inspect its receipt"); });
-    try {
-      if (Date.parse(row.expiresAt) <= Date.now()) throw new Error("Review expired");
-      const pinned = Object.fromEntries(["policy", "workingDirectory", "sourceSha256", "inputs", "compilerSha256", "candidateSha256", "candidateCnlSha256", "changes"].map((key) => [key, row.review[key]]));
-      const { value } = await this.execute(actor, row.botId, { operation: "apply", id, review: pinned }, db);
-      row.applied = { ...value, selectedBy: actor.userId, selectedAt: new Date().toISOString(),
-        selectionKind: "draft_revision", policyApprovalGranted: false, solveStarted: false };
-      const temporary = file + "." + randomUUID() + ".tmp";
-      await writeFile(temporary, JSON.stringify(row), { flag: "wx", mode: 0o600 }); await rename(temporary, file);
-      await this.saveBinding(binding.file, { ...binding.value, selection: selected() });
-      return this.dto(row);
-    } finally { await lock.close(); const { unlink } = await import("node:fs/promises"); await unlink(file + ".lock"); }
+        return this.dto(row);
+      } finally {
+        await lock.close();
+        const { unlink } = await import("node:fs/promises");
+        await unlink(file + ".lock");
+      }
     });
   }
   async agent(runId: string, args: Data) {
@@ -351,46 +753,161 @@ export class PriorityService {
     const direct = ["user", "follow_up"].includes(run.trigger);
     if (!direct) {
       // Completion watches consume their routine before waking the agent, so active is not an authority check.
-      const routine = run.trigger === "routine" && run.routineId && run.threadId
-        ? await this.deps.prisma.routine.findFirst({ where: { id: run.routineId, userId: run.userId,
-          spaceId: run.spaceId, botId: run.botId, threadId: run.threadId }, select: { id: true } }) : null;
+      const routine =
+        run.trigger === "routine" && run.routineId && run.threadId
+          ? await this.deps.prisma.routine.findFirst({
+              where: {
+                id: run.routineId,
+                userId: run.userId,
+                spaceId: run.spaceId,
+                botId: run.botId,
+                threadId: run.threadId,
+              },
+              select: { id: true },
+            })
+          : null;
       if (!routine) throw new Error("A direct owned agent turn is required");
     }
     const user = await this.deps.prisma.user.findUniqueOrThrow({ where: { id: run.userId } });
-    const actor = { userId: run.userId, spaceId: run.spaceId, email: user.email, isDeploymentOwner: false };
-    if (!direct && !["current", "list"].includes(args.operation)) {
+    const actor = {
+      userId: run.userId,
+      spaceId: run.spaceId,
+      email: user.email,
+      isDeploymentOwner: false,
+    };
+    if (!direct && args.operation !== "current" && args.operation !== "list") {
       await this.owned(actor, run.botId);
-      return { code: "ROST_RULE_PRIORITIES_DIRECT_TURN_REQUIRED", error: "Scheduled turns may read current/list, not register or propose policy changes.",
-        action: "Use current/list for the existing policy. Continue the authorized completion handoff without changing rules or starting another solve. Ask the owner in a direct turn if a new policy draft is needed.",
-        solveStarted: false, policyApprovalGranted: false };
+      return {
+        code: "ROST_RULE_PRIORITIES_DIRECT_TURN_REQUIRED",
+        error: "Scheduled turns may read current/list, not register or propose policy changes.",
+        action:
+          "Use current/list for the existing policy. Continue the authorized completion handoff without changing rules or starting another solve. Ask the owner in a direct turn if a new policy draft is needed.",
+        solveStarted: false,
+        policyApprovalGranted: false,
+      };
     }
-    if (args.operation === "current") return priorityAgentResult(await this.current(actor, run.botId, run.checkpointGeneration));
+    if (args.operation === "current")
+      return priorityAgentResult(await this.current(actor, run.botId, run.checkpointGeneration));
     if (args.operation === "list") {
-      const parsed = detailQuery.safeParse(Object.fromEntries(["section", "sourceSha256", "snapshotSha256", "offset", "limit", "groupId"]
-        .filter((key) => args[key] !== undefined).map((key) => [key, args[key]])));
-      if (!parsed.success) return argumentError([...new Set(parsed.error.issues.map((issue) => String(issue.path[0] ?? "arguments")))].slice(0, 8));
-      return priorityAgentResult(await this.current(actor, run.botId, run.checkpointGeneration), parsed.data);
+      const parsed = detailQuery.safeParse(
+        Object.fromEntries(
+          ["section", "sourceSha256", "snapshotSha256", "offset", "limit", "groupId"]
+            .filter((key) => args[key] !== undefined)
+            .map((key) => [key, args[key]]),
+        ),
+      );
+      if (!parsed.success)
+        return argumentError(
+          [
+            ...new Set(parsed.error.issues.map((issue) => String(issue.path[0] ?? "arguments"))),
+          ].slice(0, 8),
+        );
+      return priorityAgentResult(
+        await this.current(actor, run.botId, run.checkpointGeneration),
+        parsed.data,
+      );
     }
     if (args.operation === "inspect" || args.operation === "review") {
-      const input = { botId: run.botId, policy: args.policy, workingDirectory: args.workingDirectory };
-      const parsed = args.operation === "inspect" ? prioritySchemas.inspect.safeParse(input) :
-        prioritySchemas.review.safeParse({ ...input, sourceSha256: args.sourceSha256, changes: args.changes });
-      if (!parsed.success) return argumentError([...new Set(parsed.error.issues.map((issue) => String(issue.path[0] ?? "arguments")))].slice(0, 8));
-      if (args.operation === "inspect") return priorityAgentResult(await this.inspect(actor, parsed.data as z.infer<typeof prioritySchemas.inspect>, run.checkpointGeneration));
-      return priorityAgentResult(await this.review(actor, parsed.data as z.infer<typeof prioritySchemas.review>, run.checkpointGeneration));
+      const input = {
+        botId: run.botId,
+        policy: args.policy,
+        workingDirectory: args.workingDirectory,
+      };
+      const parsed =
+        args.operation === "inspect"
+          ? prioritySchemas.inspect.safeParse(input)
+          : prioritySchemas.review.safeParse({
+              ...input,
+              sourceSha256: args.sourceSha256,
+              changes: args.changes,
+            });
+      if (!parsed.success)
+        return argumentError(
+          [
+            ...new Set(parsed.error.issues.map((issue) => String(issue.path[0] ?? "arguments"))),
+          ].slice(0, 8),
+        );
+      if (args.operation === "inspect")
+        return priorityAgentResult(
+          await this.inspect(
+            actor,
+            parsed.data as z.infer<typeof prioritySchemas.inspect>,
+            run.checkpointGeneration,
+          ),
+        );
+      return priorityAgentResult(
+        await this.review(
+          actor,
+          parsed.data as z.infer<typeof prioritySchemas.review>,
+          run.checkpointGeneration,
+        ),
+      );
     }
     throw new Error("Agents can inspect/list/propose soft priorities, never apply them");
   }
 }
 
-export const priorityTools = [{ name: "rule_priorities", description: "Read the policy you manage or propose an exact soft-rule draft. Use inspect after authoring/checking a native .rost file to register source/cwd; use current before modeling/solving to reconcile human draft selections. For an unchanged rerun use current, not re-registration of every frozen copy. Owned scheduled completion turns may only use current/list; inspect/review require a direct user turn. This presentation tool is not a numerical readiness gate or authority to adopt a draft during completion. Summarize requested rules in chat, not a separate Rule Priorities page or raw weight controls. A review operation automatically posts an authenticated inline draft-review card. Selection grants no contract approval or solve allowance. Source-pinned .rules.json business groups and compiler CNL are display/review evidence, not approval. Never applies, disables hard rules or starts/stops a solve. Inspect/review take exact home-relative paths under workspace/ for dedicated bots or this bot's bots/<id>/ and authorized shared/ roots for Team bots. Never change cwd merely to pass this schema.",
-  inputSchema: { type: "object", properties: { operation: { type: "string", enum: ["current", "inspect", "list", "review"] },
-    section: { type: "string", enum: ["groups", "rules"], description: "For list: request bounded pages pinned to sourceSha256 and snapshotSha256 from current." },
-    snapshotSha256: { type: "string", pattern: "^[a-f0-9]{64}$", description: "Exact current receipt snapshot digest; binds inputs, compiler, CNL and review context." },
-    offset: { type: "integer", minimum: 0, maximum: 1000000 }, limit: { type: "integer", minimum: 1, maximum: 25 },
-    groupId: { type: "string", maxLength: 200, description: "Optional exact business group ID for a rules page." },
-    policy: { type: "string", maxLength: 1024, pattern: "^(?:workspace|bots/[A-Za-z0-9_-]+|shared)/[^\\\\\\u0000-\\u001f]+$", description: "Exact policy file in this workspace, relative to the home directory. No absolute paths or traversal." },
-    workingDirectory: { type: "string", maxLength: 1024, pattern: "^(?:workspace|bots/[A-Za-z0-9_-]+|shared)(?:/[^\\\\\\u0000-\\u001f]+)?$", description: "Actual input-resolution directory inside the authorized workspace. For unchanged reruns prefer current without path arguments." }, sourceSha256: { type: "string" },
-    changes: { type: "array", minItems: 1, maxItems: 200, items: { type: "object", properties: { id: { type: "string" }, weight: { type: "string" },
-      priority: { type: "string", enum: ["critical", "high", "normal", "low"] } }, required: ["id", "weight", "priority"], additionalProperties: false } } },
-    required: ["operation"], additionalProperties: false } }];
+export const priorityTools = [
+  {
+    name: "rule_priorities",
+    description:
+      "Read the policy you manage or propose an exact soft-rule draft. Use inspect after authoring/checking a native .rost file to register source/cwd; use current before modeling/solving to reconcile human draft selections. For an unchanged rerun use current, not re-registration of every frozen copy. Owned scheduled completion turns may only use current/list; inspect/review require a direct user turn. This presentation tool is not a numerical readiness gate or authority to adopt a draft during completion. Summarize requested rules in chat, not a separate Rule Priorities page or raw weight controls. A review operation automatically posts an authenticated inline draft-review card. Selection grants no contract approval or solve allowance. Source-pinned .rules.json business groups and compiler CNL are display/review evidence, not approval. Never applies, disables hard rules or starts/stops a solve. Inspect/review take exact home-relative paths under workspace/ for dedicated bots or this bot's bots/<id>/ and authorized shared/ roots for Team bots. Never change cwd merely to pass this schema.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        operation: { type: "string", enum: ["current", "inspect", "list", "review"] },
+        section: {
+          type: "string",
+          enum: ["groups", "rules"],
+          description:
+            "For list: request bounded pages pinned to sourceSha256 and snapshotSha256 from current.",
+        },
+        snapshotSha256: {
+          type: "string",
+          pattern: "^[a-f0-9]{64}$",
+          description:
+            "Exact current receipt snapshot digest; binds inputs, compiler, CNL and review context.",
+        },
+        offset: { type: "integer", minimum: 0, maximum: 1000000 },
+        limit: { type: "integer", minimum: 1, maximum: 25 },
+        groupId: {
+          type: "string",
+          maxLength: 200,
+          description: "Optional exact business group ID for a rules page.",
+        },
+        policy: {
+          type: "string",
+          maxLength: 1024,
+          pattern: "^(?:workspace|bots/[A-Za-z0-9_-]+|shared)/[^\\\\\\u0000-\\u001f]+$",
+          description:
+            "Exact policy file in this workspace, relative to the home directory. No absolute paths or traversal.",
+        },
+        workingDirectory: {
+          type: "string",
+          maxLength: 1024,
+          pattern: "^(?:workspace|bots/[A-Za-z0-9_-]+|shared)(?:/[^\\\\\\u0000-\\u001f]+)?$",
+          description:
+            "Actual input-resolution directory inside the authorized workspace. For unchanged reruns prefer current without path arguments.",
+        },
+        sourceSha256: { type: "string" },
+        changes: {
+          type: "array",
+          minItems: 1,
+          maxItems: 200,
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              weight: { type: "string" },
+              priority: { type: "string", enum: ["critical", "high", "normal", "low"] },
+            },
+            required: ["id", "weight", "priority"],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["operation"],
+      additionalProperties: false,
+    },
+  },
+];

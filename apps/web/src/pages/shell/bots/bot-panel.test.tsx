@@ -890,13 +890,17 @@ describe("BotSettings avatar set persistence", () => {
 describe("BotSettings cached data", () => {
   it("does not read voices on a managed deployment", async () => {
     vi.mocked(rpc.voice.voices).mockClear();
-    vi.mocked(rpc.me).mockResolvedValueOnce({ managedServices: true } as Awaited<ReturnType<typeof rpc.me>>);
+    vi.mocked(rpc.me).mockResolvedValueOnce({ managedServices: true } as Awaited<
+      ReturnType<typeof rpc.me>
+    >);
     await render();
     expect(rpc.voice.voices).not.toHaveBeenCalled();
   });
 
   it("shows cached voices at once and refreshes them in the background", async () => {
-    vi.mocked(rpc.me).mockResolvedValueOnce({ managedServices: false } as Awaited<ReturnType<typeof rpc.me>>);
+    vi.mocked(rpc.me).mockResolvedValueOnce({ managedServices: false } as Awaited<
+      ReturnType<typeof rpc.me>
+    >);
     queryClient.setQueryData(spaceQueries(null, null).voice.voices.queryKey({ input: {} }), [
       { id: "cached-voice", label: "Cached voice" },
     ]);

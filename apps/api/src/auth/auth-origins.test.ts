@@ -24,11 +24,20 @@ const env = {
 
 describe("CORS origins", () => {
   it("accepts an exact additional operator origin without trusting neighboring addresses or ports", () => {
-    const dual = { webOrigin: "http://192.0.2.10:5173", apiUrl: "http://192.0.2.10:5173",
-      authUrl: "http://192.0.2.10:5173", additionalWebOrigins: ["http://192.0.2.11:5173"] };
+    const dual = {
+      webOrigin: "http://192.0.2.10:5173",
+      apiUrl: "http://192.0.2.10:5173",
+      authUrl: "http://192.0.2.10:5173",
+      additionalWebOrigins: ["http://192.0.2.11:5173"],
+    };
     for (const origin of [dual.webOrigin, ...dual.additionalWebOrigins])
       expect(isTrustedOrigin(origin, dual)).toBe(true);
-    for (const origin of ["http://192.0.2.12:5173", "http://192.0.2.11:5174", "https://192.0.2.11:5173", "null"])
+    for (const origin of [
+      "http://192.0.2.12:5173",
+      "http://192.0.2.11:5174",
+      "https://192.0.2.11:5173",
+      "null",
+    ])
       expect(isTrustedOrigin(origin, dual)).toBe(false);
   });
   it("allows the configured site, its loopback twin, and the mobile dev servers", () => {
@@ -69,11 +78,19 @@ describe("CORS origins", () => {
   });
 
   it("trusts only the exact configured LAN deployment origin", () => {
-    const lan = { webOrigin: "http://192.0.2.10:5173", apiUrl: "http://192.0.2.10:5173",
-      authUrl: "http://192.0.2.10:5173" };
+    const lan = {
+      webOrigin: "http://192.0.2.10:5173",
+      apiUrl: "http://192.0.2.10:5173",
+      authUrl: "http://192.0.2.10:5173",
+    };
     expect(isTrustedOrigin(lan.webOrigin, lan)).toBe(true);
-    for (const origin of ["http://192.0.2.10:5174", "https://192.0.2.10:5173",
-      "http://192.0.2.11:5173", "http://192.0.2.10:5173.evil.test", "null"]) {
+    for (const origin of [
+      "http://192.0.2.10:5174",
+      "https://192.0.2.10:5173",
+      "http://192.0.2.11:5173",
+      "http://192.0.2.10:5173.evil.test",
+      "null",
+    ]) {
       expect(isTrustedOrigin(origin, lan), origin).toBe(false);
     }
   });
@@ -164,8 +181,14 @@ describe("request origin list", () => {
 
 describe("mobile auth origins", () => {
   it("accepts an explicitly added browser callback but no lookalike", async () => {
-    expect(await trusted("https://second.example.test/sign-in", ["https://second.example.test"])).toBe(true);
-    expect(await trusted("https://second.example.test.evil.test/sign-in", ["https://second.example.test"])).toBe(false);
+    expect(
+      await trusted("https://second.example.test/sign-in", ["https://second.example.test"]),
+    ).toBe(true);
+    expect(
+      await trusted("https://second.example.test.evil.test/sign-in", [
+        "https://second.example.test",
+      ]),
+    ).toBe(false);
     expect(await trusted("https://second.example.test/sign-in")).toBe(false);
   });
   it("does not trust an arbitrary Expo host as a callback", async () => {

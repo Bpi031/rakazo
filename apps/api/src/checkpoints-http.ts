@@ -1,9 +1,9 @@
-import type { Context, Hono } from "hono";
+import type { CheckpointService } from "@rakazo/adapters";
 import type { Actor } from "@rakazo/contracts";
 import { CheckpointCreate, CheckpointRollback } from "@rakazo/contracts";
-import type { CheckpointService } from "@rakazo/adapters";
 import { CheckpointConflictError, IsolationError } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
+import type { Context, Hono } from "hono";
 import { isAllowedWebOrigin } from "./web-origins.js";
 
 const legacyRollback = CheckpointRollback.omit({ expectedRevision: true });

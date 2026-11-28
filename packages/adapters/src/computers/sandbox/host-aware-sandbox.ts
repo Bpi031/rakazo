@@ -148,7 +148,8 @@ export class HostAwareSandbox implements SandboxProvider {
   ) {
     if (isolated.openRuntimeSession) {
       this.openRuntimeSession = (computer, request, context) => {
-        if (computer.kind !== "docker") throw new Error("Codex requires an isolated Docker computer");
+        if (computer.kind !== "docker")
+          throw new Error("Codex requires an isolated Docker computer");
         return isolated.openRuntimeSession!(computer, request, context);
       };
     }
