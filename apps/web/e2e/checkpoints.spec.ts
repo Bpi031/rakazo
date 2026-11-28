@@ -1,5 +1,11 @@
+import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "@playwright/test";
 import { captureScreenshot } from "./helpers/helpers";
+
+async function chooseRestore(page: Page, checkpoint: Locator) {
+  await checkpoint.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Restore checkpoint", exact: true }).click();
+}
 
 const view = {
   revision: "revision-2",
@@ -69,13 +75,17 @@ test("checkpoint tree previews prompts and confirms recovery with retry", async 
   });
   await page.goto("/e2e/fixtures/checkpoints.html");
   await expect(
-    page.getByRole("button", { name: "Restore checkpoint 人员与基础规则已确认" }),
+    page.getByRole("button", { name: "Inspect checkpoint 人员与基础规则已确认" }),
   ).toBeVisible();
   await expect(page.getByRole("button", { name: "撤销上次回滚" })).toHaveCount(0);
-  await page.getByRole("button", { name: "Restore checkpoint 人员与基础规则已确认" }).hover();
-  await expect(page.getByRole("tooltip")).toContainText("保持周末值班优先级");
+  const row = page.getByRole("button", { name: "Inspect checkpoint 人员与基础规则已确认" });
+  await row.click();
+  await expect(page.getByRole("region", { name: "Checkpoint details" })).toContainText(
+    "保持周末值班优先级",
+  );
+  await expect(page.getByRole("alertdialog")).toHaveCount(0);
   await captureScreenshot(page, testInfo, "checkpoint-tree-preview");
-  await page.getByRole("button", { name: "Restore checkpoint 人员与基础规则已确认" }).click();
+  await chooseRestore(page, row);
   await expect(page.getByRole("alertdialog")).toContainText("Running tasks will stop");
   expect(requests).toHaveLength(0);
   await captureScreenshot(page, testInfo, "checkpoint-restore-confirmation");
@@ -93,9 +103,10 @@ test("checkpoint tree previews prompts and confirms recovery with retry", async 
     expectedRevision: view.revision,
   });
   await expect(page.getByRole("alertdialog")).toHaveCount(0);
-  await page
-    .getByRole("button", { name: "Restore checkpoint Pre-solve checkpoint", exact: true })
-    .click();
+  await chooseRestore(
+    page,
+    page.getByRole("button", { name: "Inspect checkpoint Pre-solve checkpoint", exact: true }),
+  );
   await page.getByRole("button", { name: "Restore", exact: true }).click();
   await expect(page.getByRole("status")).toHaveText("Restored");
   expect(requests[2]?.body.checkpointId).toBe("solve-a");
@@ -114,14 +125,14 @@ test("a revision update closes the old confirmation and requires a new selection
     return route.fulfill({ json: { ok: true, generation: 4, branchId: "other" } });
   });
   await page.goto("/e2e/fixtures/checkpoints.html");
-  const select = page.getByRole("button", { name: "Restore checkpoint 人员与基础规则已确认" });
-  await select.click();
+  const select = page.getByRole("button", { name: "Inspect checkpoint 人员与基础规则已确认" });
+  await chooseRestore(page, select);
   await expect(page.getByRole("alertdialog")).toBeVisible();
   generation += 1;
   await expect(page.getByRole("alertdialog")).toHaveCount(0, { timeout: 7000 });
   expect(requests).toHaveLength(0);
   await expect(page.getByRole("alert")).toContainText("Workspace changed");
-  await select.click();
+  await chooseRestore(page, select);
   await page.getByRole("button", { name: "Restore", exact: true }).click();
   await expect(page.getByRole("status")).toHaveText("Restored");
   expect(requests).toEqual([generation]);
@@ -153,9 +164,9 @@ test("a save in another tab invalidates an already-open restore confirmation", a
   });
   await page.goto("/e2e/fixtures/checkpoints.html");
   const checkpoint = page.getByRole("button", {
-    name: "Restore checkpoint 人员与基础规则已确认",
+    name: "Inspect checkpoint 人员与基础规则已确认",
   });
-  await checkpoint.click();
+  await chooseRestore(page, checkpoint);
   await expect(page.getByRole("alertdialog")).toBeVisible();
   const second = await context.newPage();
   try {
@@ -169,7 +180,7 @@ test("a save in another tab invalidates an already-open restore confirmation", a
   await page.getByRole("button", { name: "Restore", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("Workspace changed");
   await expect(page.getByRole("alertdialog")).toHaveCount(0);
-  await checkpoint.click();
+  await chooseRestore(page, checkpoint);
   await page.getByRole("button", { name: "Restore", exact: true }).click();
   await expect(page.getByRole("status")).toHaveText("Restored");
   expect(restores).toEqual([view.revision, revision]);
@@ -204,8 +215,8 @@ test("a stale status disables restore even while the refreshed list is still loa
     return route.fulfill({ json: response });
   });
   await page.goto("/e2e/fixtures/checkpoints.html");
-  const select = page.getByRole("button", { name: "Restore checkpoint 人员与基础规则已确认" });
-  await select.click();
+  const select = page.getByRole("button", { name: "Inspect checkpoint 人员与基础规则已确认" });
+  await chooseRestore(page, select);
   await expect(page.getByRole("alertdialog")).toBeVisible();
   changed = true;
   try {
@@ -216,7 +227,7 @@ test("a stale status disables restore even while the refreshed list is still loa
   } finally {
     finishList();
   }
-  await select.click();
+  await chooseRestore(page, select);
   await page.getByRole("button", { name: "Restore", exact: true }).click();
   await expect(page.getByRole("status")).toHaveText("Restored");
   expect(restores).toMatchObject([{ expectedGeneration: view.generation }]);
@@ -251,7 +262,7 @@ test("a late initial list cannot replace newer checkpoint history", async ({ pag
     return route.fulfill({ json: updated });
   });
   await page.goto("/e2e/fixtures/checkpoints.html");
-  const current = page.getByRole("button", { name: "Restore checkpoint Current saved checkpoint" });
+  const current = page.getByRole("button", { name: "Inspect checkpoint Current saved checkpoint" });
   try {
     await expect(current).toBeVisible({ timeout: 8000 });
   } finally {
@@ -265,7 +276,7 @@ test("a late initial list cannot replace newer checkpoint history", async ({ pag
     () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
   );
   await expect(current).toBeVisible({ timeout: 1000 });
-  await current.click();
+  await chooseRestore(page, current);
   await page.getByRole("button", { name: "Restore", exact: true }).click();
   await expect.poll(() => restores).toMatchObject([{ expectedGeneration: updated.generation }]);
 });
@@ -305,7 +316,7 @@ test("a manual save accepts a small receipt and refreshes the timeline", async (
   expect(saves).toHaveLength(0);
   await page.getByRole("button", { name: "Set a checkpoint", exact: true }).click();
   await expect(
-    page.getByRole("button", { name: "Restore checkpoint Roster inputs ready" }),
+    page.getByRole("button", { name: "Inspect checkpoint Roster inputs ready" }),
   ).toBeVisible();
   await expect(name).toHaveValue("");
   expect(saves).toEqual([
@@ -343,43 +354,60 @@ test("a saved checkpoint does not become a failed save when its list request fai
   await expect(page.getByText("Checkpoint saved. The list has not refreshed yet.")).toHaveCount(0);
 });
 
-for (const captureActive of [false, true]) {
-  test(`losing ${captureActive ? "active" : "pending"} pointer capture ends a checkpoint graph drag`, async ({
-    page,
-  }) => {
-    await page.goto("/e2e/fixtures/checkpoints.html?demo=branches");
-    const tree = page.getByRole("region", { name: "Checkpoint tree, drag to pan" });
-    await expect(tree).toBeVisible();
-    const box = (await tree.boundingBox())!;
-    await tree.evaluate((element) => {
-      element.addEventListener(
-        "pointerdown",
-        (event) => {
-          if (event instanceof PointerEvent) {
-            element.dataset.testDragPointer = String(event.pointerId);
-          }
-        },
-        { once: true },
-      );
-    });
-    await page.mouse.move(box.x + box.width - 25, box.y + 70);
-    await page.mouse.down();
-    try {
-      await expect(tree).toHaveCSS("cursor", "grabbing");
-      if (captureActive) {
-        await page.mouse.move(box.x + box.width - 26, box.y + 70);
-        await expect(tree).toHaveCSS("cursor", "grabbing");
-      }
-      await tree.evaluate((element) =>
-        element.releasePointerCapture(Number(element.dataset.testDragPointer)),
-      );
-      await page.mouse.move(box.x + box.width - 35, box.y + 65);
-      await expect(tree).toHaveCSS("cursor", "grab", { timeout: 1500 });
-    } finally {
-      await page.mouse.up();
+test("a checkpoint can be renamed without restoring or moving it", async ({ page }) => {
+  const writes: unknown[] = [];
+  await page.route("**/api/checkpoints**", (route) => {
+    const request = route.request();
+    if (request.method() === "POST") {
+      writes.push({ path: new URL(request.url()).pathname, body: request.postDataJSON() });
+      return route.fulfill({ json: { ok: true } });
     }
+    return route.fulfill({
+      json: writes.length
+        ? {
+            ...view,
+            revision: "renamed",
+            checkpoints: view.checkpoints.map((node) =>
+              node.id === "clean-a" ? { ...node, label: "Reviewed draft" } : node,
+            ),
+          }
+        : view,
+    });
   });
-}
+  await page.goto("/e2e/fixtures/checkpoints.html");
+  await page
+    .getByRole("button", { name: "Inspect checkpoint 人员与基础规则已确认" })
+    .click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Rename checkpoint", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Rename checkpoint" });
+  await dialog.getByRole("textbox", { name: "Checkpoint name" }).fill("Reviewed draft");
+  await dialog.getByRole("button", { name: "Save name" }).click();
+  await expect(
+    page.getByRole("button", { name: "Inspect checkpoint Reviewed draft" }),
+  ).toHaveAttribute("data-checkpoint-id", "clean-a");
+  expect(writes).toEqual([
+    {
+      path: "/api/checkpoints/clean-a/rename",
+      body: {
+        botId: "fixture-bot",
+        checkpointId: "clean-a",
+        label: "Reviewed draft",
+        expectedRevision: view.revision,
+      },
+    },
+  ]);
+});
+
+test("many branches stay inside the panel at narrow widths", async ({ page }) => {
+  await page.setViewportSize({ width: 430, height: 800 });
+  await page.goto("/e2e/fixtures/checkpoints.html?demo=branches");
+  const history = page.getByRole("region", { name: "Checkpoint history" });
+  await expect(history).toBeVisible();
+  await expect
+    .poll(() => history.evaluate((element) => element.scrollWidth <= element.clientWidth))
+    .toBe(true);
+  await expect(history.getByRole("button", { name: /Inspect checkpoint/ }).first()).toBeVisible();
+});
 
 test("restore identifies the exact checkpoint and cannot silently change targets", async ({
   page,
@@ -391,9 +419,9 @@ test("restore identifies the exact checkpoint and cannot silently change targets
     return route.fulfill({ json: { ok: true, generation: 3, branchId: "new" } });
   });
   await page.goto("/e2e/fixtures/checkpoints.html");
-  const first = page.getByRole("button", { name: "Restore checkpoint 人员与基础规则已确认" });
-  const other = page.getByRole("button", { name: "Restore checkpoint 调整周末方案" });
-  await first.click();
+  const first = page.getByRole("button", { name: "Inspect checkpoint 人员与基础规则已确认" });
+  const other = page.getByRole("button", { name: "Inspect checkpoint 调整周末方案" });
+  await chooseRestore(page, first);
   const dialog = page.getByRole("alertdialog");
   await expect(dialog).toContainText("人员与基础规则已确认");
   await expect(dialog.locator("time")).toHaveAttribute("datetime", view.checkpoints[0]!.createdAt);
@@ -403,7 +431,7 @@ test("restore identifies the exact checkpoint and cannot silently change targets
   await expect(dialog).toHaveCount(0);
   await expect(first).toBeFocused();
   expect(restored).toHaveLength(0);
-  await other.click();
+  await chooseRestore(page, other);
   await expect(dialog).toContainText("调整周末方案");
   await dialog.getByRole("button", { name: "Restore", exact: true }).click();
   await expect(page.getByRole("status")).toHaveText("Restored");

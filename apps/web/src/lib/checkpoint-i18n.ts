@@ -1,7 +1,12 @@
 import { i18n } from "@lingui/core";
 import { useSyncExternalStore } from "react";
 
-type Translation = (descriptor: { id: string; message: string }) => string;
+type Descriptor = { id: string; message: string; values?: Record<string, string> };
+type Translation = (descriptor: Descriptor) => string;
+const interpolate = (message: string, values?: Record<string, string>) =>
+  values
+    ? message.replace(/\{(\w+)\}/g, (placeholder, key: string) => values[key] ?? placeholder)
+    : message;
 
 function messages(i18n: { _: Translation }) {
   return {
@@ -59,7 +64,46 @@ function messages(i18n: { _: Translation }) {
     cancel: i18n._({ id: "checkpoint.cancel", message: "Cancel" }),
     working: i18n._({ id: "checkpoint.working", message: "Working…" }),
     empty: i18n._({ id: "checkpoint.empty", message: "No checkpoints yet." }),
-    tree: i18n._({ id: "checkpoint.tree", message: "Checkpoint tree, drag to pan" }),
+    tree: i18n._({ id: "checkpoint.tree", message: "Checkpoint history" }),
+    details: i18n._({ id: "checkpoint.details", message: "Checkpoint details" }),
+    linkedCheckpoint: i18n._({ id: "checkpoint.linkedCheckpoint", message: "Previous checkpoint" }),
+    actions: i18n._({ id: "checkpoint.actions", message: "Checkpoint actions" }),
+    rename: i18n._({ id: "checkpoint.rename", message: "Rename checkpoint" }),
+    renameDescription: i18n._({
+      id: "checkpoint.renameDescription",
+      message: "Only the checkpoint name will change.",
+    }),
+    renameBranch: i18n._({ id: "checkpoint.renameBranch", message: "Rename branch" }),
+    branchNameField: i18n._({ id: "checkpoint.branchNameField", message: "Branch name" }),
+    renameBranchDescription: i18n._({
+      id: "checkpoint.renameBranchDescription",
+      message: "Only the branch name will change.",
+    }),
+    saveName: i18n._({ id: "checkpoint.saveName", message: "Save name" }),
+    navigateParent: i18n._({
+      id: "checkpoint.navigateParent",
+      message: "Go to previous checkpoint",
+    }),
+    focusBranch: i18n._({ id: "checkpoint.focusBranch", message: "Focus branch" }),
+    copyId: i18n._({ id: "checkpoint.copyId", message: "Copy checkpoint ID" }),
+    copiedId: i18n._({ id: "checkpoint.copiedId", message: "Checkpoint ID copied." }),
+    closeDetails: i18n._({ id: "checkpoint.closeDetails", message: "Close checkpoint details" }),
+    inspectNode: i18n._({ id: "checkpoint.inspectNode", message: "Inspect checkpoint" }),
+    allBranches: i18n._({ id: "checkpoint.allBranches", message: "All branches" }),
+    branchFilter: i18n._({ id: "checkpoint.branchFilter", message: "Filter by branch" }),
+    originalBranch: i18n._({ id: "checkpoint.originalBranch", message: "Original history" }),
+    restoredBranch: i18n._({ id: "checkpoint.restoredBranch", message: "Restored branch" }),
+    branchFrom: (checkpoint: string) =>
+      i18n._({ id: "checkpoint.branchFrom", message: "From {checkpoint}", values: { checkpoint } }),
+    branchRestoredAt: (date: string) =>
+      i18n._({ id: "checkpoint.branchRestoredAt", message: "Restored {date}", values: { date } }),
+    currentBranch: i18n._({ id: "checkpoint.currentBranch", message: "current" }),
+    showTurns: i18n._({ id: "checkpoint.showTurns", message: "Show old chat checkpoints" }),
+    emptyFiltered: i18n._({
+      id: "checkpoint.emptyFiltered",
+      message: "No checkpoints match these filters.",
+    }),
+    branchTip: i18n._({ id: "checkpoint.branchTip", message: "Branch tip" }),
     restoreNode: i18n._({ id: "checkpoint.restoreNode", message: "Restore checkpoint" }),
     noPrompt: i18n._({ id: "checkpoint.noPrompt", message: "No user message at this checkpoint." }),
     kinds: {
@@ -74,7 +118,7 @@ function messages(i18n: { _: Translation }) {
   };
 }
 
-const english = messages({ _: ({ message }) => message });
+const english = messages({ _: ({ message, values }) => interpolate(message, values) });
 let translated: typeof english | undefined;
 let revision = 0;
 i18n.on("change", () => {
@@ -86,10 +130,13 @@ i18n.on("change", () => {
 export function checkpointCopy(locale = i18n.locale) {
   if (locale !== "zh-CN" || i18n.locale !== "zh-CN") return english;
   translated ??= messages({
-    _: ({ id, message }) => {
+    _: ({ id, message, values }) => {
       const translation = i18n.messages[id];
       // Checkpoint labels are static; missing or raw entries need no ICU interpolation.
-      return !translation ? message : typeof translation === "string" ? translation : i18n._(id);
+      if (!translation) return interpolate(message, values);
+      return typeof translation === "string"
+        ? interpolate(translation, values)
+        : i18n._(id, values);
     },
   });
   return translated;

@@ -23,7 +23,8 @@ function Fixture() {
         <CheckpointTree
           view={preview}
           disabled={false}
-          onSelect={(node) =>
+          onRename={() => {}}
+          onRestore={(node) =>
             setPreview({ ...preview, activeBranchId: node.branchId, currentCheckpointId: node.id })
           }
         />

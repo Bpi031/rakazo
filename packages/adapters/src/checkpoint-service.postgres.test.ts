@@ -212,6 +212,65 @@ postgres("checkpoint recovery with migrated PostgreSQL", () => {
     }
   });
 
+  it("renames checkpoint metadata without touching files and rejects a stale restore", async () => {
+    const initial = await service.status(actor, botId);
+    files = { "roster.xlsx": "retained binary fixture" };
+    const target = await service.create(actor, {
+      botId,
+      label: "Original label",
+      expectedGeneration: initial.generation,
+    });
+    const before = await service.list(actor, botId);
+    const branchId = before.activeBranchId!;
+    const branchLabel = before.branches.find((branch) => branch.id === branchId)?.label ?? null;
+    try {
+      await service.rename(actor, {
+        botId,
+        checkpointId: target.id,
+        label: "Reviewed draft",
+        expectedRevision: before.revision,
+      });
+      const renamed = await service.list(actor, botId);
+      expect(renamed.generation).toBe(before.generation);
+      expect(renamed.revision).not.toBe(before.revision);
+      expect(renamed.checkpoints.find((row) => row.id === target.id)?.label).toBe("Reviewed draft");
+      await expect(
+        service.rename(actor, {
+          botId,
+          branchId: "not-this-branch",
+          label: "Wrong",
+          expectedRevision: renamed.revision,
+        }),
+      ).rejects.toThrow();
+      expect((await service.status(actor, botId)).revision).toBe(renamed.revision);
+      await service.rename(actor, {
+        botId,
+        branchId,
+        label: "Reviewed branch",
+        expectedRevision: renamed.revision,
+      });
+      expect(
+        (await service.list(actor, botId)).branches.find((branch) => branch.id === branchId)?.label,
+      ).toBe("Reviewed branch");
+      await expect(
+        service.rollback(actor, {
+          botId,
+          checkpointId: target.id,
+          expectedGeneration: before.generation,
+          expectedRevision: before.revision,
+        }),
+      ).rejects.toMatchObject({ reason: "stale" });
+      expect(files).toEqual({ "roster.xlsx": "retained binary fixture" });
+    } finally {
+      await prisma.conversationBranch.update({
+        where: { id: branchId },
+        data: { label: branchLabel },
+      });
+      await prisma.checkpoint.deleteMany({ where: { id: target.id } });
+      files = {};
+    }
+  });
+
   it("refuses a missing archived attachment without changing the workspace generation", async () => {
     const archived = await artifact("missing-from-storage-records");
     const before = await service.status(actor, botId);

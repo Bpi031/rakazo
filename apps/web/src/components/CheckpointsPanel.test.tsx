@@ -51,6 +51,23 @@ const view = {
     },
   ],
 };
+const checkpointSelector = '[aria-label="Inspect checkpoint 人员已确认"]';
+
+async function chooseRestore() {
+  await act(async () => {
+    host
+      .querySelector(checkpointSelector)!
+      .dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+  });
+  await act(async () => {
+    const action = Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(
+      (element) => element.textContent === "Restore checkpoint",
+    );
+    expect(action).toBeDefined();
+    action!.click();
+  });
+}
+
 function button(text: string) {
   return [...host.querySelectorAll<HTMLButtonElement>("button")].find(
     (element) => element.textContent === text,
@@ -81,12 +98,10 @@ async function render(
 
 it("requires a target confirmation and submits the current generation and revision", async () => {
   const { restored, fetcher } = await render();
-  expect(host.querySelector('[aria-label="Restore checkpoint 人员已确认"]')).toBeTruthy();
-  expect(host.textContent).not.toContain("人员已确认");
+  expect(host.querySelector(checkpointSelector)).toBeTruthy();
+  expect(host.querySelector('[role="alertdialog"]')).toBeNull();
   expect(host.querySelector('[aria-label="Checkpoint name"]')).toBeTruthy();
-  await act(async () =>
-    host.querySelector<HTMLButtonElement>('[aria-label="Restore checkpoint 人员已确认"]')!.click(),
-  );
+  await chooseRestore();
   expect(host.querySelector('[role="alertdialog"]')?.textContent).toContain(
     "Running tasks will stop",
   );
@@ -115,10 +130,8 @@ it("names an incomplete checkpoint error and lets the user choose a different on
       ? Response.json({ code: "CHECKPOINT_INCOMPLETE", error: "hidden details" }, { status: 409 })
       : Response.json(view),
   );
-  const checkpoint = host.querySelector<HTMLButtonElement>(
-    '[aria-label="Restore checkpoint 人员已确认"]',
-  )!;
-  await act(async () => checkpoint.click());
+  const checkpoint = host.querySelector<HTMLButtonElement>(checkpointSelector)!;
+  await chooseRestore();
   await act(async () => button("Restore").click());
   expect(host.textContent).toContain(
     "This checkpoint is missing saved data. Choose another checkpoint.",
@@ -132,14 +145,12 @@ it("names an incomplete checkpoint error and lets the user choose a different on
 it("shows a branching tree without an Undo action", async () => {
   await render();
   expect(button("撤销上次回滚")).toBeUndefined();
-  expect(host.querySelector('[aria-label="Checkpoint tree, drag to pan"]')).toBeTruthy();
+  expect(host.querySelector('[aria-label="Checkpoint history"]')).toBeTruthy();
 });
 
 it("does not reload on a failed restore and refreshes stale state for retry", async () => {
   const { restored, fetcher } = await render({ failure: true });
-  await act(async () =>
-    host.querySelector<HTMLButtonElement>('[aria-label="Restore checkpoint 人员已确认"]')!.click(),
-  );
+  await chooseRestore();
   await act(async () => button("Restore").click());
   expect(host.querySelector('[role="alert"]')?.textContent).toContain("Workspace changed");
   expect(restored).not.toHaveBeenCalled();
@@ -150,9 +161,7 @@ it("does not reload on a failed restore and refreshes stale state for retry", as
 it("blocks saving an incomplete workspace while allowing recovery", async () => {
   await render({ blocked: true });
   expect(button("Set a checkpoint").disabled).toBe(true);
-  expect(
-    host.querySelector<HTMLButtonElement>('[aria-label="Restore checkpoint 人员已确认"]')!.disabled,
-  ).toBe(false);
+  expect(host.querySelector<HTMLButtonElement>(checkpointSelector)!.disabled).toBe(false);
   expect(host.textContent).toContain("Workspace recovery is incomplete");
 });
 
@@ -160,9 +169,7 @@ it("keeps a reopened panel disabled while a workspace operation is still running
   await render({ workspaceBusy: true });
   expect(button("Set a checkpoint").disabled).toBe(true);
   expect(host.querySelector<HTMLInputElement>("input")!.disabled).toBe(true);
-  expect(
-    host.querySelector<HTMLButtonElement>('[aria-label="Restore checkpoint 人员已确认"]')!.disabled,
-  ).toBe(true);
+  expect(host.querySelector<HTMLButtonElement>(checkpointSelector)!.disabled).toBe(true);
 });
 
 it("does not reload a different chat when an unmounted restore completes", async () => {
@@ -179,9 +186,7 @@ it("does not reload a different chat when an unmounted restore completes", async
   await act(async () =>
     root!.render(<CheckpointsPanel botId="bot" onRestored={restored} onBusyChange={busy} />),
   );
-  await act(async () =>
-    host.querySelector<HTMLButtonElement>('[aria-label="Restore checkpoint 人员已确认"]')!.click(),
-  );
+  await chooseRestore();
   await act(async () => button("Restore").click());
   expect(busy).toHaveBeenLastCalledWith(true);
   await act(async () => root!.unmount());

@@ -1,6 +1,13 @@
 import type { CheckpointStatus, CheckpointView } from "@rakazo/contracts";
 import { bestEffort } from "@rakazo/logging/best-effort";
-import { Button, Input } from "@rakazo/ui-web";
+import {
+  Button,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+  Input,
+} from "@rakazo/ui-web";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { checkpointError, useCheckpointI18n } from "../lib/checkpoint-i18n";
 import { checkpointApi, checkpointNeedsReload } from "../lib/checkpoints";
@@ -15,8 +22,10 @@ type RestoreResult = {
   generation: number;
   branchId: string;
 };
+type RenameTarget = { id: string; target: "checkpoint" | "branch"; revision: string };
 type CheckpointWrite =
   | { kind: "save"; generation: number; label: string }
+  | ({ kind: "rename"; label: string } & RenameTarget)
   | { kind: "restore"; id: string; generation: number; revision: string };
 
 export function CheckpointsPanel({
@@ -38,6 +47,8 @@ export function CheckpointsPanel({
   const [refreshing, setRefreshing] = useState(false);
   const [savedListDelayed, setSavedListDelayed] = useState(false);
   const [name, setName] = useState("");
+  const [renameTarget, setRenameTarget] = useState<RenameTarget>();
+  const [newName, setNewName] = useState("");
   const [target, setTarget] = useState<{ id: string; generation: number; revision: string } | null>(
     null,
   );
@@ -59,19 +70,36 @@ export function CheckpointsPanel({
       onBusyChange?.(true);
       setOperationError("");
       try {
-        if (input.kind === "save") {
-          await checkpointApi(
-            "",
-            botId,
-            {
-              ...(input.label ? { label: input.label } : {}),
-              expectedGeneration: input.generation,
-            },
-            undefined,
-            scope.spaceId,
-          );
+        if (input.kind === "save" || input.kind === "rename") {
+          if (input.kind === "save")
+            await checkpointApi(
+              "",
+              botId,
+              {
+                ...(input.label ? { label: input.label } : {}),
+                expectedGeneration: input.generation,
+              },
+              undefined,
+              scope.spaceId,
+            );
+          else {
+            const id = encodeURIComponent(input.id);
+            const branch = input.target === "branch";
+            await checkpointApi(
+              `/${branch ? "branches/" : ""}${id}/rename`,
+              botId,
+              {
+                ...(branch ? { branchId: input.id } : { checkpointId: input.id }),
+                expectedRevision: input.revision,
+                label: input.label,
+              },
+              undefined,
+              scope.spaceId,
+            );
+          }
           if (!scope.isCurrent()) return;
-          setName("");
+          if (input.kind === "save") setName("");
+          else setRenameTarget(undefined);
           // Once acknowledged, retry only the read.
           awaitingSavedList.current = true;
           setRefreshing(true);
@@ -103,6 +131,7 @@ export function CheckpointsPanel({
           const message =
             value instanceof Error ? checkpointError(value.message) : copy.operationError;
           if (message === copy.stale || message === copy.incomplete) setTarget(null);
+          if (message === copy.stale) setRenameTarget(undefined);
           setOperationError(message);
           await bestEffort("refresh checkpoints after restore attempt", load());
         }
@@ -123,6 +152,9 @@ export function CheckpointsPanel({
       refreshing ||
       target.generation !== view?.generation ||
       target.revision !== view?.revision);
+  const renameStale =
+    renameTarget !== undefined &&
+    (refreshing || renameTarget.revision !== view?.revision || view.blocked);
   useEffect(() => {
     if (target) {
       cancelButton.current?.focus();
@@ -137,6 +169,12 @@ export function CheckpointsPanel({
       setOperationError(copy.stale);
     }
   }, [confirmationStale, busy, copy.stale]);
+  useEffect(() => {
+    if (renameStale && !busyRef.current) {
+      setRenameTarget(undefined);
+      setOperationError(copy.stale);
+    }
+  }, [renameStale, busy, copy.stale]);
   const load = useCallback(async () => {
     const signal = controller.current?.signal;
     const request = ++listRequest.current;
@@ -213,6 +251,13 @@ export function CheckpointsPanel({
     )
       return;
     write.run(input);
+  }
+
+  function openRename(item: Omit<RenameTarget, "revision">, label: string) {
+    if (!view || view.blocked || operationBusy || target) return;
+    setNewName(label);
+    setOperationError("");
+    setRenameTarget({ ...item, revision: view.revision });
   }
 
   return (
@@ -304,6 +349,51 @@ export function CheckpointsPanel({
           </div>
         </div>
       )}
+      <Dialog
+        open={renameTarget !== undefined}
+        onOpenChange={(open) => {
+          if (!open && !busyRef.current) setRenameTarget(undefined);
+        }}
+      >
+        <DialogContent>
+          <DialogTitle>
+            {renameTarget?.target === "branch" ? copy.renameBranch : copy.rename}
+          </DialogTitle>
+          <DialogDescription>
+            {renameTarget?.target === "branch"
+              ? copy.renameBranchDescription
+              : copy.renameDescription}
+          </DialogDescription>
+          <form
+            className="space-y-3"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (renameTarget && !renameStale && newName.trim())
+                submit({ kind: "rename", ...renameTarget, label: newName.trim() });
+            }}
+          >
+            <Input
+              aria-label={renameTarget?.target === "branch" ? copy.branchNameField : copy.name}
+              value={newName}
+              onChange={(event) => setNewName(event.target.value)}
+              maxLength={120}
+            />
+            <div className="flex gap-2">
+              <Button type="submit" disabled={operationBusy || renameStale || !newName.trim()}>
+                {copy.saveName}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={busy}
+                onClick={() => setRenameTarget(undefined)}
+              >
+                {copy.cancel}
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
       {(operationBusy || savedListDelayed) && (
         <p role="status" className="text-body text-muted-foreground">
           {savedListDelayed ? copy.savedListDelayed : copy.working}
@@ -315,12 +405,14 @@ export function CheckpointsPanel({
       {view && view.checkpoints.length > 0 && (
         <CheckpointTree
           view={view}
-          disabled={operationBusy || target !== null}
-          selectedId={target?.id}
-          onSelect={(item, trigger) => {
+          disabled={operationBusy || target !== null || renameTarget !== undefined}
+          viewportId={`${spaceId ?? ""}:${botId}`}
+          onRename={(item) => openRename({ id: item.id, target: "checkpoint" }, item.label ?? "")}
+          onRenameBranch={(id, label) => openRename({ id, target: "branch" }, label)}
+          onRestore={(item, trigger) => {
             if (target || pendingRevision.current !== undefined || awaitingSavedList.current)
               return;
-            returnFocus.current = trigger;
+            returnFocus.current = trigger ?? null;
             setOperationError("");
             setTarget({ id: item.id, generation: view.generation, revision: view.revision });
           }}

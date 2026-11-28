@@ -23,6 +23,16 @@ export const CheckpointRollback = z
   })
   .strict();
 export type CheckpointRollbackInput = z.infer<typeof CheckpointRollback>;
+const renameFields = {
+  botId,
+  label: CheckpointCreate.shape.label.unwrap().min(1),
+  expectedRevision: CheckpointRollback.shape.expectedRevision,
+};
+export const CheckpointRename = z.object({ ...renameFields, checkpointId: botId }).strict();
+export const CheckpointBranchRename = z.object({ ...renameFields, branchId: botId }).strict();
+export type CheckpointRenameInput =
+  | z.infer<typeof CheckpointRename>
+  | z.infer<typeof CheckpointBranchRename>;
 export type CheckpointListItem = {
   id: string;
   kind: z.infer<typeof CheckpointKind>;
@@ -42,5 +52,10 @@ export type CheckpointView = CheckpointStatus & {
   activeBranchId: string | null;
   checkpoints: CheckpointListItem[];
   currentCheckpointId: string | null;
-  branches: Array<{ id: string; parentCheckpointId: string | null; lastUsedAt: string }>;
+  branches: Array<{
+    id: string;
+    label?: string | null;
+    parentCheckpointId: string | null;
+    lastUsedAt: string;
+  }>;
 };

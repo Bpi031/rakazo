@@ -12,6 +12,7 @@ function fixture(authenticated = true) {
     status: vi.fn().mockResolvedValue({ generation: 2, blocked: false, revision: "2:false:saved" }),
     list: vi.fn().mockResolvedValue({ generation: 2, checkpoints: [] }),
     create: vi.fn().mockResolvedValue({ id: "saved" }),
+    rename: vi.fn().mockResolvedValue({ ok: true }),
     rollback: vi.fn().mockResolvedValue({ ok: true, generation: 3, rescueCheckpointId: "rescue" }),
     audit: vi.fn().mockResolvedValue({ schema: "rakazo/checkpoint-audit/v1", messages: [] }),
   };
@@ -29,6 +30,30 @@ const post = (body: unknown, origin = "https://app.example") => ({
 });
 
 describe("checkpoint HTTP", () => {
+  it("names an exact checkpoint or branch for the authenticated caller", async () => {
+    const { app, service } = fixture();
+    const input = { botId: "bot", label: "Roster ready", expectedRevision: "2:false:saved" };
+    const checkpoint = { ...input, checkpointId: "saved" };
+    const branch = { ...input, branchId: "initial:thread" };
+    expect((await app.request("/api/checkpoints/other/rename", post(checkpoint))).status).toBe(400);
+    expect(
+      (
+        await app.request(
+          "/api/checkpoints/saved/rename",
+          post(checkpoint, "https://other.example"),
+        )
+      ).status,
+    ).toBe(403);
+    expect(service.rename).not.toHaveBeenCalled();
+    expect((await app.request("/api/checkpoints/saved/rename", post(checkpoint))).status).toBe(200);
+    expect(
+      (await app.request("/api/checkpoints/branches/initial%3Athread/rename", post(branch))).status,
+    ).toBe(200);
+    expect(service.rename.mock.calls).toEqual([
+      [actor, checkpoint],
+      [actor, branch],
+    ]);
+  });
   it("serves lightweight status without loading snapshot history", async () => {
     const { app, service } = fixture();
     const response = await app.request("/api/checkpoints/status?botId=bot");

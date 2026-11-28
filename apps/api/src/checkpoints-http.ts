@@ -1,6 +1,11 @@
 import type { CheckpointService } from "@rakazo/adapters";
 import type { Actor } from "@rakazo/contracts";
-import { CheckpointCreate, CheckpointRollback } from "@rakazo/contracts";
+import {
+  CheckpointBranchRename,
+  CheckpointCreate,
+  CheckpointRename,
+  CheckpointRollback,
+} from "@rakazo/contracts";
 import { CheckpointConflictError, IsolationError } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import type { Context, Hono } from "hono";
@@ -15,7 +20,10 @@ function invalidCheckpoint(c: Context) {
 export function mountCheckpointHttp(
   app: Hono,
   deps: {
-    service: Pick<CheckpointService, "status" | "list" | "create" | "rollback" | "audit">;
+    service: Pick<
+      CheckpointService,
+      "status" | "list" | "create" | "rename" | "rollback" | "audit"
+    >;
     actor: (request: Request) => Promise<Actor | null>;
     webOrigin: string;
     additionalWebOrigins?: readonly string[];
@@ -76,6 +84,20 @@ export function mountCheckpointHttp(
         if (!input.success) return invalidCheckpoint(c);
         const saved = await deps.service.create(actor, input.data);
         return c.json({ id: saved.id }, 201);
+      }
+      const branchRename = /^\/api\/checkpoints\/branches\/([^/]+)\/rename$/.exec(route);
+      if (branchRename) {
+        const input = CheckpointBranchRename.safeParse(body);
+        if (!input.success || encodeURIComponent(input.data.branchId) !== branchRename[1])
+          return invalidCheckpoint(c);
+        return c.json(await deps.service.rename(actor, input.data));
+      }
+      const rename = /^\/api\/checkpoints\/([^/]+)\/rename$/.exec(route);
+      if (rename) {
+        const input = CheckpointRename.safeParse(body);
+        if (!input.success || encodeURIComponent(input.data.checkpointId) !== rename[1])
+          return invalidCheckpoint(c);
+        return c.json(await deps.service.rename(actor, input.data));
       }
       const match = /^\/api\/checkpoints\/([^/]+)\/rollback$/.exec(route);
       if (match) {

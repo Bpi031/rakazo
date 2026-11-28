@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { SandboxProvider } from "@rakazo/adapter-kit";
 import type {
   Actor,
+  CheckpointRenameInput,
   CheckpointRollbackInput,
   CheckpointStatus,
   CheckpointView,
@@ -40,6 +41,12 @@ import {
 import { checkpointFileDiff, stateDigest } from "./checkpoint-digest.js";
 import type { CheckpointFileScope } from "./checkpoint-files.js";
 import { CheckpointFiles, checkpointFileManifestSchema } from "./checkpoint-files.js";
+import {
+  advanceLabelRevision,
+  checkpointRevision,
+  latestCheckpointLabel,
+  writeCheckpointLabel,
+} from "./checkpoint-labels.js";
 import { assertCheckpointWritersIdle, stopCheckpointWriters } from "./checkpoint-processes.js";
 
 export { checkpointFileDiff } from "./checkpoint-digest.js";
@@ -117,15 +124,6 @@ function workspaceCheckpoints(
   return scope === "team"
     ? { threadId, workspaceKey }
     : { threadId, OR: [{ workspaceKey }, { workspaceKey: null }] };
-}
-
-function checkpointRevision(
-  generation: number,
-  blocked: boolean,
-  workspaceKey: string,
-  latest?: string,
-) {
-  return `${generation}:${blocked}:${workspaceKey}:${latest ?? ""}`;
 }
 
 /** V1: serial synchronous recovery. A failed restore leaves the thread blocked. */
@@ -207,8 +205,38 @@ export class CheckpointService {
     return {
       generation: thread.checkpointGeneration,
       blocked,
-      revision: checkpointRevision(thread.checkpointGeneration, blocked, workspaceKey, latest?.id),
+      revision: checkpointRevision(
+        thread.checkpointGeneration,
+        blocked,
+        workspaceKey,
+        latest?.id,
+        thread.checkpointLabelRevision,
+      ),
     };
+  }
+
+  async rename(actor: Actor, input: CheckpointRenameInput) {
+    const original = await this.owned(actor, input.botId);
+    return this.deps.prisma.$transaction(async (tx) => {
+      await checkpointThreadLock(tx, original.thread.id);
+      await tx.$queryRaw`SELECT id FROM threads WHERE id = ${original.thread.id} FOR UPDATE`;
+      const { thread, workspaceKey, scope } = await this.owned(actor, input.botId, tx);
+      const status = await this.readStatus(actor, input.botId, tx);
+      if (
+        thread.id !== original.thread.id ||
+        workspaceKey !== original.workspaceKey ||
+        status.blocked ||
+        status.revision !== input.expectedRevision
+      )
+        throw new CheckpointConflictError("Workspace changed; refresh checkpoints", "stale");
+      await writeCheckpointLabel(tx, thread.id, input, {
+        ...workspaceCheckpoints(thread.id, workspaceKey, scope),
+        botId: input.botId,
+        spaceId: actor.spaceId,
+        userId: actor.userId,
+      });
+      return { ok: true };
+    }, txOptions);
   }
 
   async list(actor: Actor, botId: string): Promise<CheckpointView> {
@@ -237,14 +265,15 @@ export class CheckpointService {
       (a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id),
     );
     const states = new Map<string, (typeof rows)[number]>();
-    const names = new Map<string, string>();
+    const names = new Map<string, NonNullable<ReturnType<typeof latestCheckpointLabel>>>();
     const manualStates = new Set<string>();
     const signatures = new Map<string, string>();
     for (const row of ordered) {
       const digest = stateDigest(row.fileManifest, checkpointBusinessOf(row));
       signatures.set(row.id, digest);
       if (!states.has(digest)) states.set(digest, row);
-      if (row.label?.trim()) names.set(digest, row.label);
+      const name = latestCheckpointLabel(row, names.get(digest));
+      if (name) names.set(digest, name);
       if (row.kind === "manual") manualStates.add(digest);
     }
     for (const row of ordered) aliases.set(row.id, states.get(signatures.get(row.id)!)!.id);
@@ -266,7 +295,7 @@ export class CheckpointService {
           kind: (manualStates.has(digest)
             ? "manual"
             : row.kind) as CheckpointView["checkpoints"][number]["kind"],
-          label: names.get(digest) ?? row.label ?? null,
+          label: names.get(digest)?.label ?? row.label ?? null,
           branchId: row.branchId,
           createdAt: row.createdAt.toISOString(),
           parentCheckpointId,
@@ -296,7 +325,13 @@ export class CheckpointService {
     return {
       generation: thread.checkpointGeneration,
       blocked,
-      revision: checkpointRevision(thread.checkpointGeneration, blocked, workspaceKey, rows[0]?.id),
+      revision: checkpointRevision(
+        thread.checkpointGeneration,
+        blocked,
+        workspaceKey,
+        rows[0]?.id,
+        thread.checkpointLabelRevision,
+      ),
       activeBranchId: thread.activeBranchId,
       currentCheckpointId: resolve(
         thread.activeBranchId
@@ -306,6 +341,7 @@ export class CheckpointService {
       checkpoints: nodes,
       branches: branches.map((branch) => ({
         id: branch.id,
+        label: branch.label ?? null,
         parentCheckpointId: resolve(origins.get(branch.id)),
         lastUsedAt: new Date(used.get(branch.id) ?? branch.createdAt?.getTime() ?? 0).toISOString(),
       })),
@@ -411,6 +447,8 @@ export class CheckpointService {
         branchId: thread.activeBranchId,
         kind,
         label,
+        labelRevision:
+          kind === "manual" && label?.trim() ? await advanceLabelRevision(tx, threadId) : 0,
         generation: thread.checkpointGeneration,
         cutoffMessageSeq: thread.nextMessageSeq - 1,
         cutoffEventSeq: thread.nextEventSeq - 1,

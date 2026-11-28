@@ -1383,6 +1383,7 @@ model Thread {
   activeBranchId              String?
   checkpointGeneration        Int        @default(0)
   checkpointBlocked           Boolean    @default(false)
+  checkpointLabelRevision     Int        @default(0)
   /// After a summary came back over the size limit, compaction waits until nextMessageSeq reaches this.
   historyCompactionRetryAfterSeq Int?
   reads                       ThreadRead[]
@@ -1401,6 +1402,7 @@ model Thread {
 
 model ConversationBranch {
   id                     String   @id @default(cuid())
+  label                  String?
   // Immutable source identity; research history survives live-thread deletion.
   threadId               String
   parentBranchId         String?
@@ -1423,6 +1425,8 @@ model Checkpoint {
   branchId         String
   kind             String
   label            String?
+  customLabel      String?
+  labelRevision    Int      @default(0)
   cutoffMessageSeq Int
   cutoffEventSeq   Int
   generation       Int
