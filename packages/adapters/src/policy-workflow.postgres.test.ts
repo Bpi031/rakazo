@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { createDb } from '@rakazo/db';
-import { PolicyWorkflow } from './policy-workflow.js';
+import { PolicyWorkflow } from './policy/policy-workflow.js';
 
 const url = process.env.ROST_USAGE_SMOKE_DATABASE_URL;
 describe.skipIf(!url)('Policy receipts with isolated PostgreSQL', () => {

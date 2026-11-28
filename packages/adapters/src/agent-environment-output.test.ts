@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { redactAgentCommandResult, redactShellStreams } from "./agent-environment.js";
-import { observeShellCommand } from "./shell-command-stream.js";
+import { redactAgentCommandResult, redactShellStreams } from "./computers/sandbox/agent-environment.js";
+import { observeShellCommand } from "./computers/sandbox/shell-command-stream.js";
 
 describe("binary-safe shell result persistence", () => {
   it("redacts secrets before escaping binary output, without changing exit status", () => {

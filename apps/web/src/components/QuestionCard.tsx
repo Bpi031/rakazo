@@ -2,18 +2,21 @@ import { Trans, useLingui } from "@lingui/react/macro";
 import { ChatMarkdown } from "@rakazo/chat-ui/web";
 import { Button, Textarea } from "@rakazo/ui-web";
 import { ArrowRight, CircleHelp, X } from "lucide-react";
-import { useId, useRef, useState } from "react";
-import { errorText } from "../lib/user-error";
+import { useId, useState } from "react";
+import { useSave } from "../lib/query/query";
+import { errorText } from "../lib/query/user-error";
 
 export function QuestionCard({
   question,
   actions,
   detail,
+  detailFormat,
   onAnswer,
 }: {
   question: string;
   actions: readonly { id: string; label: string }[];
   detail?: string;
+  detailFormat?: "text" | "code";
   onAnswer: (answer: string) => Promise<void>;
 }) {
   const { t } = useLingui();
@@ -22,27 +25,12 @@ export function QuestionCard({
   const [selected, setSelected] = useState<string | null>(null);
   const [custom, setCustom] = useState("");
   const [collapsed, setCollapsed] = useState(false);
-  const [pending, setPending] = useState(false);
   const [submitted, setSubmitted] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const submitting = useRef(false);
+  const save = useSave({ save: (answer: string) => onAnswer(answer), onSaved: () => setSubmitted(true) });
+  const pending = save.pending;
+  const error = save.error ? errorText(save.error, t`Could not submit this answer`) : null;
   const value = selected ?? custom.trim();
 
-  async function submit() {
-    if (!value || submitting.current || submitted) return;
-    submitting.current = true;
-    setPending(true);
-    setError(null);
-    try {
-      await onAnswer(value);
-      setSubmitted(true);
-    } catch (err) {
-      setError(errorText(err, t`Could not submit this answer`));
-    } finally {
-      submitting.current = false;
-      setPending(false);
-    }
-  }
 
   if (collapsed) {
     return (
@@ -59,7 +47,7 @@ export function QuestionCard({
       aria-labelledby={titleId}
       className="w-full min-w-0 max-w-3xl rounded-2xl border border-border bg-card px-4 py-4 sm:px-5"
     >
-      <header className="mb-4 flex items-center justify-between gap-3 text-sm text-muted-foreground">
+      <header className="mb-4 flex items-center justify-between gap-3 text-body text-muted-foreground">
         <span className="flex items-center gap-2">
           <CircleHelp className="size-4" aria-hidden="true" />
           <Trans>Question</Trans>
@@ -75,19 +63,21 @@ export function QuestionCard({
           <X className="size-4" aria-hidden="true" />
         </Button>
       </header>
-      <div id={titleId} className="break-words text-[15.5px] leading-relaxed text-foreground">
+      <div id={titleId} className="break-words text-body-lg leading-relaxed text-foreground">
         <ChatMarkdown>{question}</ChatMarkdown>
       </div>
       {detail ? (
-        <pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap break-words text-xs text-muted-foreground">
-          {detail}
-        </pre>
+        detailFormat === "text" ? (
+          <div data-testid="ask-detail" className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap break-words font-sans text-body-sm text-muted-foreground">{detail}</div>
+        ) : (
+          <pre data-testid="ask-detail" className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap break-words text-body-sm text-muted-foreground">{detail}</pre>
+        )
       ) : null}
       <form
         className="mt-4 space-y-4"
         onSubmit={(event) => {
           event.preventDefault();
-          void submit();
+          if (value && !submitted) save.run(value);
         }}
       >
         <fieldset disabled={pending || submitted} className="min-w-0 space-y-2">
@@ -113,13 +103,13 @@ export function QuestionCard({
                   }}
                   className="size-4 shrink-0 accent-current"
                 />
-                <span aria-hidden="true" className="text-sm tabular-nums text-muted-foreground">
+                <span aria-hidden="true" className="text-body tabular-nums text-muted-foreground">
                   {index + 1}
                 </span>
-                <span className="min-w-0 flex-1 break-words text-[15px] leading-snug">
+                <span className="min-w-0 flex-1 break-words text-body-lg leading-snug">
                   {label}
                   {recommended ? (
-                    <span className="ml-2 inline-block rounded bg-muted px-2 py-1 text-xs text-muted-foreground">
+                    <span className="ml-2 inline-block rounded bg-muted px-2 py-1 text-label text-muted-foreground">
                       <Trans>Recommended</Trans>
                     </span>
                   ) : null}
@@ -141,7 +131,7 @@ export function QuestionCard({
             className="mt-3 resize-y"
           />
         </fieldset>
-        {error ? <p role="alert" className="break-words text-sm text-destructive">{error}</p> : null}
+        {error ? <p role="alert" className="break-words text-body text-destructive">{error}</p> : null}
         <div className="flex flex-wrap justify-end gap-2">
           <Button type="button" variant="ghost" disabled={pending || submitted} onClick={() => setCollapsed(true)}>
             <Trans>Answer later</Trans>

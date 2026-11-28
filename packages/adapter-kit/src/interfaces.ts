@@ -1,3 +1,5 @@
+import type { ComputerSize } from "@rakazo/contracts";
+import type { ConnectedCalendarProvider } from "./personal-calendar.js";
 import type {
   AdapterContext,
   AdapterDescriptor,
@@ -10,7 +12,13 @@ import type {
   AutoReviewResult,
   BackgroundJob,
   BackgroundJobHandlers,
+  BillingByokCheckoutRequest,
+  BillingByokPlan,
   BillingCheckoutRequest,
+  BillingCreditCheckoutRequest,
+  BillingCreditPurchase,
+  BillingInvoiceRefund,
+  BillingPlanPayment,
   BillingPrice,
   BillingSubscriptionSnapshot,
   BrowserActRequest,
@@ -18,6 +26,8 @@ import type {
   BrowserCapabilities,
   BrowserNavigateRequest,
   BrowserNavigateResult,
+  BrowserPurchaseCheckRequest,
+  BrowserPurchaseCheckResult,
   BrowserSnapshotRequest,
   BrowserSnapshotResult,
   CloudAgentCapabilities,
@@ -42,11 +52,13 @@ import type {
   MemoryCommitRequest,
   MemoryExportRequest,
   MemoryReadRequest,
+  MemoryRemoveRequest,
   MemoryRevision,
   MemorySearchRequest,
   MemorySearchResult,
   MemorySnapshot,
   MessagingInboundEvent,
+  MessagingInboundMessage,
   MessagingPlatformDescriptor,
   MessagingSendRequest,
   MessagingSendResult,
@@ -65,20 +77,26 @@ import type {
   SecretPutOptions,
   SecretRecord,
   SemanticMemoryCapabilities,
+  SemanticMemoryConversationRequest,
   SemanticMemoryForgetRequest,
   SemanticMemoryPurgeHistoryRequest,
   SemanticMemoryRecallRequest,
+  SemanticMemoryReflectRequest,
   SemanticMemoryResponse,
   SemanticMemoryResult,
   SemanticMemorySaveRequest,
   SnapshotRef,
   SpeechClip,
+  StreamedPortableFile,
   TerminalRequest,
   TransactionalEmail,
+  UnreferencedMachine,
   VoiceCapabilities,
   VoiceInfo,
+  VoiceModelInfo,
   VoiceSynthesizeRequest,
   VoiceTranscribeRequest,
+  VoiceUsage,
   VoiceVerifyResult,
   WebFetchCapabilities,
   WebFetchRequest,
@@ -86,6 +104,8 @@ import type {
   WebSearchCapabilities,
   WebSearchHit,
   WebSearchRequest,
+  WorkspaceDirectoryRequest,
+  WorkspaceExportLimits,
 } from "./types.js";
 
 export interface SandboxProvider {
@@ -94,7 +114,24 @@ export interface SandboxProvider {
     request: RuntimeSessionRequest,
     context: AdapterContext,
   ): Promise<RuntimeSession>;
+  /** Providers tied to one external desktop reject references belonging to another connection. */
+  ownsReference?(computer: Pick<ComputerRef, "kind" | "providerRef">): boolean;
+  /** True when every running minute is billed, so the active-lifetime cap applies. */
+  billsWhileRunning?(computer: Pick<ComputerRef, "kind">): boolean;
+  /** Whether the provider running this computer keeps its disk when it stops. */
+  keepsHome?(computer: ComputerRef): Promise<boolean>;
   describe(): AdapterDescriptor<SandboxCapabilities>;
+  /** Workspace directory operations for hosts without the standard Unix command tools. */
+  workspaceDirectories?(
+    computer: ComputerRef,
+    request: WorkspaceDirectoryRequest,
+    context: AdapterContext,
+  ): Promise<string[]>;
+  /** Native command environment; omitted for providers with a fixed container environment. */
+  environment?(
+    computer: ComputerRef,
+    context: AdapterContext,
+  ): Promise<{ platform: string; home: string; shell: string } | undefined>;
   /** Optional live browser on the same leased screen as observe/act. */
   pageBrowser?(
     computer: ComputerRef,
@@ -109,11 +146,47 @@ export interface SandboxProvider {
       role?: "manager" | "member";
       providerRef?: string;
       providerKind?: ComputerRef["kind"];
+      /**
+       * When the saved workspace a replacement would restore was read from the computer. A
+       * provider that can only bring `providerRef` back from an older snapshot of its own
+       * reports it gone instead, so the newer save wins.
+       */
+      savedAt?: Date;
+      /**
+       * The size to start at. A computer already running keeps its size; without one, a stopped
+       * computer resumes at its current size and a new one starts at the standard size. A size
+       * the provider cannot move to throws `SandboxSizeUnavailableError`.
+       */
+      size?: ComputerSize;
+      /**
+       * The owner's IANA time zone (`Europe/Warsaw`) and app language (`pl`, `pt-BR`), for the
+       * computer's clock and browser. Absent when unknown: the provider keeps its defaults.
+       * Values are not validated here; a provider ignores one it cannot use.
+       */
+      timezone?: string;
+      language?: string;
     },
     context: AdapterContext,
   ): Promise<ComputerRef>;
-  /** Read-only probe: true only when this exact reference is already running. */
+  /**
+   * The kind provision() would return now, without starting anything. Only providers that
+   * choose between kinds at provision time implement it. `homeKey` names the computer when the
+   * choice can depend on whose it is.
+   */
+  provisionKind?(homeKey?: string): Promise<ComputerRef["kind"]>;
+  /**
+   * Read-only probe that never starts or resumes anything. Resolves true only when the provider
+   * reports this exact reference running, and false only when it reports it not running or gone;
+   * throws when it cannot tell.
+   */
   isRunning?(computer: ComputerRef, context: AdapterContext): Promise<boolean>;
+  /**
+   * Read-only probe: true only when the provider already holds this reference stopped with its
+   * disk kept, so it resumes as it was without anything running now.
+   */
+  isStopped?(computer: ComputerRef, context: AdapterContext): Promise<boolean>;
+  /** True only when this computer currently mounts the server's home directory. */
+  hasMountedHome?(computer: ComputerRef, context: AdapterContext): Promise<boolean>;
   /** Perform idempotent provider setup after the lifecycle has captured the reference. */
   prepare(computer: ComputerRef, context: AdapterContext): Promise<void>;
   execute(
@@ -121,6 +194,13 @@ export interface SandboxProvider {
     request: CommandRequest,
     context: AdapterContext,
   ): AsyncIterable<ProcessEvent>;
+  /** Cancel only this run’s native commands; other providers may use a sandbox-scoped fallback. */
+  cancelRunWork?(
+    computer: ComputerRef,
+    computerId: string,
+    runId: string,
+    context: AdapterContext,
+  ): Promise<void>;
   inspectBackgroundWork?(
     computer: ComputerRef,
     markerId: string,
@@ -136,7 +216,7 @@ export interface SandboxProvider {
     computer: ComputerRef,
     request: TerminalRequest,
     context: AdapterContext,
-  ): Promise<{ url: string }>;
+  ): Promise<{ url: string; headers?: Record<string, string> }>;
   setScreenControl?(
     computer: ComputerRef,
     interactive: boolean,
@@ -166,8 +246,22 @@ export interface SandboxProvider {
     context: AdapterContext,
     options?: { maxBytes?: number },
   ): Promise<Uint8Array>;
+  /** Reads a file from the disk a stopped computer would resume from, without starting it.
+   * Returns undefined if the provider cannot verify or serve the file from that disk.
+   */
+  readStoppedFile?(
+    computer: ComputerRef,
+    path: string,
+    context: AdapterContext,
+    options: { maxBytes: number; savedAt?: Date },
+  ): Promise<Uint8Array | undefined>;
   writeFile(computer: ComputerRef, file: PortableFile, context: AdapterContext): Promise<void>;
-  exportWorkspace(computer: ComputerRef, context: AdapterContext): AsyncIterable<PortableFile>;
+  /** Large files may come as streams. A provider that lists first refuses `limits` up front. */
+  exportWorkspace(
+    computer: ComputerRef,
+    context: AdapterContext,
+    limits?: WorkspaceExportLimits,
+  ): AsyncIterable<PortableFile | StreamedPortableFile>;
   importWorkspace(
     computer: ComputerRef,
     files: AsyncIterable<PortableFile>,
@@ -177,8 +271,34 @@ export interface SandboxProvider {
   keepAlive?(computer: ComputerRef): Promise<void>;
   /** Drop a single-screen graphical claim for this bot so another Team bot can use the display. */
   releaseScreen?(computer: ComputerRef, context: AdapterContext): Promise<void>;
-  stop(computer: ComputerRef, context: AdapterContext): Promise<void>;
+  /**
+   * Stops the computer, keeping its disk where the provider can. `discardUnsaved` says nothing on
+   * the computer can be read anymore: a provider that refuses to stop because it cannot save the
+   * disk first stops anyway, keeping its last good copy.
+   */
+  stop(
+    computer: ComputerRef,
+    context: AdapterContext,
+    options?: { discardUnsaved?: boolean },
+  ): Promise<void>;
   destroy(computer: ComputerRef, context: AdapterContext): Promise<void>;
+  /**
+   * Deletes a machine no stored computer points at, from its id alone. Resolves once it is gone,
+   * which includes never having existed; rejects when the provider could not be asked.
+   */
+  deleteMachine?(machine: UnreferencedMachine, signal: AbortSignal): Promise<void>;
+}
+
+/**
+ * Where a provider records the machines no stored computer points at, so that one it could not
+ * delete, or one left by a process that died, is deleted later. Supplied where providers are
+ * built; a provider built without it only deletes and logs.
+ */
+export interface UnreferencedMachineRecords {
+  /** Records the machine, or moves its record: it is deleted at `deleteAt` unless a computer stores it first. */
+  record(machine: UnreferencedMachine, deleteAt: Date): Promise<void>;
+  /** Drops the record of a machine that is gone. */
+  clear(machine: UnreferencedMachine): Promise<void>;
 }
 
 export interface ConnectorProvider {
@@ -190,6 +310,9 @@ export interface ConnectorProvider {
     context: AdapterContext,
   ): Promise<{ call: ConnectorCall; tool: ConnectorTool } | undefined>;
   execute(call: ConnectorCall, context: AdapterContext): AsyncIterable<ConnectorEvent>;
+  /** Release run-scoped state (open sessions) of a run that ended for good on
+   * this worker. A run that ended elsewhere is bounded by the provider itself. */
+  endRun?(runId: string): void;
 }
 
 export interface ConnectionAuthProvider {
@@ -197,7 +320,12 @@ export interface ConnectionAuthProvider {
   begin(
     request: { provider: string; redirectUrl: string },
     context: AdapterContext,
-  ): Promise<{ authorizationUrl: string | null; state: string }>;
+  ): Promise<{
+    authorizationUrl: string | null;
+    state: string;
+    requiresCompletion?: boolean;
+    expiresAt?: string;
+  }>;
   complete(
     request: { state: string; code?: string },
     context: AdapterContext,
@@ -209,10 +337,59 @@ export interface ConnectionAuthProvider {
 export interface ManagedConnectorProvider
   extends ConnectorProvider,
     Omit<ConnectionAuthProvider, "describe"> {
+  calendarProvider?: ConnectedCalendarProvider;
   catalog(context: AdapterContext, query?: string): Promise<ConnectorCatalogItem[]>;
+  /** The actions one app offers, to show people what connecting it gives bots. */
+  listAppTools?(context: AdapterContext, externalId: string): Promise<ConnectorTool[]>;
   listConnectedExternalIds(context: AdapterContext): Promise<string[]>;
+  /** Whether a connected app needs reconnecting because its saved connection gives this run no tools. */
+  needsReconnect?(context: AdapterContext, externalId: string): Promise<boolean>;
+  /**
+   * Connection refs the provider reports as signed in, which tell a finished sign-in from an
+   * abandoned one. Undefined when the provider cannot say.
+   */
+  listConnectedRefs?(context: AdapterContext): Promise<string[] | undefined>;
+  /** Connection refs the provider reports as dead until the user reconnects them. */
+  listReconnectRefs?(context: AdapterContext): Promise<string[]>;
   connectionReady(context: AdapterContext, externalId: string): Promise<boolean>;
   warmDirectory?(): Promise<void>;
+  /**
+   * Map a begin() state or stored ref to the concrete remote account id, skipping excluded ids.
+   * A connector without `cancelAuthorizationRequest` must reject here when the provider could
+   * not be asked: connection cleanup removes an authorization through this lookup then, and
+   * reads undefined as nothing left to remove.
+   */
+  resolveConnectedAccountId?(
+    userId: string,
+    slug: string,
+    currentRef: string | null | undefined,
+    excludeIds?: string[],
+    spaceId?: string,
+    organizationId?: string,
+  ): Promise<string | undefined>;
+  /** Maximum lifetime of hosted links issued before expiration was stored locally. */
+  readonly legacySignInLifetimeMs?: number;
+  /** Snapshot before giving out a sign-in link that cannot identify its own remote account. */
+  listAccountsBeforeSignIn?(slug: string, context: AdapterContext): Promise<string[]>;
+  /** Prepare one owner-scoped identity lookup for a batch of account references. */
+  prepareAccountIdentityLookup?(
+    slug: string,
+    context: AdapterContext,
+  ): Promise<(ref: string) => Promise<string | undefined>>;
+  /** An upstream account identity verified using this exact authorization, when available. */
+  connectedAccountIdentity?(
+    slug: string,
+    connectionRef: string,
+    context: AdapterContext,
+  ): Promise<string | undefined>;
+  /** Invalidate an unfinished browser authorization by its request id. */
+  cancelAuthorizationRequest?(requestId: string, context: AdapterContext): Promise<void>;
+  /** Delete remote accounts for `slug` that no local row still references. */
+  revokeUnreferencedAccounts?(
+    slug: string,
+    keepAccountIds: string[],
+    context: AdapterContext,
+  ): Promise<void>;
 }
 
 export interface MemoryStore {
@@ -220,6 +397,8 @@ export interface MemoryStore {
   read(request: MemoryReadRequest, context: AdapterContext): Promise<MemorySnapshot>;
   search(request: MemorySearchRequest, context: AdapterContext): Promise<MemorySearchResult[]>;
   commit(request: MemoryCommitRequest, context: AdapterContext): Promise<MemoryRevision>;
+  /** Delete one document and its history; `removed` is false when nothing matched. */
+  remove(request: MemoryRemoveRequest, context: AdapterContext): Promise<{ removed: boolean }>;
   exportMarkdown(
     request: MemoryExportRequest,
     context: AdapterContext,
@@ -232,6 +411,8 @@ export interface MemoryStore {
 
 /** Optional semantic memory. Durable Markdown memory remains owned by MemoryStore. */
 export interface SemanticMemoryProvider {
+  /** Required by retainConversation: an opaque version that changes with endpoint or credentials. */
+  readonly connectionIdentity?: string;
   describe(): AdapterDescriptor<SemanticMemoryCapabilities>;
   recall(
     request: SemanticMemoryRecallRequest,
@@ -250,6 +431,26 @@ export interface SemanticMemoryProvider {
     request: SemanticMemoryForgetRequest,
     context: AdapterContext,
   ): Promise<SemanticMemoryResponse<{ id: string; expired: boolean; reason: string | null }>>;
+  /**
+   * Optional: learn from one finished turn of a bot's conversation. Resolves once the turn is
+   * submitted. `pending` is an opaque token while the provider is still storing it: poll
+   * `retainedConversationSettled` with it until settled, so a purgeHistory after that removes the
+   * turn. A provider that can return `pending` must implement `retainedConversationSettled`.
+   */
+  retainConversation?(
+    request: SemanticMemoryConversationRequest,
+    context: AdapterContext,
+  ): Promise<SemanticMemoryResponse<{ pending?: string }>>;
+  /** Optional: whether a turn `retainConversation` answered with `pending` is stored now. */
+  retainedConversationSettled?(
+    pending: string,
+    context: AdapterContext,
+  ): Promise<SemanticMemoryResponse<{ settled: boolean }>>;
+  /** Optional: answer a question by reasoning over the bot's memory. */
+  reflect?(
+    request: SemanticMemoryReflectRequest,
+    context: AdapterContext,
+  ): Promise<SemanticMemoryResponse<string>>;
 }
 
 export interface AgentRuntime {
@@ -266,10 +467,49 @@ export interface ModelProvider {
   listModels(): Promise<Array<{ provider: string; id: string; label: string; billing: string }>>;
 }
 
+/** An open database transaction a job can be written in, so the job exists only if it commits. */
+export interface JobTransaction {
+  $executeRawUnsafe(query: string, ...values: unknown[]): PromiseLike<unknown>;
+}
+
 export interface JobPublisher {
   enqueue(job: BackgroundJob): Promise<void>;
+  /** Adds the job, or replaces the one with its key, as part of the caller's transaction. */
+  enqueueIn(tx: JobTransaction, job: BackgroundJob): Promise<void>;
+  /** `enqueueIn` for many jobs in one statement; a key given twice keeps its last job. */
+  enqueueManyIn(tx: JobTransaction, jobs: readonly BackgroundJob[]): Promise<void>;
+  /** Removes the keyed job as part of the caller's transaction. */
+  cancelIn(tx: JobTransaction, key: string): Promise<void>;
   cancel(key: string): Promise<void>;
   close(): Promise<void>;
+}
+
+/** A named queue's jobs ahead of one, as `JobQueueOrder.pendingUntil` reads them. */
+export interface QueuedAhead {
+  /** When the last of them is due; null when there are none. */
+  until: Date | null;
+  /** Whether the job keyed `exceptKey` is recorded at all; false without a key. */
+  own: boolean;
+}
+
+/**
+ * Order between the jobs of a named queue beyond running them one at a time, for work that must
+ * not overtake jobs already queued. A job whose payload has `follower: true` is due late only so
+ * it runs after the jobs ahead of it in its queue.
+ */
+export interface JobQueueOrder {
+  /**
+   * When the last unfinished job of a named queue is due; null when the queue has none. With
+   * `exceptKey`, only the jobs queued ahead of that job count, all of them while it is not queued,
+   * and the answer also says whether it is.
+   */
+  pendingUntil(queueName: string, exceptKey?: string): Promise<QueuedAhead>;
+  /**
+   * In the caller's transaction, makes the followers at the head of a named queue due now, a
+   * millisecond apart in their order, up to the first job that is not one or is running. The job
+   * keyed `exceptKey`, the one settling, is left out.
+   */
+  releaseFollowersIn(tx: JobTransaction, queueName: string, exceptKey?: string): Promise<void>;
 }
 
 export interface JobWorkerHost {
@@ -277,8 +517,18 @@ export interface JobWorkerHost {
   stop(): Promise<void>;
 }
 
+export interface HomeExportOptions {
+  directory?: string;
+  skipHidden?: boolean;
+  /** Omit files larger than this many bytes, including files that grow while being read. */
+  maxFileBytes?: number;
+  onOversizedFile?: (sizeAtLeast: number) => void;
+}
+
 export interface AgentHomeStore {
   describe(): AdapterDescriptor<{ revisions: boolean }>;
+  /** The most one computer save copies; unset means the default of 5 GiB and a million files. */
+  readonly saveLimits?: WorkspaceExportLimits;
   checkout(botId: string, dest: string, context: AdapterContext): Promise<string>;
   commit(botId: string, src: string, context: AdapterContext): Promise<string>;
   restore(botId: string, revision: string, dest: string, context: AdapterContext): Promise<void>;
@@ -289,8 +539,9 @@ export interface AgentHomeStore {
   exportHome(
     botId: string,
     context: AdapterContext,
-    options?: { directory?: string; skipHidden?: boolean },
+    options?: HomeExportOptions,
   ): AsyncIterable<PortableFile>;
+  /** Throws `SandboxFileTooLargeError` for a file over `maxBytes`. */
   readFile(
     botId: string,
     path: string,
@@ -303,6 +554,44 @@ export interface AgentHomeStore {
     path: string,
     context: AdapterContext,
   ): Promise<Array<{ path: string; kind: "file" | "dir"; size: number }>>;
+}
+
+/**
+ * A bucket of opaque objects on an S3-compatible service (or a test fake). Only the API and
+ * worker hold one; sandboxes never receive its credentials or object URLs.
+ */
+export interface ObjectStorage {
+  /** Writes the whole stream as one object, replacing any object with that key. */
+  put(key: string, body: AsyncIterable<Uint8Array>): Promise<void>;
+  /** Throws when the object does not exist. */
+  get(key: string): AsyncIterable<Uint8Array>;
+  list(prefix: string): AsyncIterable<{ key: string; lastModified: Date }>;
+  /** Missing keys are not an error. */
+  delete(keys: readonly string[]): Promise<void>;
+}
+
+/** Identifies the data key being wrapped; implementations bind it into the wrap. */
+export interface KeyWrapContext {
+  spaceId: string;
+  version: number;
+}
+
+export interface WrappedDataKey {
+  masterKeyId: string;
+  wrappedKey: string;
+}
+
+/**
+ * Wraps per-space data keys under master keys it never reveals. The local
+ * implementation reads master keys from the environment; a KMS or secret
+ * manager adapter implements the same contract.
+ */
+export interface KeyProvider {
+  describe(): AdapterDescriptor<{ rotate: boolean }>;
+  /** Master key that new wraps use. Older ids stay valid for unwrap. */
+  activeKeyId(): string;
+  wrap(dataKey: Uint8Array, context: KeyWrapContext): Promise<WrappedDataKey>;
+  unwrap(wrapped: WrappedDataKey, context: KeyWrapContext): Promise<Uint8Array>;
 }
 
 export interface ArtifactStore {
@@ -322,6 +611,8 @@ export interface SecretStore {
   load(ref: string, context: SecretContext): Promise<string>;
   /** Inline encrypted refs have no remote resource; removal is owned by persistence. */
   delete(ref: string, context: SecretContext): Promise<void>;
+  /** Whether the ref names a remote resource, which stays until `delete` removes it. */
+  isRemote(ref: string): boolean;
   redact(value: string): string;
   onChange(listener: SecretChangeListener): () => void;
   start(): Promise<void>;
@@ -335,9 +626,19 @@ export interface RealtimeFanout {
   close(): Promise<void>;
 }
 
+export type IncomingCallNotification = {
+  callId: string;
+  botId: string;
+  botName: string;
+  expiresAt: string;
+  /** Stops a ring that is still going on Android devices for a call settled elsewhere. */
+  ended?: true;
+};
+
 export interface NotificationProvider {
   describe(): AdapterDescriptor<{ push: boolean; email: boolean }>;
   send(message: NotificationMessage, context: AdapterContext): Promise<void>;
+  incomingCall?(userId: string, call: IncomingCallNotification): Promise<void>;
 }
 
 /** Outbound account and security email. Product code owns content; adapters own delivery. */
@@ -353,17 +654,73 @@ export interface TransactionalEmailProvider {
  * vendor API. Sync is pull-based: webhooks only say which customer changed.
  */
 export interface BillingProvider {
-  describe(): AdapterDescriptor<{ trials: boolean; portal: boolean }>;
+  /** Optional prepaid model usage capabilities; product code owns the balance ledger. */
+  createCreditCheckout?(input: BillingCreditCheckoutRequest): Promise<{ id: string; url: string }>;
+  listCreditPurchases?(customerId: string): Promise<BillingCreditPurchase[]>;
+  /**
+   * Paid own-key plan invoices created since `since`, the payments a referring partner earns on.
+   * Credits never count.
+   */
+  listPlanPayments?(customerId: string, since: Date): Promise<BillingPlanPayment[]>;
+  /**
+   * Inspects or refunds the card payment for a customer-owned paid invoice, named by its number
+   * or id; without one, the newest paid invoice. Refunds `amountMinor`, or the whole charge.
+   */
+  refundInvoice?(
+    customerId: string,
+    invoice: string | undefined,
+    confirm: boolean,
+    amountMinor?: number,
+  ): Promise<BillingInvoiceRefund | null>;
+  setMonthlyCredits?(customerId: string, amountCents: number): Promise<void>;
+  /** Flat monthly own-key plan: access without credits. */
+  createByokCheckout?(input: BillingByokCheckoutRequest): Promise<{ id: string; url: string }>;
+  /** Ends the customer's running trial now and bills the first period; a no-op without one. */
+  endTrial?(customerId: string): Promise<void>;
+  /**
+   * Moves the customer's own-key subscription `subscriptionId` from plan `from` to plan `to`,
+   * billing the prorated difference now: a change of interval restarts the period today, crediting
+   * its unused part. A failed payment leaves the plan unchanged. Returns false without charging
+   * when that subscription is no longer an active or trialing `from` plan, is set to cancel, or
+   * monthly credits have started. With `resume` it instead takes only a trial that is set to
+   * cancel, and keeps it: the trial runs on and `to` is billed when it ends.
+   */
+  changeByokPlan?(
+    customerId: string,
+    subscriptionId: string,
+    change: { from: BillingByokPlan; to: BillingByokPlan; resume?: boolean },
+  ): Promise<boolean>;
+  /** Ends every live own-key plan at its period end. */
+  endByokPlans?(customerId: string): Promise<void>;
+  /**
+   * Credits the customer's account; future invoices draw it down before charging. Idempotent per
+   * `referenceId`, so a retry after an unknown outcome never credits twice.
+   */
+  grantBalanceCredit?(customerId: string, amountCents: number, referenceId: string): Promise<void>;
+  describe(): AdapterDescriptor<{ trials: boolean; portal: boolean; modelCredits?: boolean }>;
   getPrice(): Promise<BillingPrice>;
   createCustomer(input: { email: string; organizationId: string }): Promise<{ customerId: string }>;
-  createCheckout(input: BillingCheckoutRequest): Promise<{ url: string }>;
+  createCheckout(input: BillingCheckoutRequest): Promise<{ id: string; url: string }>;
+  /** Expires every open checkout session of the customer; resolves once none can be paid. */
+  expireOpenCheckouts(customerId: string): Promise<void>;
+  /** Expires checkout session `id` so it cannot be paid; a no-op once it is no longer open. */
+  expireCheckout(id: string): Promise<void>;
   createPortal(input: { customerId: string; returnUrl: string }): Promise<{ url: string }>;
   /** Current subscription for the customer, preferring one that grants access. */
   getCustomerSubscription(customerId: string): Promise<BillingSubscriptionSnapshot | null>;
-  updateSeats(subscriptionItemId: string, seats: number): Promise<void>;
+  /** Sets seats on the customer's subscription; a no-op when none can still take updates. */
+  updateSeats(customerId: string, seats: number): Promise<void>;
   cancelCustomerSubscriptions(customerId: string): Promise<void>;
-  /** Verifies the signature. `null` means the request is not authentic. */
-  parseWebhook(rawBody: string, headers: Headers): { customerId: string } | "ignored" | null;
+  /**
+   * Verifies the signature. `null` means the request is not authentic. An event about a payment
+   * rather than a customer, such as a dispute, names the payment for `customerForPayment`.
+   */
+  parseWebhook(
+    rawBody: string,
+    headers: Headers,
+  ): { customerId: string } | { paymentId: string } | "ignored" | null;
+  /** The customer a payment named by `parseWebhook` belongs to, or null when it has none. */
+  customerForPayment(paymentId: string): Promise<string | null>;
 }
 
 export interface ExecutionRunner {
@@ -374,9 +731,22 @@ export interface ExecutionRunner {
 export interface VoiceProvider {
   describe(): AdapterDescriptor<VoiceCapabilities>;
   verify(apiKey: string, context: AdapterContext): Promise<VoiceVerifyResult>;
-  listVoices(apiKey: string, context: AdapterContext): Promise<VoiceInfo[]>;
+  /**
+   * `options.language` narrows the listing for providers that advertise `languages`;
+   * `options.model` selects the speech model for providers whose voices belong to one.
+   */
+  listVoices(
+    apiKey: string,
+    context: AdapterContext,
+    options?: { language?: string; model?: string },
+  ): Promise<VoiceInfo[]>;
+  /** The speech models the account can pick from, for providers that list them. */
+  listModels?(apiKey: string, context: AdapterContext): Promise<VoiceModelInfo[]>;
   synthesize(request: VoiceSynthesizeRequest, context: AdapterContext): Promise<SpeechClip>;
-  transcribe?(request: VoiceTranscribeRequest, context: AdapterContext): Promise<{ text: string }>;
+  transcribe?(
+    request: VoiceTranscribeRequest,
+    context: AdapterContext,
+  ): Promise<{ text: string; usage?: VoiceUsage; providerRequestId?: string }>;
 }
 
 /**
@@ -390,6 +760,8 @@ export interface MessagingSurface {
   describe(): AdapterDescriptor<{ providers: string[] }>;
   /** Enabled platforms and what each supports. */
   platforms(): MessagingPlatformDescriptor[];
+  /** Resolve public linking destinations on demand, including recovery after a startup outage. */
+  resolveAddresses?(signal?: AbortSignal): Promise<Record<string, string>>;
   /**
    * Verify and process one platform webhook request. Parsed events reach the
    * sink registered via onInbound before the returned response resolves.
@@ -405,19 +777,29 @@ export interface MessagingSurface {
   /** Resolve (or create) the 1:1 thread for a provider address. */
   openDirectThread(provider: string, address: string, context: AdapterContext): Promise<string>;
   /**
-   * Best-effort "…" typing bubbles for 1:1 chats. Cosmetic: never gates
-   * message delivery, and silently no-ops on platforms without support.
+   * Best-effort receipt for inbound message `handle`. Never gates delivery;
+   * no-ops on platforms without a receipt.
    */
-  sendTyping(threadId: string, context: AdapterContext): Promise<void>;
+  acknowledge(threadId: string, handle: string, context: AdapterContext): Promise<void>;
   /**
-   * Start the surface eagerly instead of waiting for the first inbound
-   * webhook or outbound send to touch it. Needed for adapters that pull
-   * updates themselves (e.g. Telegram in "auto"/"polling" mode, used when
-   * no public webhook URL is reachable): without an explicit call here,
-   * nothing kicks off that pull loop until something else happens to
-   * initialize the adapter first.
+   * Up to `limit` messages posted in a thread before the `before` handle,
+   * oldest first, normalized like inbound events. Absent when no platform can.
+   */
+  fetchThreadHistory?(
+    threadId: string,
+    options: { before: string; limit: number },
+    context: AdapterContext,
+  ): Promise<MessagingInboundMessage[]>;
+  /**
+   * Start eagerly. Adapters that pull updates themselves (Telegram polling when no public
+   * webhook URL is reachable) otherwise never start until a webhook or send touches them.
    */
   initialize?(): Promise<void>;
+  /**
+   * Stop pulling inbound updates so a replacement process can claim them, while sends keep
+   * working. No-op for surfaces that only receive webhooks.
+   */
+  stopReceiving?(): Promise<void>;
   /**
    * Release long-lived inbound resources (Telegram getUpdates polling) so a
    * replacement process can claim them. No-op when the surface never started.
@@ -450,11 +832,8 @@ export interface WebProvider extends WebSearchProvider, WebFetchProvider {
 }
 
 /**
- * Provider-neutral page browser on the bot computer. Builtin browser_* tools
- * route here so backends (in-process page session, CDP against the computer's
- * Chrome, future adapters) can swap without changing tool names. Not a second
- * hosted browser product. Prefer this for web pages; use computer_act when the
- * page tool cannot operate or the task needs the desktop itself.
+ * Provider-neutral page browser on the bot computer, not a hosted browser product. Prefer it
+ * for web pages; use computer_act when the page tool cannot operate or the task needs the desktop.
  */
 export interface BrowserProvider {
   describe(): AdapterDescriptor<BrowserCapabilities>;
@@ -473,6 +852,16 @@ export interface BrowserProvider {
     request: BrowserActRequest,
     context: AdapterContext,
   ): Promise<BrowserActResult>;
+  /**
+   * Whether these clicks, or a click or key on the screen, would complete a purchase, without acting.
+   * A browser that cannot tell, such as an older computer image, answers none. A check that started
+   * and could not read the page throws, and the press is refused.
+   */
+  purchaseCheck?(
+    computer: ComputerRef,
+    request: BrowserPurchaseCheckRequest,
+    context: AdapterContext,
+  ): Promise<BrowserPurchaseCheckResult>;
 }
 
 /**
@@ -493,8 +882,8 @@ export interface CloudAgentProvider {
 }
 
 /**
- * Provider-neutral "is this tool call safe to auto-allow?" check. First used by
- * Auto Review; swap vendors without changing approval UX (pass → run, ask → card).
+ * Provider-neutral "is this tool call safe to auto-allow?" check. Swap vendors
+ * without changing approval UX (pass → run, ask → card).
  * Core runs with none configured and falls back to the LLM adapter.
  */
 export interface AutoReviewProvider {

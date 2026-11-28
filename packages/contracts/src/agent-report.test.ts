@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { AgentReportDefinition, AgentReportBlock, ReportWorkspacePath } from "./agent-report.js";
-import { MessageBlock } from "./events.js";
+import { MessageBlock } from "./threads/message-blocks.js";
 export const example = () => ({ schema: "rakazo/agent-report/v1", title: "Distribution",
   sourcePaths: ["workspace/run/solution.json"], sections: [{ kind: "table", title: "Calls",
     columns: [{ key: "doctor", label: "Doctor", type: "text" }, { key: "count", label: "Calls", type: "number" }],

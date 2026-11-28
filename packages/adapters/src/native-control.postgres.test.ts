@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { createDb } from '@rakazo/db';
 import { NativeControl, NativeSessionBusyError } from './native-control.js';
-import { teamDigest } from './team-policy.js';
+import { teamDigest } from './teams/team-policy.js';
 
 const url = process.env.ROST_USAGE_SMOKE_DATABASE_URL;
 describe.skipIf(!url)('Native session contention with isolated PostgreSQL', () => {

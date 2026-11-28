@@ -1,5 +1,4 @@
-import { abortableDelay } from "@rakazo/core";
-import { newClientId } from "./client-id";
+import { abortableDelay, newClientId } from "@rakazo/core";
 
 type PageEvents = Pick<EventTarget, "addEventListener" | "removeEventListener">;
 export const RPC_READ_TIMEOUT_MS = 15_000;
@@ -14,7 +13,10 @@ const FINITE_READS = new Set([
 ]);
 
 /** Retire a departing document's HTTP transport, not server-owned jobs. */
-export function pageRpcTransport(page: PageEvents, performFetch: typeof fetch = fetch) {
+export function pageRpcTransport(
+  page: PageEvents,
+  performFetch: typeof fetch = (...args) => globalThis.fetch(...args),
+) {
   let hidden = false;
   let disposed = false;
   let navigationPending = false;

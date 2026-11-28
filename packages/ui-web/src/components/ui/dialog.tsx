@@ -2,8 +2,11 @@
 
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { Button } from "@rakazo/ui-web/components/ui/button";
+import { useKitLabels } from "@rakazo/ui-web/components/ui/kit-labels";
 
 import { cn } from "@rakazo/ui-web/lib/utils";
+import type { VariantProps } from "class-variance-authority";
+import { cva } from "class-variance-authority";
 import { XIcon } from "lucide-react";
 import type * as React from "react";
 
@@ -23,12 +26,14 @@ function DialogClose({ ...props }: DialogPrimitive.Close.Props) {
   return <DialogPrimitive.Close data-slot="dialog-close" {...props} />;
 }
 
+// The backdrop stays faded out once its exit ends: a dialog that takes longer to leave would
+// otherwise show it again at full strength until the dialog is gone.
 function DialogOverlay({ className, ...props }: DialogPrimitive.Backdrop.Props) {
   return (
     <DialogPrimitive.Backdrop
       data-slot="dialog-overlay"
       className={cn(
-        "fixed inset-0 isolate z-50 bg-black/10 duration-100 supports-backdrop-filter:backdrop-blur-xs data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
+        "fixed inset-0 isolate z-50 bg-overlay duration-100 supports-backdrop-filter:backdrop-blur-xs data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0 data-closed:fill-mode-forwards",
         className,
       )}
       {...props}
@@ -36,33 +41,60 @@ function DialogOverlay({ className, ...props }: DialogPrimitive.Backdrop.Props) 
   );
 }
 
+// Larger sizes are full overlays: a fixed-size panel whose children lay out and scroll
+// their own panes. The width cap holds at every breakpoint, so a narrow or zoomed window
+// never pushes the panel (and its close button) off-screen.
+const largeDialog =
+  "flex max-h-[calc(100%-2rem)] flex-col gap-0 overflow-hidden rounded-2xl p-0 sm:max-w-[calc(100%-2rem)]";
+
+const dialogContentVariants = cva(
+  "fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl bg-dialog p-6 text-body text-foreground ring-1 ring-foreground/10 duration-100 outline-none sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+  {
+    variants: {
+      size: {
+        default: "",
+        md: `${largeDialog} w-[600px]`,
+        lg: `${largeDialog} h-[680px] w-[760px]`,
+        xl: `${largeDialog} h-[680px] w-[920px]`,
+        "2xl": `${largeDialog} h-[760px] w-[1080px]`,
+      },
+    },
+    defaultVariants: { size: "default" },
+  },
+);
+
 function DialogContent({
   className,
   children,
   showCloseButton = true,
+  overlayClassName,
+  size,
   ...props
-}: DialogPrimitive.Popup.Props & {
-  showCloseButton?: boolean;
-}) {
+}: DialogPrimitive.Popup.Props &
+  VariantProps<typeof dialogContentVariants> & {
+    showCloseButton?: boolean;
+    overlayClassName?: string;
+  }) {
+  const labels = useKitLabels();
   return (
     <DialogPortal>
-      <DialogOverlay />
+      <DialogOverlay className={overlayClassName} />
       <DialogPrimitive.Popup
         data-slot="dialog-content"
-        className={cn(
-          "fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl bg-popover p-4 text-sm text-popover-foreground ring-1 ring-foreground/10 duration-100 outline-none sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
-          className,
-        )}
+        className={cn(dialogContentVariants({ size }), className)}
         {...props}
       >
         {children}
         {showCloseButton && (
           <DialogPrimitive.Close
             data-slot="dialog-close"
-            render={<Button variant="ghost" className="absolute top-2 right-2" size="icon-sm" />}
+            // Centered on the title's first line, with the icon on the content's right edge.
+            render={
+              <Button variant="ghost" className="absolute top-4.5 right-4.5" size="icon-sm" />
+            }
           >
             <XIcon />
-            <span className="sr-only">Close</span>
+            <span className="sr-only">{labels.close}</span>
           </DialogPrimitive.Close>
         )}
       </DialogPrimitive.Popup>
@@ -84,18 +116,21 @@ function DialogFooter({
 }: React.ComponentProps<"div"> & {
   showCloseButton?: boolean;
 }) {
+  const labels = useKitLabels();
   return (
     <div
       data-slot="dialog-footer"
       className={cn(
-        "-mx-4 -mb-4 flex flex-col-reverse gap-2 rounded-b-xl border-t bg-muted/50 p-4 sm:flex-row sm:justify-end",
+        "-mx-6 -mb-6 flex flex-col-reverse gap-2 rounded-b-xl border-t bg-muted/50 px-6 py-4 sm:flex-row sm:justify-end",
         className,
       )}
       {...props}
     >
       {children}
       {showCloseButton && (
-        <DialogPrimitive.Close render={<Button variant="outline" />}>Close</DialogPrimitive.Close>
+        <DialogPrimitive.Close render={<Button variant="outline" />}>
+          {labels.close}
+        </DialogPrimitive.Close>
       )}
     </div>
   );
@@ -105,7 +140,7 @@ function DialogTitle({ className, ...props }: DialogPrimitive.Title.Props) {
   return (
     <DialogPrimitive.Title
       data-slot="dialog-title"
-      className={cn("text-base leading-none font-medium", className)}
+      className={cn("text-heading3 font-medium", className)}
       {...props}
     />
   );
@@ -116,7 +151,7 @@ function DialogDescription({ className, ...props }: DialogPrimitive.Description.
     <DialogPrimitive.Description
       data-slot="dialog-description"
       className={cn(
-        "text-sm text-muted-foreground *:[a]:underline *:[a]:underline-offset-3 *:[a]:hover:text-foreground",
+        "text-body text-muted-foreground *:[a]:underline *:[a]:underline-offset-3 *:[a]:hover:text-foreground",
         className,
       )}
       {...props}

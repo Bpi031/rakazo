@@ -1,9 +1,12 @@
 import { useEffect, useState } from "react";
 import type { AccountAdminView } from "@rakazo/contracts";
 import { accountAdminViewSchema } from "@rakazo/contracts";
-import { Button, Dialog, DialogContent, DialogTitle, Input, Label, Switch } from "@rakazo/ui-web";
+import { Button, Dialog, DialogContent, DialogTitle, Input, Label, OptionSelect, Switch } from "@rakazo/ui-web";
 import { Check, MailPlus, RefreshCw, Save, ShieldCheck, X } from "lucide-react";
 import { accountAdminApi } from "./account-admin-api";
+import type { SaveScope } from "../lib/query/query";
+import { useManagedOperation } from "../lib/query/use-managed-operation";
+import { useBoundSpaceId } from "../lib/query/space-rpc";
 
 type Review = {
   id: string;
@@ -13,7 +16,7 @@ type Review = {
   status: string;
 };
 type RegistrationReview = { enabled: boolean; allowlist: string[]; digest: string };
-const control = "min-w-0 rounded-md border border-border bg-background px-2 py-1.5 text-sm";
+const control = "min-w-0 rounded-md border border-border bg-background px-2 py-1.5 text-body";
 const icon =
   "inline-flex size-8 shrink-0 items-center justify-center rounded-md hover:bg-accent disabled:opacity-40";
 
@@ -32,11 +35,13 @@ export function AccountAdminPanel() {
   const [token, setToken] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [busy, setBusy] = useState(false);
+  const write = useManagedOperation();
+  const busy = write.pending;
+  const activeSpaceId = useBoundSpaceId();
 
-  async function load(signal?: AbortSignal) {
-    const next = accountAdminViewSchema.parse(await accountAdminApi("view", undefined, signal));
-    if (signal?.aborted) return;
+  async function load(signal?: AbortSignal, spaceId = activeSpaceId, isCurrent = () => true) {
+    const next = accountAdminViewSchema.parse(await accountAdminApi("view", undefined, signal, spaceId));
+    if (signal?.aborted || !isCurrent()) return;
     setView(next);
     if (next.registration) {
       setEnabled(next.registration.enabled);
@@ -50,24 +55,22 @@ export function AccountAdminPanel() {
       if (!controller.signal.aborted) setError("Admin settings are unavailable for this account.");
     });
     return () => controller.abort();
-  }, []);
-  async function work(action: () => Promise<void>) {
-    if (busy) return;
-    setBusy(true);
-    setError("");
-    setNotice("");
-    try {
-      await action();
-    } catch (error) {
-      setError(error instanceof Error ? error.message : "Account operation failed.");
-    } finally {
-      setBusy(false);
+  }, [activeSpaceId]);
+  function work(action: (scope: SaveScope) => Promise<void>) {
+    write.run(async (scope) => {
+      setError("");
+      setNotice("");
       setPassword("");
-    }
+      try { await action(scope); }
+      catch (error) {
+        if (scope.isCurrent()) setError(error instanceof Error ? error.message : "Account operation failed.");
+      }
+    });
   }
   async function propose(action: Record<string, unknown>) {
-    await work(async () => {
-      const next = await accountAdminApi<Review>("propose", { action });
+    work(async (scope) => {
+      const next = await accountAdminApi<Review>("propose", { action }, undefined, scope.spaceId);
+      if (!scope.isCurrent()) return;
       setReview(next);
       setRegistrationReview(null);
       setPhrase("");
@@ -96,7 +99,7 @@ export function AccountAdminPanel() {
   return (
     <section className="min-w-0 space-y-6 py-2">
       <header className="flex items-center justify-between gap-3">
-        <h2 className="flex items-center gap-2 text-base font-semibold">
+        <h2 className="flex items-center gap-2 text-body-lg font-semibold">
           <ShieldCheck size={18} />
           Admin
         </h2>
@@ -106,18 +109,18 @@ export function AccountAdminPanel() {
           aria-label="Refresh accounts"
           className={icon}
           disabled={busy}
-          onClick={() => void work(() => load())}
+          onClick={() => work((scope) => load(undefined, scope.spaceId, scope.isCurrent))}
         >
           <RefreshCw size={17} />
         </button>
       </header>
       {error && (
-        <p role="alert" className="break-words text-sm text-destructive">
+        <p role="alert" className="break-words text-body text-destructive">
           {error}
         </p>
       )}
       {notice && (
-        <p role="status" className="text-sm">
+        <p role="status" className="text-body">
           {notice}
         </p>
       )}
@@ -138,19 +141,20 @@ export function AccountAdminPanel() {
           </div>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <Label htmlFor="registration-admission">Who can register</Label>
-            <select
+            <OptionSelect
               id="registration-admission"
               className={control}
               disabled={busy}
               value={admission}
-              onChange={(e) => setAdmission(e.target.value)}
-            >
-              <option value="anyone">Anyone</option>
-              <option value="selected">Selected emails / domains</option>
-            </select>
+              onValueChange={setAdmission}
+              options={[
+                { value: "anyone", label: "Anyone" },
+                { value: "selected", label: "Selected emails / domains" },
+              ]}
+            />
           </div>
           {admission === "selected" && (
-            <label className="block space-y-2 text-sm">
+            <label className="block space-y-2 text-body">
               <span>Allowed emails / @domains</span>
               <textarea
                 className={control + " w-full"}
@@ -164,7 +168,7 @@ export function AccountAdminPanel() {
             </label>
           )}
           <div className="flex items-center justify-between gap-3">
-            <span className="text-xs text-muted-foreground">
+            <span className="text-label text-muted-foreground">
               Current: {view.registration.enabled ? "Open" : "Closed"}
             </span>
             <Button
@@ -199,7 +203,7 @@ export function AccountAdminPanel() {
       {view && (
         <>
           <section className="space-y-3" aria-label="Member accounts">
-            <h3 className="text-sm font-semibold">Member accounts</h3>
+            <h3 className="text-body font-semibold">Member accounts</h3>
             <Input
               aria-label="Search member accounts"
               placeholder="Search members"
@@ -207,7 +211,7 @@ export function AccountAdminPanel() {
               onChange={(e) => setQuery(e.target.value)}
             />
             <div className="max-w-full overflow-auto">
-              <table className="w-full min-w-[580px] text-left text-sm">
+              <table className="w-full min-w-[580px] text-left text-body">
                 <thead>
                   <tr>
                     {["Member", "Role", "Account"].map((title) => (
@@ -231,53 +235,46 @@ export function AccountAdminPanel() {
                             {member.name}
                             {member.userId === view.userId ? " (you)" : ""}
                           </p>
-                          <p className="text-xs text-muted-foreground">{member.email}</p>
-                          <p className="text-xs text-muted-foreground">
+                          <p className="text-label text-muted-foreground">{member.email}</p>
+                          <p className="text-label text-muted-foreground">
                             {member.verified ? "Verified" : "Email unverified"}
                           </p>
                         </td>
                         <td className="py-3 pr-4">
                           {member.role.split(",").some((role) => role.trim() === "owner") ? (
-                            <span>Owner · Protected</span>
+                            <span>Owner <span className="text-muted-foreground">Protected</span></span>
                           ) : (
-                            <select
+                            <OptionSelect
                               className={control}
                               aria-label={"Role for " + member.name}
                               value={member.role.split(",").some((role) => role.trim() === "admin") ? "admin" : "member"}
                               disabled={busy || member.protected || !view.canAssignRoles}
-                              onChange={(e) =>
+                              onValueChange={(role) =>
                                 void propose({
                                   kind: "member_role",
                                   userId: member.userId,
-                                  role: e.target.value,
+                                  role,
                                 })
                               }
-                            >
-                              <option value="member">Member</option>
-                              <option value="admin">Manager</option>
-                            </select>
+                              options={[{ value: "member", label: "Member" }, { value: "admin", label: "Manager" }]}
+                            />
                           )}
                         </td>
                         <td className="py-3">
-                          <select
+                          <OptionSelect
                             className={control}
                             aria-label={"Account state for " + member.name}
                             value={member.state}
                             disabled={busy || member.protected}
-                            onChange={(e) =>
+                            onValueChange={(state) =>
                               void propose({
                                 kind: "member_state",
                                 userId: member.userId,
-                                state: e.target.value,
+                                state,
                               })
                             }
-                          >
-                            {["active", "suspended", "archived", "removed"].map((state) => (
-                              <option key={state} value={state}>
-                                {state}
-                              </option>
-                            ))}
-                          </select>
+                            options={["active", "suspended", "archived", "removed"].map((value) => ({ value, label: value }))}
+                          />
                         </td>
                       </tr>
                     ))}
@@ -289,9 +286,9 @@ export function AccountAdminPanel() {
             className="space-y-3 border-t border-border pt-5"
             aria-label="Member invitations"
           >
-            <h3 className="text-sm font-semibold">Invite member</h3>
+            <h3 className="text-body font-semibold">Invite member</h3>
             {!view.emailDelivery && (
-              <p role="status" className="text-xs text-muted-foreground">
+              <p role="status" className="text-label text-muted-foreground">
                 Email delivery is not configured. Invitation acceptance requires an already verified
                 account.
               </p>
@@ -313,16 +310,17 @@ export function AccountAdminPanel() {
                 onChange={(e) => setEmail(e.target.value)}
                 disabled={busy}
               />
-              <select
+              <OptionSelect
                 className={control}
                 aria-label="Invitation role"
                 value={role}
-                onChange={(e) => setRole(e.target.value)}
+                onValueChange={setRole}
                 disabled={busy}
-              >
-                <option value="member">Member</option>
-                {view.canAssignRoles && <option value="admin">Manager</option>}
-              </select>
+                options={[
+                  { value: "member", label: "Member" },
+                  ...(view.canAssignRoles ? [{ value: "admin", label: "Manager" }] : []),
+                ]}
+              />
               <button
                 type="submit"
                 className={icon}
@@ -348,7 +346,7 @@ export function AccountAdminPanel() {
                 </div>
                 <textarea
                   id="private-invite-token"
-                  className={control + " w-full font-mono text-xs"}
+                  className={control + " w-full font-mono text-label"}
                   readOnly
                   value={token}
                 />
@@ -358,16 +356,16 @@ export function AccountAdminPanel() {
               {view.invitations.map((invite) => (
                 <li
                   key={invite.id}
-                  className="flex items-center justify-between gap-3 py-3 text-sm"
+                  className="flex items-center justify-between gap-3 py-3 text-body"
                 >
                   <div className="min-w-0">
                     <p className="break-all">{invite.email}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {invite.role} ·{" "}
-                      {invite.status === "pending" && Date.parse(invite.expiresAt) <= Date.now()
+                    <p className="text-label text-muted-foreground">
+                      {invite.role}
+                      <span className="ml-2">{invite.status === "pending" && Date.parse(invite.expiresAt) <= Date.now()
                         ? "expired"
-                        : invite.status}{" "}
-                      · {new Date(invite.expiresAt).toLocaleString()}
+                        : invite.status}</span>
+                      <span className="ml-2">{new Date(invite.expiresAt).toLocaleString()}</span>
                     </p>
                   </div>
                   {invite.status === "pending" && (
@@ -387,11 +385,11 @@ export function AccountAdminPanel() {
           </section>
           {view.reviews.some((item) => item.status === "pending") && (
             <section className="space-y-3 border-t border-border pt-5">
-              <h3 className="text-sm font-semibold">Pending reviews</h3>
+              <h3 className="text-body font-semibold">Pending reviews</h3>
               {view.reviews
                 .filter((item) => item.status === "pending")
                 .map((item) => (
-                  <div key={item.id} className="flex items-center justify-between gap-3 text-sm">
+                  <div key={item.id} className="flex items-center justify-between gap-3 text-body">
                     <span>{description(item.action)}</span>
                     <button
                       className={icon}
@@ -424,28 +422,28 @@ export function AccountAdminPanel() {
             className="max-h-[90vh] max-w-lg overflow-auto rounded-lg p-5"
           >
             <DialogTitle>{memberInvite ? "Review invitation" : "Review account changes"}</DialogTitle>
-            <p className="break-words text-sm">
+            <p className="break-words text-body">
               {registrationReview
                 ? `Public registration: ${registrationReview.enabled ? "Open" : "Closed"}. Admission: ${registrationReview.allowlist.length ? registrationReview.allowlist.join(", ") : "Anyone"}. Existing accounts remain unchanged.`
                 : description(review!.action)}
             </p>
             {managerInvite && (
-              <p className="text-sm">Managers can administer team members and bots.</p>
+              <p className="text-body">Managers can administer team members and bots.</p>
             )}
             {review?.action.kind === "member_state" && review.action.state !== "active" && (
-              <p className="text-sm text-destructive">
+              <p className="text-body text-destructive">
                 This archives the member’s bots. Active or unknown work blocks the change.
                 Workspaces are retained.
               </p>
             )}
-            <details className="min-w-0 text-xs">
+            <details className="min-w-0 text-label">
               <summary>Exact change</summary>
               <pre className="mt-2 whitespace-pre-wrap break-all">
                 {JSON.stringify(registrationReview ?? review?.action, null, 2)}
               </pre>
             </details>
             {!memberInvite && (
-              <label className="block space-y-1 text-sm">
+              <label className="block space-y-1 text-body">
                 <span>Confirmation</span>
                 <Input
                   aria-label="Account confirmation phrase"
@@ -456,7 +454,7 @@ export function AccountAdminPanel() {
                 />
               </label>
             )}
-            <label className="block space-y-1 text-sm">
+            <label className="block space-y-1 text-body">
               <span>Your password</span>
               <Input
                 aria-label="Admin account password"
@@ -474,19 +472,20 @@ export function AccountAdminPanel() {
               <Button
                 disabled={busy || (!memberInvite && phrase !== confirmation) || !password}
                 onClick={() =>
-                  void work(async () => {
+                  work(async (scope) => {
                     const result = registrationReview
                       ? await accountAdminApi("registration", {
                           ...registrationReview,
                           phrase,
                           password,
-                        })
+                        }, undefined, scope.spaceId)
                       : await accountAdminApi<{ enrollmentToken?: string }>("confirm", {
                           id: review!.id,
                           digest: review!.digest,
                           phrase: memberInvite ? confirmation : phrase,
                           password,
-                        });
+                        }, undefined, scope.spaceId);
+                    if (!scope.isCurrent()) return;
                     if (
                       result &&
                       typeof result === "object" &&
@@ -495,8 +494,9 @@ export function AccountAdminPanel() {
                     )
                       setToken(result.enrollmentToken);
                     closeReview();
-                    await load();
                     setNotice(memberInvite ? "Invitation created." : "Account settings saved.");
+                    try { await load(undefined, scope.spaceId, scope.isCurrent); }
+                    catch { if (scope.isCurrent()) setError("Account change recorded. Refresh to load current settings."); }
                   })
                 }
               >

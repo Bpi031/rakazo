@@ -1,11 +1,19 @@
 import { createCipheriv, createHash } from "node:crypto";
-import { BUILTIN_TOOL_NAMES } from "@rakazo/contracts";
+import { BUILTIN_TOOL_NAMES, FLEET_TOOL_NAMES } from "@rakazo/contracts";
 import { describe, expect, it } from "vitest";
-import { agentConnectionTools, builtinAgentTools } from "./builtin-tools.js";
-import { selectBuiltinToolsForRun } from "./executor.js";
-import { FakeSandboxProvider } from "./fake-sandbox.js";
-import { inferScript, ScriptedAgentRuntime } from "./scripted-runtime.js";
-import { EncryptedSecretStore } from "./secrets.js";
+import { reportTools } from "./agent-report.js";
+import { priorityTools } from "./policy/policy-priorities.js";
+import {
+  offersAgentConnectionTools,
+  selectBuiltinToolsForRun,
+} from "./runs/tools/run-tool-selection.js";
+import { inferScript, ScriptedAgentRuntime } from "./runtime/scripted-runtime.js";
+import { EncryptedSecretStore } from "./secrets/secrets.js";
+import {
+  agentConnectionTools,
+  builtinAgentTools,
+  DELEGATION_TOOL_NAMES,
+} from "./tools/builtin.tool-definition.js";
 
 describe("secret store", () => {
   it("round-trips and never stores plaintext in ciphertext", async () => {
@@ -172,36 +180,87 @@ describe("scripted runtime", () => {
 });
 
 describe("builtin tools", () => {
+  it("keeps every bot management tool out of helper tool lists", () => {
+    for (const name of FLEET_TOOL_NAMES) expect(DELEGATION_TOOL_NAMES.has(name), name).toBe(true);
+  });
+
+  it("offers subagents action tools without further delegation or parent configuration", () => {
+    const options = {
+      graphicalToolsAllowed: true,
+      pageBrowserAllowed: true,
+      groupId: null,
+      semanticMemoryEnabled: true,
+      cloudAgentEnabled: true,
+      historyRetrievalEnabled: true,
+      ticketBoardEnabled: true,
+      messagingChannelRun: false,
+    };
+    const owner = selectBuiltinToolsForRun({ ...options, trigger: "user" }).map(
+      (tool) => tool.name,
+    );
+    const helper = selectBuiltinToolsForRun({ ...options, trigger: "helper" }).map(
+      (tool) => tool.name,
+    );
+    for (const name of [
+      "shell",
+      "computer_act",
+      "browser_act",
+      "write_file",
+      "save_memory",
+      "remember",
+      "skill_create",
+      "schedule_create",
+      "ask_user",
+      "search_history",
+      "read_history",
+    ]) {
+      expect(owner, name).toContain(name);
+      expect(helper, name).toContain(name);
+    }
+    for (const name of [
+      "run_subagent",
+      "spawn_bot",
+      "update_bot",
+      "message_user",
+      "request_takeover",
+    ]) {
+      expect(helper, name).not.toContain(name);
+    }
+  });
+
+  it.each([false, true])(
+    "keeps fleet reads out of helpers with channel privacy %s",
+    (messagingChannelRun) => {
+      const tools = selectBuiltinToolsForRun({
+        trigger: "helper",
+        fleetManagement: true,
+        messagingChannelRun,
+        graphicalToolsAllowed: false,
+        groupId: null,
+        semanticMemoryEnabled: false,
+      });
+      for (const name of FLEET_TOOL_NAMES)
+        expect(
+          tools.some((tool) => tool.name === name),
+          name,
+        ).toBe(false);
+    },
+  );
+
+  it("offers agent connections to a chat-linked bot's turns, but not to its helpers", () => {
+    const linked = { hasMessagingIdentity: true, crossSpaceCommunication: true };
+    expect(offersAgentConnectionTools({ ...linked, trigger: "user" })).toBe(true);
+    expect(offersAgentConnectionTools({ ...linked, trigger: "helper" })).toBe(false);
+    expect(offersAgentConnectionTools({ ...linked, trigger: "tickets" })).toBe(false);
+    expect(
+      offersAgentConnectionTools({ ...linked, crossSpaceCommunication: false, trigger: "user" }),
+    ).toBe(false);
+  });
+
   it("exposes the tools the executor actually applies", async () => {
     expect([...BUILTIN_TOOL_NAMES].sort()).toEqual(
-      [...builtinAgentTools, ...agentConnectionTools].map((tool) => tool.name).sort(),
-    );
-    expect(builtinAgentTools.map((t) => t.name)).toEqual(
-      expect.arrayContaining([
-        "write_file",
-        "attach_file",
-        "shell",
-        "remember",
-        "request_takeover",
-        "ask_user",
-        "message_user",
-        "request_secret",
-        "run_subagent",
-        "create_space",
-        "spawn_bot",
-        "update_bot",
-        "archive_bot",
-        "task_catalog",
-        "skill_read",
-        "skill_create",
-        "skill_update",
-        "skill_delete",
-        "web_search",
-        "web_fetch",
-        "browser_navigate",
-        "browser_snapshot",
-        "browser_act",
-      ]),
+      [...builtinAgentTools, ...agentConnectionTools, ...priorityTools, ...reportTools]
+        .map((tool) => tool.name).sort(),
     );
     const options = {
       graphicalToolsAllowed: true,
@@ -235,35 +294,32 @@ describe("builtin tools", () => {
         disabledBuiltinTools: ticketNames,
       }).map((tool) => tool.name),
     ).toEqual(disabled);
-    const updateBot = builtinAgentTools.find((tool) => tool.name === "update_bot");
-    expect(updateBot?.inputSchema).toEqual(
-      expect.objectContaining({
-        properties: expect.objectContaining({
-          name: expect.any(Object),
-          title: expect.any(Object),
-          description: expect.any(Object),
-          color: expect.any(Object),
-          artifact_id: expect.any(Object),
-          use_attached_image: expect.any(Object),
-          notifyOnFinish: { type: "boolean", description: expect.any(String) },
-        }),
-      }),
-    );
-  });
-});
-
-describe("fake sandbox", () => {
-  it("provisions isolated computers", async () => {
-    const sandbox = new FakeSandboxProvider();
-    const ctx = {
-      operationId: "1",
-      traceId: "1",
-      spaceId: "w",
-      userId: "u",
-      signal: new AbortController().signal,
-    };
-    const a = await sandbox.provision({ botId: "a", homePath: "/tmp/a" }, ctx);
-    const b = await sandbox.provision({ botId: "b", homePath: "/tmp/b" }, ctx);
-    expect(a.id).not.toBe(b.id);
+    const purchaseNames = ["request_purchase", "purchase_status", "paid_request"];
+    expect(enabled.filter((name) => purchaseNames.includes(name))).toEqual([]);
+    expect(
+      selectBuiltinToolsForRun({ ...options, paymentWalletEnabled: true })
+        .map((tool) => tool.name)
+        .filter((name) => purchaseNames.includes(name)),
+    ).toEqual(purchaseNames);
+    const serviceNames = ["service_search", "service_call"];
+    const services = (extra: Partial<Parameters<typeof selectBuiltinToolsForRun>[0]>) =>
+      selectBuiltinToolsForRun({ ...options, ...extra })
+        .map((tool) => tool.name)
+        .filter((name) => serviceNames.includes(name));
+    expect(services({})).toEqual([]);
+    expect(services({ paidServicesEnabled: true })).toEqual(serviceNames);
+    expect(enabled).not.toContain("read_meeting_transcript");
+    expect(
+      selectBuiltinToolsForRun({ ...options, meetingTranscriptsAvailable: true }).map(
+        (tool) => tool.name,
+      ),
+    ).toContain("read_meeting_transcript");
+    expect(
+      selectBuiltinToolsForRun({
+        ...options,
+        meetingTranscriptsAvailable: true,
+        disabledBuiltinTools: ["read_meeting_transcript"],
+      }).map((tool) => tool.name),
+    ).not.toContain("read_meeting_transcript");
   });
 });

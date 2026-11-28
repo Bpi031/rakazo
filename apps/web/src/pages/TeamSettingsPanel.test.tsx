@@ -1,23 +1,25 @@
 // @vitest-environment jsdom
 import { act } from "react";
-import { createRoot } from "react-dom/client";
+import { createQueryRoot } from "../lib/query/query-root.test-support";
 import { expect, it, vi } from "vitest";
 import { TeamSettingsPanel } from "./TeamSettingsPanel";
 import { teamApi } from "./team-api";
 
 vi.mock("../lib/rpc", () => ({ selectSpace: vi.fn() }));
 vi.mock("./team-api", () => ({ teamApi: vi.fn() }));
-vi.mock("@rakazo/ui-web", () => ({
+vi.mock("@rakazo/ui-web", async (load) => ({
+  ...(await load<typeof import("@rakazo/ui-web")>()),
   Button: "button",
   Dialog: ({ open, children }: any) => (open ? <div role="dialog">{children}</div> : null),
   DialogContent: "div",
   DialogTitle: "h2",
 }));
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 it.each(["member", "admin"] as const)("reviews a pending %s invite in Team settings", async (role) => {
   const host = document.createElement("div");
   document.body.append(host);
-  const root = createRoot(host);
+  const root = createQueryRoot(host);
   const digest = "a".repeat(64);
   const review = {
     id: "team-review", digest, action: { kind: "invite", email: "new@example.test", role },
@@ -46,7 +48,7 @@ it.each(["member", "admin"] as const)("reviews a pending %s invite in Team setti
       `Invite new@example.test as ${member ? "Member" : "Manager"}?`,
     );
     expect(confirm.disabled).toBe(true);
-    expect(teamApi).not.toHaveBeenCalledWith("confirm", expect.anything());
+    expect(teamApi).not.toHaveBeenCalledWith("confirm", expect.anything(), null);
     await fill("Your account password", "current-password");
     if (member) {
       expect(host.querySelector('[aria-label="Exact confirmation phrase"]')).toBeNull();
@@ -57,7 +59,7 @@ it.each(["member", "admin"] as const)("reviews a pending %s invite in Team setti
     await act(async () => confirm.click());
     expect(teamApi).toHaveBeenCalledWith("confirm", {
       id: "team-review", digest, phrase: "APPLY team-review", password: "current-password",
-    });
+    }, null);
     expect(host.textContent).toContain("invite-token");
   } finally {
     await act(async () => root.unmount());

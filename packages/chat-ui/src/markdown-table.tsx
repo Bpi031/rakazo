@@ -1,4 +1,11 @@
-import { Dialog, DialogClose, DialogContent, DialogTitle } from "@rakazo/ui-web";
+import {
+  CopyTextFallback,
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogTitle,
+  useCopyText,
+} from "@rakazo/ui-web";
 import type { ComponentPropsWithoutRef, ReactElement, ReactNode } from "react";
 import {
   Children,
@@ -12,6 +19,7 @@ import {
   useState,
 } from "react";
 import { CheckIcon, CopyIcon } from "./icons";
+import { useMarkdownCopy } from "./markdown-copy";
 import type { ExtractedTable, HastNode, TableAlign, TableSortDirection } from "./table-utils";
 import {
   columnSortLabel,
@@ -28,10 +36,8 @@ import {
 export const MarkdownTableSourceContext = createContext("");
 
 /**
- * Renders a GFM markdown table as an interactive data card. Extracted plain
- * text drives sorting and export while sanitized React children preserve
- * inline markup in headers and cells. Invalid tables fall back to the default
- * <table>.
+ * Extracted plain text drives sorting and export while sanitized React children preserve
+ * inline markup. Invalid tables fall back to the default <table>.
  */
 export const MarkdownTable = memo(function MarkdownTable({
   node,
@@ -72,17 +78,20 @@ export const TableCard = memo(function TableCard({
 }) {
   const { columns, aligns, rows, schemaKey, dataSignature, numericColumns, minWidths, rowKeys } =
     table;
+  const copy = useMarkdownCopy();
+  const [copiedNow, copyText, copyFailed, resetCopy, copyFailedText] = useCopyText();
   const [sort, setSort] = useState<SortState>(null);
   const [page, setPage] = useState(0);
   const [expanded, setExpanded] = useState(false);
+  // The data the copy was taken from: the check mark drops once the rows change.
   const [copiedSignature, setCopiedSignature] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState("");
-  const copiedTimer = useRef<number | undefined>(undefined);
   const announceTimer = useRef<number | undefined>(undefined);
   const expandButtonRef = useRef<HTMLButtonElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const dialogScrollRef = useRef<HTMLElement>(null);
 
-  const copied = copiedSignature === dataSignature;
+  const copied = copiedNow && copiedSignature === dataSignature;
 
   const renderedRowsBySource = useMemo(
     () => new Map(rows.map((row, index) => [row, renderedRows?.[index]])),
@@ -108,13 +117,7 @@ export const TableCard = memo(function TableCard({
     setPage(0);
     setExpanded(false);
   }, [schemaKey]);
-  useEffect(
-    () => () => {
-      window.clearTimeout(copiedTimer.current);
-      window.clearTimeout(announceTimer.current);
-    },
-    [],
-  );
+  useEffect(() => () => window.clearTimeout(announceTimer.current), []);
 
   // Clear then restore so identical successive strings still fire a live-region update.
   const announce = (text: string) => {
@@ -129,24 +132,18 @@ export const TableCard = memo(function TableCard({
     setPage(0);
     announce(
       next
-        ? `Sorted by ${columnSortLabel(columns, column)}, ${
-            next.direction === "asc" ? "ascending" : "descending"
-          }`
-        : "Sort cleared",
+        ? copy.sortedBy(columnSortLabel(columns, column, copy), next.direction)
+        : copy.sortCleared,
     );
   };
 
   const copyRows = () => {
-    if (!navigator.clipboard) return;
-    navigator.clipboard
-      .writeText(tableToTsv(columns, sortedRows))
-      .then(() => {
-        setCopiedSignature(dataSignature);
-        announce("Copied");
-        window.clearTimeout(copiedTimer.current);
-        copiedTimer.current = window.setTimeout(() => setCopiedSignature(null), 1500);
-      })
-      .catch(() => {});
+    const signature = dataSignature;
+    void copyText(tableToTsv(columns, sortedRows)).then((ok) => {
+      if (!ok) return;
+      setCopiedSignature(signature);
+      announce(copy.copied);
+    });
   };
 
   const downloadCsv = () => {
@@ -179,42 +176,26 @@ export const TableCard = memo(function TableCard({
     />
   );
 
+  const goToPage = (next: number) => {
+    setPage(next);
+    if (expanded && dialogScrollRef.current) dialogScrollRef.current.scrollTop = 0;
+    announce(copy.pageOf(next + 1, pageCount));
+  };
+
   const pager = showPagination ? (
-    <div className="rk-table-footer">
-      <span className="rk-table-range">
-        {safePage * TABLE_PAGE_SIZE + 1}–
-        {Math.min((safePage + 1) * TABLE_PAGE_SIZE, sortedRows.length)} of {sortedRows.length} rows
-      </span>
-      <button
-        type="button"
-        className="rk-table-tool"
-        aria-label="Previous page"
-        disabled={safePage === 0}
-        onClick={() => {
-          setPage(safePage - 1);
-          announce(`Page ${safePage} of ${pageCount}`);
-        }}
-      >
-        <ChevronLeftIcon />
-      </button>
-      <button
-        type="button"
-        className="rk-table-tool"
-        aria-label="Next page"
-        disabled={safePage >= pageCount - 1}
-        onClick={() => {
-          setPage(safePage + 1);
-          announce(`Page ${safePage + 2} of ${pageCount}`);
-        }}
-      >
-        <ChevronRightIcon />
-      </button>
-    </div>
+    <TablePager
+      range={copy.rowRange(
+        safePage * TABLE_PAGE_SIZE + 1,
+        Math.min((safePage + 1) * TABLE_PAGE_SIZE, sortedRows.length),
+        sortedRows.length,
+      )}
+      page={safePage}
+      pageCount={pageCount}
+      onPage={goToPage}
+    />
   ) : (
     <div className="rk-table-footer">
-      <span className="rk-table-range">
-        {sortedRows.length} {sortedRows.length === 1 ? "row" : "rows"}
-      </span>
+      <span className="rk-table-range">{copy.rowCount(sortedRows.length)}</span>
     </div>
   );
 
@@ -224,7 +205,7 @@ export const TableCard = memo(function TableCard({
         type="button"
         className="rk-table-tool"
         onClick={copyRows}
-        aria-label={copied ? "Copied" : "Copy rows"}
+        aria-label={copied ? copy.copied : copy.copyRows}
       >
         {copied ? <CheckIcon /> : <CopyIcon />}
       </button>
@@ -232,7 +213,7 @@ export const TableCard = memo(function TableCard({
         type="button"
         className="rk-table-tool"
         onClick={downloadCsv}
-        aria-label="Download CSV"
+        aria-label={copy.downloadCsv}
       >
         <DownloadIcon />
       </button>
@@ -242,14 +223,14 @@ export const TableCard = memo(function TableCard({
           className="rk-table-tool"
           ref={expandButtonRef}
           onClick={() => setExpanded(true)}
-          aria-label="Expand table"
+          aria-label={copy.expandTable}
         >
           <ExpandIcon />
         </button>
       ) : (
         <DialogClose
           ref={closeButtonRef}
-          aria-label="Close table"
+          aria-label={copy.closeTable}
           render={<button type="button" className="rk-table-tool" />}
         >
           <CloseIcon />
@@ -266,13 +247,19 @@ export const TableCard = memo(function TableCard({
 
   return (
     <Dialog open={expanded} onOpenChange={setExpanded}>
+      <CopyTextFallback
+        open={copyFailed}
+        onOpenChange={resetCopy}
+        text={copyFailedText}
+        label={copy.copyRows}
+      />
       <div className="rk-table-card rk-table-box" data-testid="table-card">
         {/* Keep the live region in the active view — dialog content is outside the card. */}
         {expanded ? null : status}
         {tools("card")}
         {/* biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must
             be keyboard-focusable (WCAG 2.1.1 / axe scrollable-region-focusable). */}
-        <section className="rk-table-scroll" aria-label="Table" tabIndex={0}>
+        <section className="rk-table-scroll" aria-label={copy.table} tabIndex={0}>
           {tableView("card")}
         </section>
         {pager}
@@ -283,19 +270,84 @@ export const TableCard = memo(function TableCard({
         finalFocus={expandButtonRef}
         className="rk-table-dialog rk-table-box rk-chat-markdown w-auto sm:max-w-none"
       >
-        <DialogTitle className="rk-table-dialog-title">Table</DialogTitle>
+        <DialogTitle className="rk-table-dialog-title">{copy.table}</DialogTitle>
         {expanded ? status : null}
         {tools("dialog")}
-        {/* biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must
+        {/* biome-ignore-start lint/a11y/noNoninteractiveTabindex: a scrollable region must
             be keyboard-focusable (WCAG 2.1.1 / axe scrollable-region-focusable). */}
-        <section className="rk-table-scroll rk-table-dialog-scroll" aria-label="Table" tabIndex={0}>
+        <section
+          ref={dialogScrollRef}
+          className="rk-table-scroll rk-table-dialog-scroll"
+          aria-label={copy.table}
+          tabIndex={0}
+        >
           {tableView("dialog")}
         </section>
+        {/* biome-ignore-end lint/a11y/noNoninteractiveTabindex: end of scrollable region. */}
         {pager}
       </DialogContent>
     </Dialog>
   );
 });
+
+/**
+ * Previous and Next disable at the ends of the table. The pressed button can disable on the page it
+ * turns to, and the other one may only enable then, so focus moves after that page renders.
+ */
+function TablePager({
+  range,
+  page,
+  pageCount,
+  onPage,
+}: {
+  range: string;
+  page: number;
+  pageCount: number;
+  onPage: (page: number) => void;
+}) {
+  const copy = useMarkdownCopy();
+  const previousRef = useRef<HTMLButtonElement>(null);
+  const nextRef = useRef<HTMLButtonElement>(null);
+  const pressed = useRef<"previous" | "next" | null>(null);
+  useEffect(() => {
+    if (pressed.current === "previous" && previousRef.current?.disabled) {
+      nextRef.current?.focus();
+    }
+    if (pressed.current === "next" && nextRef.current?.disabled) {
+      previousRef.current?.focus();
+    }
+    pressed.current = null;
+  });
+  const turnTo = (next: number, which: "previous" | "next") => {
+    pressed.current = which;
+    onPage(next);
+  };
+  return (
+    <div className="rk-table-footer">
+      <span className="rk-table-range">{range}</span>
+      <button
+        ref={previousRef}
+        type="button"
+        className="rk-table-tool"
+        aria-label={copy.previousPage}
+        disabled={page === 0}
+        onClick={() => turnTo(page - 1, "previous")}
+      >
+        <ChevronLeftIcon />
+      </button>
+      <button
+        ref={nextRef}
+        type="button"
+        className="rk-table-tool"
+        aria-label={copy.nextPage}
+        disabled={page >= pageCount - 1}
+        onClick={() => turnTo(page + 1, "next")}
+      >
+        <ChevronRightIcon />
+      </button>
+    </div>
+  );
+}
 
 function TableView({
   columns,
@@ -324,6 +376,7 @@ function TableView({
   sort: SortState;
   onToggleSort: (column: number) => void;
 }) {
+  const copy = useMarkdownCopy();
   // Numeric columns right-align unless the author declared an alignment.
   const alignClass = (index: number) => {
     const align = aligns[index] ?? (numericColumns.has(index) ? "right" : "left");
@@ -331,12 +384,12 @@ function TableView({
   };
   // Sort labels need disambiguation: empty headers and duplicate names would
   // otherwise produce identical or blank "Sort by" announcements.
-  const sortLabel = (index: number) => columnSortLabel(columns, index);
+  const sortLabel = (index: number) => columnSortLabel(columns, index, copy);
   return (
-    <table className="rk-table" aria-label="Markdown table">
+    <table className="rk-table" aria-label={copy.markdownTable}>
       <thead>
         <tr>
-          <th className="rk-table-gutter" scope="col" aria-label="Row" />
+          <th className="rk-table-gutter" scope="col" aria-label={copy.row} />
           {columns.map((column, i) => (
             <SortableColumnHeader
               key={i}
@@ -353,7 +406,7 @@ function TableView({
         {rows.length === 0 ? (
           <tr>
             <td colSpan={columns.length + 1} className="rk-table-empty">
-              No rows
+              {copy.noRows}
             </td>
           </tr>
         ) : (
@@ -398,13 +451,14 @@ function SortableColumnHeader({
   className?: string;
   onToggleSort: () => void;
 }) {
+  const copy = useMarkdownCopy();
   const rich = !isPlainText(content);
   const sortButton = (
     <button
       type="button"
       className={rich ? "rk-table-sort-trigger" : "rk-table-sort"}
       onClick={onToggleSort}
-      aria-label={`Sort by ${column}`}
+      aria-label={copy.sortBy(column)}
     >
       {rich ? null : <span className="rk-table-sort-label">{content}</span>}
       <SortIndicator direction={direction} />

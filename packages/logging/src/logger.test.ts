@@ -1,9 +1,48 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { createConsoleSink } from "./console-sink.js";
 import { createLogger } from "./logger.js";
+import { sanitizedError } from "./monitoring.js";
 import { serializeError } from "./serialize-error.js";
+import { logSinkHealth } from "./sink-guard.js";
 import { createTestSink } from "./test-sink.js";
 
 describe("logger", () => {
+  it("drops only the line whose binding throws while it is read, without throwing", () => {
+    const sink = createTestSink();
+    const logger = createLogger({ service: "rakazo-worker", sinks: [sink] });
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const broken = Object.defineProperty({}, "detail", {
+      enumerable: true,
+      get() {
+        throw new Error("unreadable");
+      },
+    });
+    expect(() => logger.warn("run.setup_failed", { broken })).not.toThrow();
+    logger.warn("run.failed");
+    expect(sink.events.map((event) => event.message)).toEqual(["run.failed"]);
+    error.mockRestore();
+  });
+
+  it("counts a line lost while it is built as dropped, without marking the sinks unhealthy", () => {
+    const logger = createLogger({ service: "rakazo-worker", sinks: [createTestSink()] });
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const before = logSinkHealth();
+    const broken = Object.defineProperty({}, "detail", {
+      enumerable: true,
+      get() {
+        throw new Error("unreadable");
+      },
+    });
+    logger.warn("run.setup_failed", { broken });
+
+    expect(logSinkHealth()).toMatchObject({
+      failures: before.failures,
+      lastFailureAt: before.lastFailureAt,
+      droppedLines: before.droppedLines + 1,
+    });
+    error.mockRestore();
+  });
+
   it("filters levels including off", () => {
     const sink = createTestSink();
     const logger = createLogger({ service: "rakazo-api", level: "warn", sinks: [sink] });
@@ -32,6 +71,31 @@ describe("logger", () => {
       "service.role": "api",
       "job.type": "override",
     });
+  });
+
+  it("serializes a warning's error binding like an error log's error", () => {
+    const sink = createTestSink();
+    const logger = createLogger({ service: "rakazo-api", sinks: [sink] });
+    const cause = new Error("could not prepare the workspace");
+    logger.warn("computer.provision_failed", {
+      provider: "fake",
+      error: new AggregateError([cause, new Error("rollback failed")], "provisioning failed"),
+    });
+    expect(sink.events[0]).toMatchObject({
+      provider: "fake",
+      error: {
+        name: "AggregateError",
+        message: "provisioning failed",
+        cause: { name: "Error", message: "could not prepare the workspace" },
+      },
+    });
+  });
+
+  it("serializes an error bound on a child logger", () => {
+    const sink = createTestSink();
+    const logger = createLogger({ service: "rakazo-api", sinks: [sink] });
+    logger.child({ error: new TypeError("bound failure") }).warn("child");
+    expect(sink.events[0]?.error).toMatchObject({ name: "TypeError", message: "bound failure" });
   });
 
   it("keeps the configured service name when bindings try to overwrite it", () => {
@@ -139,11 +203,61 @@ describe("error serialization", () => {
     expect(serialized.message).toContain("[Redacted]");
   });
 
+  it("redacts secrets in error names", () => {
+    const error = Object.assign(new Error("failed"), { name: "Bearer supersecret" });
+    expect(serializeError(error).name).not.toContain("supersecret");
+  });
+
+  it("redacts user profile paths in error messages and stacks", () => {
+    const error = new Error("cannot open /home/example-user/app.db");
+    error.stack = `Error: cannot open /home/example-user/app.db\n    at run (/Users/example-user/app/index.js:1:1)\n    at load (C:\\Users\\example-user\\app\\index.js:2:1)`;
+    const serialized = serializeError(error);
+    expect(serialized.message).toBe("cannot open /[user]/app.db");
+    expect(serialized.stack).toBe(
+      "Error: cannot open /[user]/app.db\n    at run (/[user]/app/index.js:1:1)\n    at load ([user]\\app\\index.js:2:1)",
+    );
+    expect(JSON.stringify(serialized)).not.toContain("example-user");
+  });
+
   it("redacts secrets interpolated into the log message", () => {
     const sink = createTestSink();
     const logger = createLogger({ service: "rakazo-api", sinks: [sink] });
     logger.error("render_plot failed: Bearer supersecret for person@example.com");
     expect(JSON.stringify(sink.events[0])).not.toContain("supersecret");
     expect(JSON.stringify(sink.events[0])).not.toContain("person@example.com");
+  });
+});
+
+describe("pretty console errors", () => {
+  it("keeps a database error's code and meta after a long message", () => {
+    const error = Object.assign(
+      new Error(
+        `\nInvalid \`tx.steeringMessage.updateMany()\` invocation in\n/app/events.ts:1719:32\n\n${"  context line\n".repeat(20)}Transaction API error: A query cannot be executed on an expired transaction.`,
+      ),
+      {
+        name: "PrismaClientKnownRequestError",
+        code: "P2028",
+        meta: { modelName: "SteeringMessage", timeout: 5000, timeTaken: 5998 },
+      },
+    );
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((line: string) => {
+      lines.push(line);
+    });
+    try {
+      createLogger({
+        service: "rakazo-api",
+        sinks: [createConsoleSink({ format: "pretty" })],
+      }).error("run.failed", sanitizedError(error));
+    } finally {
+      spy.mockRestore();
+    }
+    expect(lines[0]).toContain(
+      "error=PrismaClientKnownRequestError: P2028 steeringMessage.updateMany:",
+    );
+    expect(lines[0]).toContain("expired transaction");
+    expect(lines[0]).toContain(
+      'meta={"modelName":"SteeringMessage","timeout":5000,"timeTaken":5998}',
+    );
   });
 });

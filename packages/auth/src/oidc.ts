@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import type { BetterAuthPlugin } from "better-auth";
 import { APIError, getOAuthState } from "better-auth/api";
 import { genericOAuth } from "better-auth/plugins";
+import type { TokenKey } from "./token-storage.js";
+import { openIdToken } from "./token-storage.js";
 
 const OIDC_FRESH_AGE = 5 * 60;
 const OIDC_CLOCK_SKEW = 60;
@@ -13,6 +15,46 @@ export interface OidcConfig {
   name: string;
   scopes: string[];
   allowSignupBypass: boolean;
+  /** Read instead of `email_verified` when the ID token omits it, for IdPs that name it differently. */
+  emailVerifiedClaim?: string;
+  /** Fixed parameters added to every authorization request, such as a domain hint. */
+  authorizationParams?: Record<string, string>;
+}
+
+/** Parameters the sign-in flow sets itself; a fixed value would break or weaken it. */
+const PROTOCOL_AUTHORIZATION_PARAMS = new Set([
+  "client_id",
+  "code_challenge",
+  "code_challenge_method",
+  "nonce",
+  "redirect_uri",
+  "request",
+  "request_uri",
+  "response_mode",
+  "response_type",
+  "scope",
+  "state",
+]);
+
+/** Reads `name=value&name=value`, refusing names the sign-in flow owns and names set twice. */
+export function oidcAuthorizationParams(value: string | undefined): Record<string, string> {
+  const params = new Map<string, string>();
+  for (const [name, param] of new URLSearchParams(value?.trim() ?? "")) {
+    if (!name || PROTOCOL_AUTHORIZATION_PARAMS.has(name.toLowerCase()))
+      throw new Error(`OIDC_AUTHORIZATION_PARAMS cannot set ${name || "an unnamed parameter"}`);
+    if (params.has(name)) throw new Error(`OIDC_AUTHORIZATION_PARAMS sets ${name} twice`);
+    params.set(name, param);
+  }
+  return Object.fromEntries(params);
+}
+
+/** Whether the ID token proved the profile email: boolean `true` or the string "true", any case. */
+export function oidcEmailVerified(profile: Record<string, unknown>, fallbackClaim?: string) {
+  const claim =
+    profile.email_verified === undefined && fallbackClaim
+      ? profile[fallbackClaim]
+      : profile.email_verified;
+  return claim === true || (typeof claim === "string" && claim.toLowerCase() === "true");
 }
 
 /** Discovery never gates API startup. Failed attempts share exponential backoff. */
@@ -26,6 +68,7 @@ export function oidcDiscovery(config: OidcConfig) {
         clientId: config.clientId,
         clientSecret: config.clientSecret,
         scopes: [...new Set(["openid", "email", "profile", ...config.scopes])],
+        authorizationUrlParams: config.authorizationParams,
         pkce: true,
         accountSubject: ({ profile }) => {
           if (typeof profile.sub !== "string" || !profile.sub.trim()) return "";
@@ -33,7 +76,9 @@ export function oidcDiscovery(config: OidcConfig) {
           return oidcAccountSubject(config.issuer, profile.sub);
         },
         requireIdTokenVerification: true,
-        mapProfileToUser: (profile) => ({ emailVerified: profile.email_verified === true }),
+        mapProfileToUser: (profile) => ({
+          emailVerified: oidcEmailVerified(profile, config.emailVerifiedClaim),
+        }),
       },
     ],
   });
@@ -45,6 +90,7 @@ export function oidcDiscovery(config: OidcConfig) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let disposed = false;
   let availability: "checking" | "available" | "unavailable" = "checking";
+  let resolveProvider: (() => Promise<Provider>) | undefined;
   const unavailable = () =>
     new APIError("SERVICE_UNAVAILABLE", {
       code: "SSO_UNAVAILABLE",
@@ -107,6 +153,7 @@ export function oidcDiscovery(config: OidcConfig) {
       };
       schedule(0);
       const getProvider = () => (provider ? Promise.resolve(provider) : discover());
+      resolveProvider = getProvider;
       const lazy: Provider = {
         id: "oidc",
         name: config.name,
@@ -123,11 +170,15 @@ export function oidcDiscovery(config: OidcConfig) {
           }
           // Better Auth's state read/delete is not atomic. Consume a separate
           // server-side marker before code exchange, including concurrent callbacks.
-          await ctx.internalAdapter.createVerificationValue({
-            identifier: `oidc-callback-${data.state}`,
-            value: data.idTokenNonce!,
-            expiresAt: new Date(Date.now() + 10 * 60_000),
-          });
+          // Better Auth's Expo plugin probes providers with a synthetic request
+          // that has no ID token nonce. Only real OIDC sign-ins need this marker.
+          if (typeof data.idTokenNonce === "string" && data.idTokenNonce.length > 0) {
+            await ctx.internalAdapter.createVerificationValue({
+              identifier: `oidc-callback-${data.state}`,
+              value: data.idTokenNonce,
+              expiresAt: new Date(Date.now() + 10 * 60_000),
+            });
+          }
           return url;
         },
         validateAuthorizationCode: async (data) => {
@@ -207,6 +258,17 @@ export function oidcDiscovery(config: OidcConfig) {
   return {
     plugin,
     availability: () => availability,
+    /** The Expo proxy must only send a browser to the provider's real authorization endpoint. */
+    isAuthorizationURL: async (value: string) => {
+      if (!resolveProvider) return false;
+      const endpoint = await (await resolveProvider()).createAuthorizationURL({
+        state: "probe",
+        codeVerifier: "probe",
+        redirectURI: config.issuer,
+      });
+      const url = URL.parse(value);
+      return url?.origin === endpoint.origin && url.pathname === endpoint.pathname;
+    },
     dispose: () => {
       disposed = true;
       clearTimeout(timer);
@@ -221,15 +283,16 @@ export function oidcAccountSubject(issuer: string, subject: string) {
 }
 
 /** Stored ID tokens were verified during linking; bind their subject to the stored account ID. */
-export function isCurrentOidcAccount(
+export async function isCurrentOidcAccount(
   account: { providerId: string; accountId: string; idToken?: string | null },
   issuer: string | undefined,
+  key: TokenKey,
 ) {
-  if (!issuer || account.providerId !== "oidc" || !account.idToken) return false;
+  if (!issuer || account.providerId !== "oidc") return false;
+  const idToken = await openIdToken(key, account.idToken);
+  if (!idToken) return false;
   try {
-    const claims = JSON.parse(
-      Buffer.from(account.idToken.split(".")[1] ?? "", "base64url").toString(),
-    );
+    const claims = JSON.parse(Buffer.from(idToken.split(".")[1] ?? "", "base64url").toString());
     return (
       claims.iss === issuer &&
       typeof claims.sub === "string" &&

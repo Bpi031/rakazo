@@ -1,601 +1,472 @@
-import type { AccountSecurity, AvatarStyle } from "@rakazo/contracts";
+import { ph } from "@lingui/core/macro";
+import { useLingui } from "@lingui/react/macro";
+import type { BillingStatus, PlanLimits, UsageSummary } from "@rakazo/contracts";
+import { hasLab, modelCreditsUsd } from "@rakazo/contracts";
+import { accountDisplay, formatTimeUntil } from "@rakazo/core";
+import type { Href } from "expo-router";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import {
-  ActivityIndicator,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
+import type { ComponentProps } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { AppMark } from "../../components/app-mark";
-import { useAvatarStyle } from "../../components/avatar-style";
-import { BotAvatar } from "../../components/bot-avatar";
-import { NativeActionButton } from "../../components/native-action-button";
-import { NativeSegmentedControl } from "../../components/native-segmented-control";
-import { NativeSymbol } from "../../components/native-symbol";
+import { OrganizationRowMenu } from "../../components/inbox/organization-menu";
+import { NativeActionButton } from "../../components/native/native-action-button";
+import { NativeSymbol } from "../../components/native/native-symbol";
+import {
+  ApprovalModeRow,
+  ApprovalRulesRow,
+} from "../../components/settings/approval-settings-rows";
 import {
   SettingsGroup,
-  SettingsLabel,
   SettingsRow,
-  SettingsSwitch,
   useStackedSettings,
-} from "../../components/settings-group";
-import type { MobileMe } from "../../lib/api";
-import {
-  currentApiBase,
-  deleteAccount,
-  fetchAccountSecurity,
-  loadSessionToken,
-  requestAccountDeletionCode,
-  rpc,
-  selectedSpaceId,
-  signOut,
-} from "../../lib/api";
-import { formatUpdateLabel, getAppVersionInfo } from "../../lib/app-version";
-import {
-  getCachedAppearancePreference,
-  mobileTokens,
-  setAppearancePreference,
-} from "../../lib/appearance";
-import { archivedChatCounts, loadArchivedChats } from "../../lib/archived-chats";
-import { replaceWithSignIn } from "../../lib/auth-routing";
-import { promptAccountDeletion } from "../../lib/delete-account-prompt";
-import { setUiLocale, useI18n } from "../../lib/i18n";
-import type { LiveNotificationSettings } from "../../lib/live-notifications";
-import {
-  canPostPromotedNotifications,
-  DEFAULT_LIVE_NOTIFICATION_SETTINGS,
-  getLiveNotificationSettings,
-  openLiveNotificationSettings,
-  openPromotedNotificationSettings,
-  setLiveNotificationSettings,
-} from "../../lib/live-notifications";
-import { presentMessageActionSheet } from "../../lib/message-action-sheet";
-import { native, useResolvedAppearance, useThemedStyles } from "../../lib/native";
-import { registerPushToken } from "../../lib/push";
-import {
-  getCachedRemoteImagesEnabled,
-  setRemoteImagesPreference,
-  subscribeRemoteImages,
-} from "../../lib/remote-images-preference";
-import {
-  getCachedResponseStreamingEnabled,
-  setResponseStreamingPreference,
-  subscribeResponseStreaming,
-} from "../../lib/response-streaming";
-import { continueWithSso } from "../../lib/sso";
-import type { AccountUiLocale } from "../../lib/ui-locale";
-import { ACCOUNT_UI_LOCALES, UI_LOCALE_LABELS } from "../../lib/ui-locale";
-import { errorText } from "../../lib/user-error";
+} from "../../components/settings/settings-group";
+import { SpendingLimitRow, useSpendingStatus } from "../../components/settings/spending-limit-row";
+import { AppMark } from "../../components/ui/app-mark";
+import { rpc } from "../../lib/api/api";
+import type { MobileMe } from "../../lib/api/mobile-types";
+import { errorText } from "../../lib/api/user-error";
+import { signOut } from "../../lib/auth/api-auth";
+import { replaceWithSignIn } from "../../lib/auth/auth-routing";
+import { selfHosted, showSelfHostedSupport } from "../../lib/billing/self-hosted-support";
+import { endCallBeforeSessionEnd } from "../../lib/calls/call-session";
+import { dateLocaleForUi, useUiLocale } from "../../lib/i18n/i18n";
+import { useSideInsets } from "../../lib/layout/side-insets";
+import { native, useMobileTokens, useThemedStyles } from "../../lib/native/native";
+import { formatUpdateLabel, getAppVersionInfo } from "../../lib/platform/app-version";
+import { openWriteReview, writeReviewUrl } from "../../lib/platform/store-review";
+import { openStoreListing, useStoreUpdateAvailable } from "../../lib/platform/store-update";
+import { ACCOUNT_SETTINGS } from "../../lib/query/settings-target";
+import { useApprovalSettings } from "../../lib/settings/approval-settings";
+import { openFromSettings, useRestoreSpaces } from "../../lib/settings/back-to-settings";
+import { createSettingsPageStyles } from "../../lib/settings/settings-page-styles";
+import { isSettingsLink, openFromSettingsSheet } from "../../lib/settings/settings-sheet";
+import { activeOrganization, useOrganizations } from "../../lib/spaces/organizations";
+import { confirmUnsentSendLoss } from "../../lib/thread/send/unsent-send-warning";
 
-/** Render account settings, including the entry point for voice configuration. */
+type Icon = Pick<ComponentProps<typeof NativeSymbol>, "ios" | "android">;
+type SettingsLink = { title: string; href: Href; icon: Icon };
+
+/** The settings hub: the account, then shortcuts, settings and admin, each one row deep. */
 export default function Account() {
-  const { t, locale } = useI18n();
-  const colorScheme = useResolvedAppearance();
+  useRestoreSpaces();
+  const sideInsets = useSideInsets();
+  const { t } = useLingui();
+  const locale = useUiLocale();
   const router = useRouter();
+  const tokens = useMobileTokens();
   const { focus } = useLocalSearchParams<{ focus?: string }>();
   const [me, setMe] = useState<MobileMe | null>(null);
-  const [deleteOpen, setDeleteOpen] = useState(false);
-  const [security, setSecurity] = useState<AccountSecurity | null>(null);
-  const canChangePassword = security?.hasPassword && security.passwordChangeEnabled !== false;
-  const [deletionCodeSent, setDeletionCodeSent] = useState(false);
-  const [ssoReauthenticated, setSsoReauthenticated] = useState(false);
-  const [deletePassword, setDeletePassword] = useState("");
-  const [localeSaving, setLocaleSaving] = useState(false);
-  const [localeError, setLocaleError] = useState<string | null>(null);
-  const [pending, setPending] = useState(false);
-  const deletionDisabled =
-    pending ||
-    (security?.hasPassword
-      ? !deletePassword
-      : !ssoReauthenticated && (!deletionCodeSent || !deletePassword.trim()));
-  const [avatarPending, setAvatarPending] = useState(false);
-  const [avatarError, setAvatarError] = useState<string | null>(null);
-  const [notifications, setNotifications] = useState<LiveNotificationSettings>(
-    DEFAULT_LIVE_NOTIFICATION_SETTINGS,
-  );
-  const [notificationsReady, setNotificationsReady] = useState(Platform.OS !== "android");
-  const [notificationPending, setNotificationPending] = useState(false);
-  const [notificationError, setNotificationError] = useState<string | null>(null);
+  const account = accountDisplay(me ?? {}, t`Your account`);
+  const [signingOut, setSigningOut] = useState(false);
+  // Held from the tap, so a second tap while the unsent-message check runs starts nothing.
+  const signOutStarted = useRef(false);
   const [signOutError, setSignOutError] = useState<string | null>(null);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
-  const [archivedCount, setArchivedCount] = useState(0);
-  // A list that fails to refresh keeps its last count, so a passing error doesn't hide the row.
-  const archivedCounts = useRef({ bots: 0, groups: 0 });
-  const [usage, setUsage] = useState<{
-    runs: number;
-    inputTokens: number | null;
-    outputTokens: number | null;
-    totalTokens?: number | null;
-  } | null>(null);
-  const { avatarStyle, updateAvatarStyle } = useAvatarStyle();
-  const appearance = getCachedAppearancePreference();
-  const streamReplies = useSyncExternalStore(
-    subscribeResponseStreaming,
-    getCachedResponseStreamingEnabled,
-    () => false,
-  );
-  const loadRemoteImages = useSyncExternalStore(
-    subscribeRemoteImages,
-    getCachedRemoteImagesEnabled,
-    () => false,
-  );
-  const loadRemoteImagesLabel = t("Load web images automatically");
-  const [advancedOpen, setAdvancedOpen] = useState(false);
-  const stackOptions = useStackedSettings();
+  const [usage, setUsage] = useState<UsageSummary | null>(null);
+  // Subscription allowances and a credit balance show only for members who have them.
+  const [plans, setPlans] = useState<PlanLimits[]>([]);
+  const [creditsUsd, setCreditsUsd] = useState<number | null>(null);
+  const [media, setMedia] = useState<BillingStatus["media"]>();
+  // Messaging appears only on servers that have a chat app connected, as on web.
+  const [messagingEnabled, setMessagingEnabled] = useState(false);
+  const stacked = useStackedSettings();
   const styles = useThemedStyles(createAccountStyles);
   const versionInfo = getAppVersionInfo();
-  const updateLabel = formatUpdateLabel(versionInfo.update, t);
+  const updateLabel = formatUpdateLabel(versionInfo.update);
   const versionAccessibility = [versionInfo.nativeLabel, updateLabel].filter(Boolean).join(". ");
+  const storeUpdateAvailable = useStoreUpdateAvailable();
+  const approvals = useApprovalSettings(ACCOUNT_SETTINGS);
+  const spending = useSpendingStatus();
+  const organizations = useOrganizations().data;
 
-  useEffect(() => {
-    void rpc<MobileMe>("me")
-      .then(setMe)
-      .catch(() => undefined);
-    void rpc<{
-      runs: number;
-      inputTokens: number | null;
-      outputTokens: number | null;
-      totalTokens?: number | null;
-    }>("usage/summary")
-      .then(setUsage)
-      .catch(() => undefined);
-    if (Platform.OS === "android") {
-      void getLiveNotificationSettings()
-        .then(setNotifications)
-        .catch(() => undefined)
-        .finally(() => setNotificationsReady(true));
-    }
-  }, []);
-
-  const usageBlock = (
+  const icon = ({ ios, android }: Icon) => (
+    <NativeSymbol ios={ios} android={android} color={tokens.mutedForeground} />
+  );
+  const settingsLink = ({ title, href, icon: glyph }: SettingsLink) => (
     <SettingsRow
-      accessible
-      title={t("Usage")}
-      detail={
-        usage
-          ? t("{runs} runs · {tokens} tokens", {
-              runs: usage.runs,
-              tokens: usage.totalTokens ?? "—",
-            })
-          : undefined
-      }
+      key={typeof href === "string" ? href : href.pathname}
+      accessibilityRole="button"
+      chevron="right"
+      disabled={signingOut}
+      leading={icon(glyph)}
+      onPress={() => {
+        if (href === "/artifacts" || href === "/board") {
+          openFromSettings(router, { pathname: href }, "/account");
+        } else if (typeof href === "string" && isSettingsLink(href)) {
+          router.push(href);
+        } else {
+          openFromSettingsSheet(router, href);
+        }
+      }}
+      title={title}
     />
   );
 
+  // Read on every visit, so a name changed on the Account page shows on return.
   useFocusEffect(
     useCallback(() => {
       let active = true;
-      void loadArchivedChats().then((loaded) => {
-        if (!active) return;
-        archivedCounts.current = archivedChatCounts(archivedCounts.current, loaded);
-        setArchivedCount(archivedCounts.current.bots + archivedCounts.current.groups);
-      });
+      void rpc("me")
+        .then((next) => {
+          if (active) setMe(next);
+        })
+        .catch(() => undefined);
       return () => {
         active = false;
       };
     }, []),
   );
 
-  async function selectAvatarStyle(next: AvatarStyle) {
-    if (next === avatarStyle) return;
-    setAvatarPending(true);
-    setAvatarError(null);
-    try {
-      await updateAvatarStyle(next);
-    } catch {
-      setAvatarError(t("Couldn't update avatars"));
-    } finally {
-      setAvatarPending(false);
-    }
-  }
-
-  async function handleSignOut() {
-    setPending(true);
-    setSignOutError(null);
-    try {
-      await signOut();
-      replaceWithSignIn();
-    } catch (err) {
-      setSignOutError(errorText(err, t("Could not sign out")));
-      setPending(false);
-    }
-  }
-
-  async function updateNotifications(next: LiveNotificationSettings) {
-    const previous = notifications;
-    setNotifications(next);
-    setNotificationPending(true);
-    setNotificationError(null);
-    try {
-      await setLiveNotificationSettings(
-        next,
-        currentApiBase(),
-        await loadSessionToken(),
-        selectedSpaceId() ?? "",
-      );
-      if (next.liveConnection && !(await canPostPromotedNotifications())) {
-        await openPromotedNotificationSettings();
-      }
-      await registerPushToken();
-    } catch (cause) {
-      setNotifications(previous);
-      setNotificationError(errorText(cause, t("Could not update notifications")));
-    } finally {
-      setNotificationPending(false);
-    }
-  }
-
-  async function securityAction(run: () => Promise<void>) {
-    setPending(true);
-    setDeleteError(null);
-    try {
-      await run();
-    } catch (err) {
-      setDeleteError(errorText(err, t("Could not continue")));
-    } finally {
-      setPending(false);
-    }
-  }
   useEffect(() => {
-    void fetchAccountSecurity()
-      .then(setSecurity)
+    void rpc("usage/summary")
+      .then(setUsage)
+      .catch(() => undefined);
+    void rpc("usage/limits")
+      .then(setPlans)
+      .catch(() => undefined);
+    void rpc("billing/status")
+      .then((status) => {
+        setCreditsUsd(modelCreditsUsd(status));
+        setMedia(status.media);
+      })
       .catch(() => undefined);
   }, []);
 
-  function closeDeletePrompt() {
-    if (pending) return;
-    setDeleteOpen(false);
-    setDeletePassword("");
-  }
+  // Checked on every visit, so a failed check never hides Messaging for good.
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      void rpc("messaging/status")
+        .then((status) => {
+          if (active) setMessagingEnabled(status.enabled);
+        })
+        .catch(() => undefined);
+      return () => {
+        active = false;
+      };
+    }, []),
+  );
 
-  async function requestDeletion() {
-    if (pending) return;
-    setDeleteError(null);
-    try {
-      const value = await fetchAccountSecurity();
-      setSecurity(value);
-      if (!value.hasPassword) {
-        setDeletePassword("");
-        setDeletionCodeSent(false);
-        setSsoReauthenticated(value.freshOidcAuth);
-        setDeleteOpen(true);
-        return;
+  const count = new Intl.NumberFormat(dateLocaleForUi(locale));
+  const usd = new Intl.NumberFormat(dateLocaleForUi(locale), {
+    style: "currency",
+    currency: "USD",
+  });
+  const tokenCount = (value: number | null | undefined) =>
+    value == null ? "—" : count.format(value);
+  const cost = (value: number | null | undefined) =>
+    value == null
+      ? undefined
+      : value > 0 && value < 0.01
+        ? `<${usd.format(0.01)}`
+        : usd.format(value);
+  const usageBlock = (
+    <SettingsRow
+      key="usage"
+      accessible
+      title={t`Usage`}
+      detail={
+        usage
+          ? t`${ph({ runs: count.format(usage.runs) })} runs, ${ph({ tokens: tokenCount(usage.totalTokens) })} tokens`
+          : undefined
       }
-    } catch (err) {
-      setDeleteError(errorText(err, t("Could not continue")));
+      value={cost(usage?.costUsd)}
+    />
+  );
+  const creditsRow =
+    creditsUsd !== null ? (
+      <SettingsRow
+        key="credits"
+        accessible
+        title={t`Credits`}
+        value={t`${ph({ amount: usd.format(creditsUsd) })} left`}
+      />
+    ) : null;
+  const mediaRow = media ? (
+    <SettingsRow
+      key="media"
+      accessible
+      title={t`Images and video`}
+      value={t`${ph({ left: usd.format(media.leftCents / 100) })} of ${ph({ limit: usd.format(media.limitCents / 100) })} left`}
+    />
+  ) : null;
+  const period = { session: t`Session`, week: t`Weekly`, month: t`Monthly` };
+  const planGroups = plans.map((plan) => (
+    <SettingsGroup
+      key={plan.credentialId}
+      label={plan.label === plan.name ? plan.name : `${plan.name} · ${plan.label}`}
+    >
+      {plan.windows.map((window) => {
+        const reset = formatTimeUntil(window.resetsAt, dateLocaleForUi(locale));
+        return (
+          <SettingsRow
+            key={window.period}
+            accessible
+            title={period[window.period]}
+            detail={reset ? t`Resets in ${ph({ reset })}` : undefined}
+            value={t`${ph({ used: Math.round(window.usedPercent) })}% used`}
+          />
+        );
+      })}
+    </SettingsGroup>
+  ));
+  const usageModels = usage?.models?.length ? (
+    <SettingsGroup>
+      {usage.models.map((row) => (
+        <SettingsRow
+          key={`${row.provider}:${row.model}`}
+          accessible
+          title={row.model}
+          detail={`${row.provider}, ${t`${ph({ calls: count.format(row.modelCalls) })} calls, ${ph({ tokens: tokenCount(row.totalTokens) })} tokens`}`}
+          value={cost(row.costUsd)}
+        />
+      ))}
+    </SettingsGroup>
+  ) : null;
+
+  async function handleSignOut() {
+    if (signOutStarted.current) return;
+    signOutStarted.current = true;
+    if (!(await confirmUnsentSendLoss("sign-out"))) {
+      signOutStarted.current = false;
       return;
     }
-
-    const prompted = promptAccountDeletion({
-      title: t("Delete your account?"),
-      message: t(
-        "This permanently deletes your account, bots, conversations, memories, files, and saved connections. This cannot be undone.",
-      ),
-      cancelLabel: t("Cancel"),
-      deleteLabel: t("Delete"),
-      onSubmit: (password) => void handleDeletion(password, true),
-    });
-    if (!prompted) {
-      setDeletePassword("");
-      setDeleteOpen(true);
-    }
-  }
-
-  function applyLocale(code: AccountUiLocale) {
-    if (code === locale || localeSaving) return;
-    setLocaleSaving(true);
-    setLocaleError(null);
-    void setUiLocale(code)
-      .catch(() => {
-        setLocaleError(t("Could not change language"));
-      })
-      .finally(() => setLocaleSaving(false));
-  }
-
-  function openLanguagePicker() {
-    if (localeSaving) return;
-    presentMessageActionSheet({
-      title: t("Language"),
-      actions: ACCOUNT_UI_LOCALES.map((code) => ({
-        text: UI_LOCALE_LABELS[code],
-        onPress: () => applyLocale(code),
-      })),
-      colorScheme,
-      cancel: t("Cancel"),
-      more: t("More"),
-    });
-  }
-
-  async function handleDeletion(password: string, hasPassword = security?.hasPassword === true) {
-    if ((!password && !ssoReauthenticated) || pending) return;
-    setPending(true);
-    setDeleteError(null);
+    setSigningOut(true);
+    setSignOutError(null);
     try {
-      if (hasPassword) await deleteAccount(password);
-      else {
-        const current = await fetchAccountSecurity();
-        setSecurity(current);
-        setSsoReauthenticated(current.freshOidcAuth);
-        const token = deletionCodeSent ? password.trim() : undefined;
-        if (current.hasPassword || (!current.freshOidcAuth && !token)) return;
-        await deleteAccount(undefined, token);
-      }
-      setDeleteOpen(false);
-      replaceWithSignIn("/sign-in");
+      // Hang up while the session still exists, so the server records the call's end.
+      await endCallBeforeSessionEnd();
+      await signOut();
+      replaceWithSignIn();
     } catch (err) {
-      setDeleteError(errorText(err, t("Could not delete account")));
-    } finally {
-      setPending(false);
+      setSignOutError(errorText(err, t`Could not sign out`));
+      setSigningOut(false);
+      signOutStarted.current = false;
     }
   }
+
+  const shortcuts: SettingsLink[] = [
+    {
+      title: t`Integrations`,
+      href: "/integrations",
+      icon: { ios: "puzzlepiece.extension", android: "extension-puzzle-outline" },
+    },
+    {
+      title: t`Skills`,
+      href: "/skills",
+      icon: { ios: "scroll", android: "document-text-outline" },
+    },
+    {
+      title: t`Artifacts`,
+      href: "/artifacts",
+      icon: { ios: "folder", android: "folder-outline" },
+    },
+    {
+      title: t`Pages shared with you`,
+      href: "/shared-pages",
+      icon: { ios: "doc.on.doc", android: "documents-outline" },
+    },
+    ...(hasLab(me?.labs, "board")
+      ? [
+          {
+            title: t`Board`,
+            href: "/board",
+            icon: { ios: "rectangle.split.3x1", android: "grid-outline" },
+          } as const,
+        ]
+      : []),
+  ];
 
   return (
     <SafeAreaView edges={["bottom"]} style={styles.screen}>
       <ScrollView
-        contentContainerStyle={[styles.content, stackOptions && styles.compactContent]}
+        style={sideInsets}
+        contentContainerStyle={[styles.content, stacked && styles.compactContent]}
         contentInsetAdjustmentBehavior="automatic"
       >
-        {focus === "usage" ? <SettingsGroup>{usageBlock}</SettingsGroup> : null}
+        {focus === "usage" ? (
+          <>
+            <SettingsGroup>
+              {usageBlock}
+              {creditsRow}
+              {mediaRow}
+            </SettingsGroup>
+            {planGroups}
+            {usageModels}
+          </>
+        ) : null}
         <SettingsGroup>
           <SettingsRow
-            accessible
-            detail={me?.email || undefined}
+            key="profile"
+            accessibilityRole="button"
+            chevron="right"
+            detail={me?.email && account.label !== me.email ? me.email : undefined}
+            disabled={signingOut}
             prominent
-            title={me?.name || t("Your account")}
+            title={account.label}
+            onPress={() => router.push("/profile")}
           />
           {focus !== "usage" ? usageBlock : null}
+          {focus !== "usage" ? creditsRow : null}
+        </SettingsGroup>
+        {focus !== "usage" ? planGroups : null}
+
+        <SettingsGroup>{shortcuts.map(settingsLink)}</SettingsGroup>
+
+        <SettingsGroup>
+          {[
+            {
+              title: t`General`,
+              href: "/general",
+              icon: { ios: "gearshape", android: "settings-outline" },
+            } as const,
+            {
+              title: t`Models`,
+              href: "/models",
+              icon: { ios: "cpu", android: "hardware-chip-outline" },
+            } as const,
+          ].map(settingsLink)}
+          <ApprovalModeRow
+            key="approvals"
+            approvals={approvals}
+            disabled={signingOut}
+            leading={icon({ ios: "checkmark.shield", android: "shield-checkmark-outline" })}
+          />
+          {approvals.ruleCount ? (
+            <ApprovalRulesRow
+              key="approval-rules"
+              count={approvals.ruleCount}
+              disabled={signingOut}
+              leading={icon({ ios: "list.bullet", android: "list-outline" })}
+              onPress={() => router.push("/approvals")}
+            />
+          ) : null}
+          {settingsLink({
+            title: t`Vault`,
+            href: "/vault",
+            icon: { ios: "key", android: "key-outline" },
+          })}
+          {settingsLink({
+            title: t`Computers`,
+            href: "/computers",
+            icon: { ios: "desktopcomputer", android: "desktop-outline" },
+          })}
+          {me?.paymentWalletProvider
+            ? settingsLink({
+                title: t`Wallet`,
+                href: "/wallet",
+                icon: { ios: "wallet.pass", android: "wallet-outline" },
+              })
+            : null}
+          {spending?.shown ? (
+            <SpendingLimitRow
+              key="spending-limit"
+              status={spending}
+              disabled={signingOut}
+              leading={icon({ ios: "dollarsign.circle", android: "cash-outline" })}
+            />
+          ) : null}
+          {[
+            {
+              title: t`Memory`,
+              href: "/memory",
+              icon: { ios: "brain", android: { material: "brain" } },
+            } as const,
+            {
+              title: t`Voice`,
+              href: "/voice",
+              icon: { ios: "speaker.wave.2", android: "volume-high-outline" },
+            } as const,
+            ...(messagingEnabled
+              ? [
+                  {
+                    title: t`Messaging`,
+                    href: "/messaging",
+                    icon: { ios: "message", android: "chatbubble-outline" },
+                  } as const,
+                ]
+              : []),
+            ...(me?.labsAvailable?.length
+              ? [
+                  {
+                    title: t`Labs`,
+                    href: "/labs",
+                    icon: { ios: "flask", android: "flask-outline" },
+                  } as const,
+                ]
+              : []),
+          ].map(settingsLink)}
         </SettingsGroup>
 
-        {(security?.sso && !security.ssoLinked) || canChangePassword ? (
+        <SettingsGroup>
+          {organizations ? (
+            <OrganizationRowMenu
+              key="organization"
+              list={organizations}
+              onCreate={() => openFromSettingsSheet(router, "/new-organization")}
+              onSettings={() => router.push("/organization")}
+            >
+              <SettingsRow
+                accessible
+                accessibilityRole="button"
+                accessibilityLabel={t`Organization`}
+                accessibilityValue={{ text: activeOrganization(organizations)?.name }}
+                chevron="down"
+                leading={icon({ ios: "building.2", android: "business-outline" })}
+                title={t`Organization`}
+                value={activeOrganization(organizations)?.name}
+              />
+            </OrganizationRowMenu>
+          ) : null}
+          {settingsLink({
+            title: t`Spaces`,
+            href: "/spaces",
+            icon: { ios: "square.stack", android: "layers-outline" },
+          })}
+          {me?.billingEnabled
+            ? settingsLink({
+                title: t`Billing`,
+                href: "/billing",
+                icon: { ios: "creditcard", android: "card-outline" },
+              })
+            : null}
+        </SettingsGroup>
+
+        {writeReviewUrl() || selfHosted() ? (
           <SettingsGroup>
-            {security?.sso && !security.ssoLinked ? (
+            {selfHosted() ? (
               <SettingsRow
                 accessibilityRole="button"
-                chevron="right"
-                disabled={pending}
-                dimmed={pending}
-                title={t("Link SSO")}
-                onPress={() =>
-                  void securityAction(async () => {
-                    if (await continueWithSso("link")) setSecurity(await fetchAccountSecurity());
-                  })
-                }
+                leading={icon({ ios: "heart", android: "heart-outline" })}
+                title={t`Support Rakazo`}
+                onPress={showSelfHostedSupport}
               />
             ) : null}
-            {canChangePassword ? (
+            {writeReviewUrl() ? (
               <SettingsRow
                 accessibilityRole="button"
-                chevron="right"
-                onPress={() => router.push("/change-password")}
-                title={t("Change password")}
+                leading={icon({ ios: "star", android: "star-outline" })}
+                title={t`Rate Rakazo`}
+                onPress={openWriteReview}
               />
             ) : null}
           </SettingsGroup>
         ) : null}
-
-        <View accessibilityLabel={t("Appearance")} style={styles.section}>
-          <SettingsLabel>{t("Appearance")}</SettingsLabel>
-          <NativeSegmentedControl
-            accessibilityLabel={t("Appearance")}
-            onChange={(value) => void setAppearancePreference(value)}
-            options={[
-              { value: "system", label: t("System") },
-              { value: "light", label: t("Light") },
-              { value: "dark", label: t("Dark") },
-            ]}
-            value={appearance}
-          />
-        </View>
-
-        <View accessibilityLabel={t("Avatar style")} style={styles.section}>
-          <SettingsLabel>{t("Avatars")}</SettingsLabel>
-          <View style={[styles.options, stackOptions && styles.optionsStacked]}>
-            {(["robot", "organic"] as const).map((style) => {
-              const selected = avatarStyle === style;
-              const styleLabel = style === "robot" ? t("Robot") : t("Organic");
-              return (
-                <Pressable
-                  key={style}
-                  accessibilityLabel={t("{style} avatars", { style: styleLabel })}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected, disabled: avatarPending }}
-                  disabled={avatarPending}
-                  onPress={() => void selectAvatarStyle(style)}
-                  style={({ pressed }) => [
-                    styles.option,
-                    styles.avatarOption,
-                    !stackOptions && styles.optionSideBySide,
-                    pressed && styles.pressed,
-                  ]}
-                >
-                  <BotAvatar
-                    color={style === "robot" ? "#8B5CF6" : "#D62F8B"}
-                    identity="avatar-preview"
-                    size={42}
-                    variant={style}
-                  />
-                  <Text style={styles.optionLabel}>{styleLabel}</Text>
-                  <NativeSymbol
-                    android={selected ? "checkmark-circle" : "ellipse-outline"}
-                    color={selected ? native.label : native.tertiaryLabel}
-                    ios={selected ? "checkmark.circle.fill" : "circle"}
-                    size={22}
-                  />
-                </Pressable>
-              );
-            })}
-          </View>
-          <SettingsGroup>
-            {avatarError ? <Text style={styles.error}>{avatarError}</Text> : null}
-          </SettingsGroup>
-        </View>
-
-        <SettingsGroup>
-          <SettingsRow
-            accessibilityRole="button"
-            accessibilityLabel={t("Language")}
-            accessibilityValue={{ text: UI_LOCALE_LABELS[locale] }}
-            accessibilityState={{ disabled: localeSaving }}
-            chevron="right"
-            dimmed={localeSaving}
-            disabled={localeSaving}
-            onPress={openLanguagePicker}
-            title={t("Language")}
-            value={UI_LOCALE_LABELS[locale]}
-          />
-          {localeError ? <Text style={styles.error}>{localeError}</Text> : null}
-        </SettingsGroup>
-
-        {Platform.OS === "android" ? (
-          <SettingsGroup accessibilityLabel={t("Notifications")} label={t("Notifications")}>
-            <SettingsSwitch
-              label={t("Live working status")}
-              detail={t("While agents are working")}
-              value={notifications.liveConnection}
-              disabled={notificationPending || !notificationsReady}
-              onChange={(liveConnection) =>
-                void updateNotifications({ ...notifications, liveConnection })
-              }
-            />
-            <SettingsSwitch
-              label={t("Agent messages")}
-              detail={t("Replies and completed work")}
-              value={notifications.messages}
-              disabled={notificationPending || !notificationsReady}
-              onChange={(messages) => void updateNotifications({ ...notifications, messages })}
-            />
-            <SettingsSwitch
-              label={t("Scheduled tasks")}
-              detail={t("Alerts from routines")}
-              value={notifications.scheduledTasks}
-              disabled={notificationPending || !notificationsReady}
-              onChange={(scheduledTasks) =>
-                void updateNotifications({ ...notifications, scheduledTasks })
-              }
-            />
-            <SettingsSwitch
-              label={t("Needs attention")}
-              detail={t("Questions, approvals, takeover")}
-              value={notifications.needsAttention}
-              disabled={notificationPending || !notificationsReady}
-              onChange={(needsAttention) =>
-                void updateNotifications({ ...notifications, needsAttention })
-              }
-            />
-            <SettingsRow
-              accessibilityRole="button"
-              onPress={() => void openPromotedNotificationSettings()}
-              title={t("Live update settings")}
-            />
-            <SettingsRow
-              accessibilityRole="button"
-              onPress={() => void openLiveNotificationSettings()}
-              title={t("Notification settings")}
-            />
-            {notificationError ? <Text style={styles.error}>{notificationError}</Text> : null}
-          </SettingsGroup>
-        ) : null}
-
-        <SettingsGroup>
-          <SettingsRow
-            accessibilityRole="button"
-            chevron="right"
-            disabled={pending}
-            onPress={() => router.push("/models")}
-            title={t("Models")}
-          />
-          <SettingsRow
-            accessibilityRole="button"
-            chevron="right"
-            disabled={pending}
-            onPress={() => router.push("/voice")}
-            title={t("Voice")}
-          />
-          <SettingsRow
-            accessibilityRole="button"
-            chevron="right"
-            disabled={pending}
-            onPress={() => router.push("/integrations")}
-            title={t("Integrations")}
-          />
-          <SettingsRow
-            accessibilityRole="button"
-            chevron="right"
-            disabled={pending}
-            onPress={() => router.push("/ai-data-sharing")}
-            title={t("AI data sharing")}
-          />
-          {me?.isDeploymentOwner ? (
-            <SettingsRow
-              accessibilityRole="button"
-              chevron="right"
-              onPress={() => router.push("/integration-setup")}
-              title={t("Server integrations")}
-            />
-          ) : null}
-        </SettingsGroup>
-
-        <SettingsGroup>
-          <SettingsRow
-            accessibilityRole="button"
-            accessibilityLabel={t("Advanced")}
-            accessibilityState={{ expanded: advancedOpen }}
-            chevron={advancedOpen ? "down" : "right"}
-            onPress={() => setAdvancedOpen((open) => !open)}
-            title={t("Advanced")}
-          />
-          {advancedOpen ? (
-            <SettingsSwitch
-              label={t("Stream replies")}
-              value={streamReplies}
-              onChange={(checked) => void setResponseStreamingPreference(checked ? "on" : "off")}
-            />
-          ) : null}
-          {advancedOpen ? (
-            <SettingsSwitch
-              label={loadRemoteImagesLabel}
-              value={loadRemoteImages}
-              onChange={(checked) => void setRemoteImagesPreference(checked ? "on" : "off")}
-            />
-          ) : null}
-        </SettingsGroup>
 
         <View style={styles.section}>
           <NativeActionButton
-            disabled={pending}
+            disabled={signingOut}
             fill
-            label={t("Sign out")}
+            label={t`Sign out`}
             onPress={() => void handleSignOut()}
             prominence="secondary"
           />
-          <SettingsGroup>
-            {signOutError ? (
-              <Text accessibilityRole="alert" style={styles.error}>
-                {signOutError}
-              </Text>
-            ) : null}
-          </SettingsGroup>
+          {signOutError ? (
+            <Text accessibilityRole="alert" style={styles.error}>
+              {signOutError}
+            </Text>
+          ) : null}
         </View>
-
-        {archivedCount > 0 ? (
-          <SettingsGroup>
-            <SettingsRow
-              accessibilityRole="button"
-              chevron="right"
-              onPress={() => router.push("/archived-bots")}
-              title={t("Archived")}
-              value={String(archivedCount)}
-            />
-          </SettingsGroup>
-        ) : null}
 
         <View style={styles.about}>
           <AppMark />
@@ -611,182 +482,24 @@ export default function Account() {
               {updateLabel ? <Text style={styles.versionLine}>{updateLabel}</Text> : null}
             </View>
           ) : null}
-        </View>
-
-        <SettingsGroup>
-          <SettingsRow
-            accessibilityRole="button"
-            destructive
-            dimmed={pending}
-            disabled={pending}
-            onPress={requestDeletion}
-            title={t("Delete account")}
-            trailing={
-              pending ? <ActivityIndicator color={mobileTokens().destructive} /> : undefined
-            }
-          />
-          {!deleteOpen && deleteError ? (
-            <Text accessibilityRole="alert" style={styles.error}>
-              {deleteError}
-            </Text>
-          ) : null}
-        </SettingsGroup>
-      </ScrollView>
-      {deleteOpen ? (
-        <Modal transparent animationType="fade" onRequestClose={closeDeletePrompt}>
-          <KeyboardAvoidingView
-            behavior={Platform.OS === "ios" ? "padding" : undefined}
-            style={styles.dialogOverlay}
-          >
-            <Pressable
-              accessibilityLabel={t("Cancel")}
-              style={StyleSheet.absoluteFill}
-              onPress={closeDeletePrompt}
+          {storeUpdateAvailable ? (
+            <NativeActionButton
+              label={t`Update`}
+              onPress={openStoreListing}
+              prominence="secondary"
+              size="compact"
+              style={styles.updateButton}
             />
-            <ScrollView
-              bounces={false}
-              contentContainerStyle={styles.dialog}
-              keyboardShouldPersistTaps="handled"
-              style={styles.dialogScroll}
-            >
-              <Text style={styles.dialogTitle}>{t("Delete your account?")}</Text>
-              <Text style={styles.dialogBody}>
-                {t(
-                  "This permanently deletes your account, bots, conversations, memories, files, and saved connections. This cannot be undone.",
-                )}
-              </Text>
-              {!security?.hasPassword ? (
-                <>
-                  {security?.sso ? (
-                    <NativeActionButton
-                      label={t("Sign in again")}
-                      disabled={pending}
-                      onPress={() =>
-                        void securityAction(async () => {
-                          setSsoReauthenticated(await continueWithSso("reauthenticate"));
-                        })
-                      }
-                    />
-                  ) : null}
-                  {security?.emailDeletion ? (
-                    <NativeActionButton
-                      label={t("Send deletion code")}
-                      disabled={pending}
-                      onPress={() =>
-                        void securityAction(async () => {
-                          await requestAccountDeletionCode();
-                          setDeletionCodeSent(true);
-                        })
-                      }
-                    />
-                  ) : null}
-                </>
-              ) : null}
-              {security?.hasPassword || deletionCodeSent ? (
-                <TextInput
-                  accessibilityLabel={
-                    security?.hasPassword ? t("Current password") : t("Deletion code")
-                  }
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  autoFocus
-                  editable={!pending}
-                  onChangeText={(value) => {
-                    setDeletePassword(value);
-                    setDeleteError(null);
-                  }}
-                  placeholder={security?.hasPassword ? t("Current password") : t("Deletion code")}
-                  placeholderTextColor={native.tertiaryLabel}
-                  secureTextEntry={security?.hasPassword}
-                  style={styles.dialogInput}
-                  textContentType={security?.hasPassword ? "password" : "oneTimeCode"}
-                  value={deletePassword}
-                />
-              ) : null}
-              {deleteError ? (
-                <Text accessibilityRole="alert" style={styles.dialogError}>
-                  {deleteError}
-                </Text>
-              ) : null}
-              <View style={styles.dialogActions}>
-                <Pressable
-                  accessibilityRole="button"
-                  onPress={closeDeletePrompt}
-                  style={styles.dialogAction}
-                >
-                  <Text style={styles.dialogCancel}>{t("Cancel")}</Text>
-                </Pressable>
-                <Pressable
-                  accessibilityRole="button"
-                  disabled={deletionDisabled}
-                  onPress={() => void handleDeletion(deletePassword)}
-                  style={styles.dialogAction}
-                >
-                  <Text style={[styles.dialogDelete, deletionDisabled && styles.disabled]}>
-                    {t("Delete")}
-                  </Text>
-                </Pressable>
-              </View>
-            </ScrollView>
-          </KeyboardAvoidingView>
-        </Modal>
-      ) : null}
+          ) : null}
+        </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
 
 function createAccountStyles() {
-  const tokens = mobileTokens();
   return StyleSheet.create({
-    screen: {
-      flex: 1,
-      backgroundColor: native.groupedPage,
-    },
-    content: {
-      flexGrow: 1,
-      paddingHorizontal: 16,
-      paddingTop: 16,
-      paddingBottom: 32,
-      gap: 28,
-    },
-    compactContent: {
-      paddingHorizontal: 8,
-    },
-    section: {
-      gap: 7,
-    },
-    options: {
-      flexDirection: "row",
-      gap: 8,
-    },
-    optionsStacked: {
-      flexDirection: "column",
-    },
-    option: {
-      minHeight: 48,
-      borderRadius: 14,
-      borderCurve: "continuous",
-      borderWidth: 2,
-      borderColor: "transparent",
-      backgroundColor: native.groupedCell,
-      paddingHorizontal: 12,
-      paddingVertical: 12,
-      alignItems: "center",
-      justifyContent: "center",
-    },
-    optionSideBySide: {
-      flex: 1,
-    },
-    avatarOption: {
-      minHeight: 96,
-      gap: 8,
-    },
-    optionLabel: {
-      color: native.label,
-      fontSize: 15,
-      fontWeight: "600",
-      textAlign: "center",
-    },
+    ...createSettingsPageStyles(),
     about: {
       alignItems: "center",
       gap: 16,
@@ -796,82 +509,13 @@ function createAccountStyles() {
     versionFooter: {
       alignItems: "center",
     },
+    updateButton: {
+      alignSelf: "center",
+    },
     versionLine: {
       color: native.secondaryLabel,
       fontSize: 13,
       textAlign: "center",
-    },
-    error: {
-      color: tokens.destructive,
-      fontSize: 15,
-      paddingHorizontal: 16,
-      paddingVertical: 10,
-    },
-    dialogOverlay: {
-      flex: 1,
-      justifyContent: "center",
-      padding: 24,
-      backgroundColor: "rgba(0, 0, 0, 0.62)",
-    },
-    dialogScroll: {
-      flexGrow: 0,
-      flexShrink: 1,
-      maxHeight: "100%",
-      borderRadius: 14,
-      backgroundColor: native.page,
-    },
-    dialog: {
-      padding: 18,
-      gap: 12,
-    },
-    dialogTitle: {
-      color: native.label,
-      fontSize: 17,
-      fontWeight: "600",
-    },
-    dialogBody: {
-      color: native.secondaryLabel,
-      fontSize: 14,
-      lineHeight: 20,
-    },
-    dialogInput: {
-      height: 48,
-      borderRadius: 12,
-      backgroundColor: native.fill,
-      color: native.label,
-      paddingHorizontal: 14,
-      fontSize: 16,
-    },
-    dialogError: {
-      color: tokens.destructive,
-      fontSize: 14,
-    },
-    dialogActions: {
-      flexDirection: "row",
-      justifyContent: "flex-end",
-      alignItems: "center",
-      gap: 12,
-    },
-    dialogAction: {
-      minHeight: 48,
-      justifyContent: "center",
-      paddingHorizontal: 8,
-    },
-    dialogCancel: {
-      color: native.label,
-      fontSize: 16,
-      fontWeight: "600",
-    },
-    dialogDelete: {
-      color: tokens.destructive,
-      fontSize: 16,
-      fontWeight: "600",
-    },
-    disabled: {
-      opacity: 0.45,
-    },
-    pressed: {
-      backgroundColor: native.fillPressed,
     },
   });
 }

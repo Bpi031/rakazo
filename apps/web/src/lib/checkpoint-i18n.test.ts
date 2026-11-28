@@ -1,12 +1,12 @@
 import { readFileSync } from "node:fs";
 import { i18n } from "@lingui/core";
 import { formatter } from "@lingui/format-po";
-import { afterEach, expect, it } from "vitest";
-import { checkpointCopy, checkpointError } from "./checkpoint-i18n";
+import { afterEach, expect, it, vi } from "vitest";
+import { checkpointCopy, checkpointError, checkpointHttpError } from "./checkpoint-i18n";
 
 async function activateChinese() {
   const catalog = await formatter().parse(
-    readFileSync(new URL("../locales/zh-CN/messages.po", import.meta.url), "utf8"),
+    readFileSync(new URL("../../../../packages/i18n/locales/zh-CN/messages.po", import.meta.url), "utf8"),
     { locale: "zh-CN", sourceLocale: "en", filename: "messages.po" },
   );
   i18n.load(
@@ -49,4 +49,31 @@ it("refreshes copy when the same locale receives an updated catalog", async () =
   expect(checkpointCopy().set).toBe("设置节点");
   i18n.load("zh-CN", { "checkpoint.set": "保存检查点" });
   expect(checkpointCopy().set).toBe("保存检查点");
+});
+
+it("uses plain fallback text without looking up missing messages in Lingui", () => {
+  i18n.loadAndActivate({ locale: "zh-CN", messages: { "checkpoint.set": "保存检查点" } });
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    expect(checkpointCopy().set).toBe("保存检查点");
+    expect(checkpointCopy().kinds.auto_turn_boundary).toBe("Turn checkpoint");
+    expect(checkpointCopy("en").kinds.auto_turn_boundary).toBe("Turn checkpoint");
+    expect(warn).not.toHaveBeenCalled();
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+it("distinguishes a stale copy, blocked recovery and internal failure", () => {
+  i18n.activate("en");
+  expect(checkpointHttpError("CHECKPOINT_STALE", "private")).toBe(checkpointCopy().stale);
+  expect(checkpointHttpError("CHECKPOINT_RECOVERY_BLOCKED", "private")).toBe(
+    checkpointCopy().blocked,
+  );
+  expect(checkpointHttpError("CHECKPOINT_INTERNAL", "Workspace changed")).toBe(
+    checkpointCopy().internal,
+  );
+  expect(checkpointHttpError(undefined, "Workspace changed; refresh checkpoints")).toBe(
+    checkpointCopy().stale,
+  );
 });

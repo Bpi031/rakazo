@@ -1,3 +1,4 @@
+import { deferred } from "@rakazo/core/test-async";
 import { expect, it, vi } from "vitest";
 import { canonicalToolPaths } from "./bot-path-contract.mjs";
 import { CodexProtocolRuntime } from "./codex-protocol.mjs";
@@ -51,10 +52,11 @@ function protocolSession() {
     close,
     messages: (async function* () {
       while (!closed) {
-        if (!queue.length)
-          await new Promise<void>((resolve) => {
-            wake = resolve;
-          });
+        if (!queue.length) {
+          const waiting = deferred<void>();
+          wake = waiting.resolve;
+          await waiting.promise;
+        }
         while (queue.length) yield queue.shift();
       }
     })(),

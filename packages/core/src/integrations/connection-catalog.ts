@@ -1,0 +1,243 @@
+import type { Connection, ConnectionCatalogItem } from "@rakazo/contracts";
+import { CONNECTION_LABEL_MAX_LENGTH } from "@rakazo/contracts";
+import { abortableDelay } from "../primitives/async.js";
+import { sliceWellFormed } from "../primitives/utf8.js";
+
+export type ConnectionOwnerChoice = "me" | "organization";
+export type CatalogConnectionTarget = ConnectionOwnerChoice | { reconnectId: string };
+
+type CatalogBeginInput = { connectorId: string; provider: string; displayName: string };
+type CatalogBeginResult = Promise<{ connectionId: string; authorizationUrl: string | null }>;
+
+export function catalogConnectionBegin(
+  item: ConnectionCatalogItem,
+  target: CatalogConnectionTarget,
+  rpc: {
+    begin: (input: CatalogBeginInput) => CatalogBeginResult;
+    beginForOrganization: (input: CatalogBeginInput) => CatalogBeginResult;
+    reconnectOrganization: (input: { connectionId: string }) => CatalogBeginResult;
+  },
+) {
+  return (input: CatalogBeginInput) => {
+    if (target === "me") return rpc.begin(input);
+    if (target === "organization")
+      return rpc.beginForOrganization({
+        ...input,
+        displayName: connectionLabelFrom(item.name, item.slug),
+      });
+    return rpc.reconnectOrganization({ connectionId: target.reconnectId });
+  };
+}
+
+type CatalogRef = Pick<ConnectionCatalogItem, "connectorId" | "slug">;
+
+export function catalogItemKey(item: CatalogRef) {
+  return `${item.connectorId}:${item.slug}`;
+}
+
+/** Connected or still-authorizing accounts for one catalog app. */
+export function catalogItemAccounts(connections: readonly Connection[], item: CatalogRef) {
+  return connections.filter(
+    (row) =>
+      row.connectorId === item.connectorId &&
+      row.provider.toLowerCase() === item.slug.toLowerCase() &&
+      (row.status === "connected" ||
+        row.status === "pending" ||
+        (row.organization && row.status === "error")),
+  );
+}
+
+/** A saved shared account still needs management when its provider's catalog is unavailable. */
+export function catalogWithOrganizationConnections(
+  catalog: ConnectionCatalogItem[],
+  connections: readonly Connection[],
+): ConnectionCatalogItem[] {
+  const known = new Set(
+    catalog.map((item) => catalogItemKey({ ...item, slug: item.slug.toLowerCase() })),
+  );
+  return [
+    ...catalog,
+    ...connections.flatMap((row) => {
+      if (!row.organization || row.status === "revoked") return [];
+      const item = {
+        connectorId: row.connectorId,
+        slug: row.provider,
+        name: row.displayName,
+        connected: false,
+        noAuth: false,
+        logo: null,
+      };
+      const key = catalogItemKey({ ...item, slug: item.slug.toLowerCase() });
+      if (known.has(key)) return [];
+      known.add(key);
+      return [item];
+    }),
+  ];
+}
+
+export function isCatalogItemConnected(
+  connections: readonly Connection[],
+  item: ConnectionCatalogItem,
+) {
+  return (
+    item.connected ||
+    catalogItemAccounts(connections, item).some(
+      (row) => row.organization || row.status === "connected",
+    )
+  );
+}
+
+/**
+ * A name from a provider's catalog as a connection label: never blank (the provider's own slug
+ * stands in) and short enough to leave room for `suffix`, which is kept whole.
+ */
+export function connectionLabelFrom(name: string, fallback: string, suffix = "") {
+  const base = name.trim() || fallback.trim();
+  const room = CONNECTION_LABEL_MAX_LENGTH - suffix.length;
+  return sliceWellFormed(base, room).trimEnd() + suffix;
+}
+
+/** "Gmail", then numbered accounts, skipping names already connected or authorizing. */
+export function nextCatalogAccountLabel(
+  connections: readonly Connection[],
+  item: ConnectionCatalogItem,
+) {
+  const accounts = catalogItemAccounts(connections, item).filter((row) => !row.organization);
+  const names = new Set(accounts.map((row) => row.displayName));
+  let number = accounts.filter((row) => row.status === "connected").length + 1;
+  const labelFor = (n: number) => connectionLabelFrom(item.name, item.slug, n === 1 ? "" : ` ${n}`);
+  let label = labelFor(number);
+  while (names.has(label)) {
+    number += 1;
+    label = labelFor(number);
+  }
+  return label;
+}
+
+const CATALOG_CONNECT_POLL_ATTEMPTS = 45;
+const CATALOG_CONNECT_POLL_MS = 2_000;
+
+/**
+ * Begin a catalog connection, open its authorization page, and wait for it to finish.
+ * Platforms supply transport and URL opening; the flow itself stays identical everywhere.
+ */
+export async function connectCatalogItem(
+  item: ConnectionCatalogItem,
+  connections: readonly Connection[],
+  deps: {
+    begin: (input: CatalogBeginInput) => CatalogBeginResult;
+    complete: (input: { connectionId: string }) => Promise<Connection>;
+    openUrl: (url: string) => unknown;
+    signal: AbortSignal;
+    isCurrent?: () => boolean;
+  },
+): Promise<
+  | { status: "connected"; connectionId: string; row?: Connection }
+  | { status: "pending" }
+  | { status: "aborted" }
+> {
+  const stopped = () => deps.signal.aborted || deps.isCurrent?.() === false;
+  const started = await deps.begin({
+    connectorId: item.connectorId,
+    provider: item.slug,
+    displayName: nextCatalogAccountLabel(connections, item),
+  });
+  if (stopped()) return { status: "aborted" };
+  if (started.authorizationUrl) await deps.openUrl(started.authorizationUrl);
+  else if (item.noAuth) return { status: "connected", connectionId: started.connectionId };
+  const result = await waitForConnection(started.connectionId, deps.complete, {
+    signal: deps.signal,
+    isCurrent: deps.isCurrent,
+    attempts: CATALOG_CONNECT_POLL_ATTEMPTS,
+  });
+  return result.status === "connected" ? { ...result, connectionId: result.row.id } : result;
+}
+
+/**
+ * Poll `connections/complete` until the connection is connected. A connection that was revoked
+ * or no longer exists was superseded (a newer attempt, possibly on another device, or a removal),
+ * so polling stops quietly as "aborted".
+ */
+export async function waitForConnection<Row extends { status: string }>(
+  connectionId: string,
+  complete: (input: { connectionId: string }) => Promise<Row>,
+  options: { signal: AbortSignal; isCurrent?: () => boolean; attempts: number },
+): Promise<{ status: "connected"; row: Row } | { status: "pending" } | { status: "aborted" }> {
+  const stopped = () => options.signal.aborted || options.isCurrent?.() === false;
+  for (let attempt = 0; attempt < options.attempts; attempt += 1) {
+    if (stopped()) return { status: "aborted" };
+    let row: Row | undefined;
+    try {
+      row = await complete({ connectionId });
+    } catch (error) {
+      if (isNotFound(error)) return { status: "aborted" };
+    }
+    if (stopped()) return { status: "aborted" };
+    if (row?.status === "connected") return { status: "connected", row };
+    if (row?.status === "revoked") return { status: "aborted" };
+    if (attempt + 1 < options.attempts) {
+      await abortableDelay(CATALOG_CONNECT_POLL_MS, options.signal);
+    }
+  }
+  return stopped() ? { status: "aborted" } : { status: "pending" };
+}
+
+const PROMPT_SIGN_IN_ATTEMPTS = 60;
+const RETURN_READ_ATTEMPTS = 3;
+
+/**
+ * Waits for a sign-in without calling a slow one failed. It polls for the time most take; after
+ * that `onSlow` lets the caller offer to start over, and this attempt is read again only when
+ * `whenBack` says the person came back to the app, which is when a finished sign-in shows.
+ */
+export async function waitForSignIn<Row extends { status: string }>(
+  connectionId: string,
+  complete: (input: { connectionId: string }) => Promise<Row>,
+  options: {
+    signal: AbortSignal;
+    onSlow: () => void;
+    /** Calls `read` each time the app regains focus or the foreground; returns how to stop. */
+    whenBack: (read: () => void) => () => void;
+  },
+): Promise<{ status: "connected"; row: Row } | { status: "aborted" }> {
+  const prompt = await waitForConnection(connectionId, complete, {
+    signal: options.signal,
+    attempts: PROMPT_SIGN_IN_ATTEMPTS,
+  });
+  if (prompt.status !== "pending") return prompt;
+  options.onSlow();
+  return new Promise((resolve) => {
+    const settle = (result: { status: "connected"; row: Row } | { status: "aborted" }) => {
+      stop();
+      options.signal.removeEventListener("abort", onAbort);
+      resolve(result);
+    };
+    const onAbort = () => settle({ status: "aborted" });
+    let reading = false;
+    const read = () => {
+      if (reading) return;
+      reading = true;
+      // A few tries, so one failed request does not lose a sign-in that just finished.
+      waitForConnection(connectionId, complete, {
+        signal: options.signal,
+        attempts: RETURN_READ_ATTEMPTS,
+      }).then(
+        (result) => {
+          reading = false;
+          if (result.status !== "pending") settle(result);
+        },
+        // Only an abort rejects, and the abort listener settles that.
+        () => {},
+      );
+    };
+    const stop = options.whenBack(read);
+    options.signal.addEventListener("abort", onAbort, { once: true });
+    // The person may have come back while the last timed read was still in flight.
+    read();
+  });
+}
+
+/** The server's NOT_FOUND code, not any 404 a proxy or an older server might send. */
+function isNotFound(error: unknown) {
+  return (error as { code?: unknown } | null)?.code === "NOT_FOUND";
+}

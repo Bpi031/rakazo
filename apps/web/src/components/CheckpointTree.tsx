@@ -95,7 +95,7 @@ export function CheckpointTree({
   view: CheckpointView;
   disabled: boolean;
   selectedId?: string;
-  onSelect: (item: CheckpointListItem) => void;
+  onSelect: (item: CheckpointListItem, trigger: HTMLElement) => void;
 }) {
   const { copy, locale } = useCheckpointI18n();
   const tooltipId = useId();
@@ -116,10 +116,21 @@ export function CheckpointTree({
   );
   const colorFor = (id: string) => branchColors.get(id) ?? botColors[0];
   const viewport = useRef<HTMLDivElement>(null);
-  const drag = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
+  const drag = useRef<{
+    pointerId: number;
+    x: number;
+    y: number;
+    left: number;
+    top: number;
+  } | null>(null);
   const [dragging, setDragging] = useState(false);
   const [hover, setHover] = useState<string | null>(null);
   const positions = new Map(layout.nodes.map((node) => [node.item.id, node]));
+  function endDrag(pointerId: number) {
+    if (drag.current?.pointerId !== pointerId) return;
+    drag.current = null;
+    setDragging(false);
+  }
 
   return (
     <TooltipProvider>
@@ -139,8 +150,14 @@ export function CheckpointTree({
             backgroundSize: "20px 20px",
           }}
           onPointerDown={(event) => {
-            if (event.button !== 0 || (event.target as HTMLElement).closest("button")) return;
+            if (
+              drag.current ||
+              event.button !== 0 ||
+              (event.target as HTMLElement).closest("button")
+            )
+              return;
             drag.current = {
+              pointerId: event.pointerId,
               x: event.clientX,
               y: event.clientY,
               left: event.currentTarget.scrollLeft,
@@ -151,18 +168,21 @@ export function CheckpointTree({
             setHover(null);
           }}
           onPointerMove={(event) => {
-            if (!drag.current) return;
+            if (drag.current?.pointerId !== event.pointerId) return;
+            if (event.currentTarget.hasPointerCapture?.(event.pointerId) === false) {
+              endDrag(event.pointerId);
+              return;
+            }
             event.currentTarget.scrollLeft = drag.current.left - (event.clientX - drag.current.x);
             event.currentTarget.scrollTop = drag.current.top - (event.clientY - drag.current.y);
           }}
-          onPointerUp={() => {
-            drag.current = null;
-            setDragging(false);
+          onPointerLeave={(event) => {
+            if (event.currentTarget.hasPointerCapture?.(event.pointerId) === false)
+              endDrag(event.pointerId);
           }}
-          onPointerCancel={() => {
-            drag.current = null;
-            setDragging(false);
-          }}
+          onPointerUp={(event) => endDrag(event.pointerId)}
+          onPointerCancel={(event) => endDrag(event.pointerId)}
+          onLostPointerCapture={(event) => endDrag(event.pointerId)}
           onScroll={() => setHover(null)}
         >
           <div
@@ -200,6 +220,7 @@ export function CheckpointTree({
               return (
                 <Tooltip
                   key={item.id}
+                  disableHoverablePopup
                   open={hover === item.id}
                   onOpenChange={(open) => setHover(open ? item.id : null)}
                 >
@@ -208,9 +229,9 @@ export function CheckpointTree({
                     render={<button type="button" disabled={disabled} />}
                     aria-label={`${copy.restoreNode} ${item.label || copy.kinds[item.kind]}`}
                     aria-describedby={hover === item.id ? `${tooltipId}-${item.id}` : undefined}
-                    onClick={() => {
+                    onClick={(event) => {
                       setHover(null);
-                      onSelect(item);
+                      onSelect(item, event.currentTarget);
                     }}
                     className="absolute cursor-pointer rounded-full border-2 border-background transition-shadow hover:ring-4 hover:ring-muted focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring disabled:cursor-wait disabled:opacity-60"
                     style={{
@@ -231,12 +252,13 @@ export function CheckpointTree({
                     side="bottom"
                     align="start"
                     sideOffset={10}
-                    className="block w-70 max-w-[calc(100vw-24px)] p-4"
+                    positionerClassName="pointer-events-none"
+                    className="pointer-events-none block w-70 max-w-[calc(100vw-24px)] p-4"
                   >
                     {item.label && (
-                      <p className="mb-2 break-words text-sm font-semibold">{item.label}</p>
+                      <p className="mb-2 break-words text-body font-semibold">{item.label}</p>
                     )}
-                    <p className="line-clamp-4 whitespace-pre-wrap break-words text-sm leading-relaxed">
+                    <p className="line-clamp-4 whitespace-pre-wrap break-words text-body leading-relaxed">
                       {item.promptPreview
                         ? item.promptPreview.length > 180
                           ? `${item.promptPreview.slice(0, 180)}…`
@@ -246,7 +268,7 @@ export function CheckpointTree({
                     {item.promptCreatedAt && (
                       <time
                         dateTime={item.promptCreatedAt}
-                        className="mt-3 block text-xs tabular-nums opacity-70"
+                        className="mt-3 block text-label tabular-nums opacity-70"
                       >
                         {date(item.promptCreatedAt, locale)}
                       </time>

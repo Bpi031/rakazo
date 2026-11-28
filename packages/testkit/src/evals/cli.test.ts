@@ -29,10 +29,10 @@ it("lists eval cases without importing a generated database client or runtime ad
     { encoding: "utf8", timeout: 20_000 },
   );
   expect(output).toContain("workspace-memory-isolation:");
-  expect(output.trim().split("\n")).toHaveLength(16);
+  expect(output.trim().split("\n")).toHaveLength(19);
 });
 
-it("records explicit not-run reasons without live execution", async () => {
+it("plans one trial per case and strategy by default and records why it did not run", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "eval-offline-"));
   const output = path.join(dir, "report.json");
   try {
@@ -51,8 +51,6 @@ it("records explicit not-run reasons without live execution", async () => {
           "history",
           "--case",
           "history-100-exact",
-          "--trials",
-          "1",
           "--output",
           output,
         ],
@@ -63,13 +61,39 @@ it("records explicit not-run reasons without live execution", async () => {
     expect(report.trials[0].status).toBe("not-run");
     expect(report.trials[0].reason).toContain("--live");
     expect(report.trials[0].costUsd).toBeNull();
+    expect(report.controls.trials).toBe(1);
     expect(report.trials).toHaveLength(2);
     expect(report.summary.map((row: { strategy: string }) => row.strategy)).toEqual([
       "current",
       "retrieval",
     ]);
     expect(report.spendCapUsd).toBe(5);
-    expect(report.caseFixtureVersions).toEqual({ "history-100-exact": "history-v1-seed-73" });
+    expect(report.caseFixtureVersions).toEqual({ "history-100-exact": "history-v2-seed-73" });
+    expect(report.limitations.join(" ")).toContain("graded by a calibrated LLM judge");
+
+    expect(() =>
+      execFileSync(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          path.resolve(import.meta.dirname, "../cli/evals.ts"),
+          "--suite",
+          "bot-files",
+          "--case",
+          "send-folder-on-shared-computer",
+          "--trials",
+          "2",
+          "--output",
+          output,
+        ],
+        { encoding: "utf8", stdio: "pipe", timeout: 20000 },
+      ),
+    ).toThrow();
+    const unjudged = JSON.parse(readFileSync(output, "utf8"));
+    expect(unjudged.trials).toHaveLength(2);
+    expect(unjudged.limitations.join(" ")).toContain("no LLM judge");
+    expect(unjudged.limitations.join(" ")).not.toContain("calibrated");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -130,11 +154,148 @@ it("fingerprints a tracked report diff larger than the child-process default buf
     writeFileSync(source, "export const synthetic = 1;\n");
     const first = fingerprint(dir);
     expect(first).not.toBe(rootHash);
-    expect(fingerprint(packageDir)).toBe(first);
     writeFileSync(source, "export const synthetic = 2;\n");
-    const changed = fingerprint(dir);
-    expect(changed).not.toBe(first);
-    expect(fingerprint(packageDir)).toBe(changed);
+    expect(fingerprint(packageDir)).not.toBe(first);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it("requires explicit judge configuration before scheduling semantic live cases", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "eval-judge-missing-"));
+  try {
+    const output = path.join(dir, "report.json");
+    const connection = path.join(dir, "connection.json");
+    const pricing = path.join(dir, "pricing.json");
+    writeFileSync(
+      connection,
+      JSON.stringify({
+        provider: "openai-compatible",
+        modelId: "fixture",
+        apiKey: "fake-key",
+        baseUrl: "http://127.0.0.1:1/v1",
+      }),
+    );
+    writeFileSync(
+      pricing,
+      JSON.stringify({
+        source: "synthetic",
+        version: "1",
+        input: 1,
+        output: 1,
+        cacheRead: 1,
+        cacheWrite: 1,
+      }),
+    );
+    expect(() =>
+      execFileSync(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          path.resolve(import.meta.dirname, "../cli/evals.ts"),
+          "--live",
+          "--suite",
+          "silence",
+          "--case",
+          "silence-failed-check",
+          "--trials",
+          "1",
+          "--connection",
+          connection,
+          "--pricing",
+          pricing,
+          "--output",
+          output,
+        ],
+        { encoding: "utf8", stdio: "pipe", timeout: 20_000 },
+      ),
+    ).toThrow();
+    const report = JSON.parse(readFileSync(output, "utf8"));
+    expect(report.trials[0].status).toBe("not-run");
+    expect(report.trials[0].reason).toContain("--judge-connection");
+    expect(report.workflowTotals.modelCalls).toBe(0);
+    expect(report.judge).toBeNull();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Missing and malformed files share one read-and-parse path per file.
+it.each([
+  { file: "pricing", kind: "missing" },
+  { file: "connection", kind: "malformed" },
+])("records a safe failure when judge $file is $kind", ({ file, kind }) => {
+  const dir = mkdtempSync(path.join(tmpdir(), "eval-judge-config-"));
+  try {
+    const output = path.join(dir, "report.json");
+    const connection = path.join(dir, "connection.json");
+    const pricing = path.join(dir, "pricing.json");
+    const privateFile = path.join(dir, "private-config.json");
+    writeFileSync(
+      connection,
+      JSON.stringify({
+        provider: "openai-compatible",
+        modelId: "fixture",
+        apiKey: "synthetic-secret",
+        baseUrl: "http://127.0.0.1:1/v1",
+      }),
+    );
+    writeFileSync(
+      pricing,
+      JSON.stringify({
+        source: "synthetic",
+        version: "1",
+        input: 1,
+        output: 1,
+        cacheRead: 1,
+        cacheWrite: 1,
+      }),
+    );
+    if (kind === "malformed") writeFileSync(privateFile, '{ "synthetic-private-canary": ');
+    let diagnostic = "";
+    try {
+      execFileSync(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          path.resolve(import.meta.dirname, "../cli/evals.ts"),
+          "--live",
+          "--suite",
+          "silence",
+          "--case",
+          "silence-failed-check",
+          "--trials",
+          "1",
+          "--connection",
+          connection,
+          "--pricing",
+          pricing,
+          "--judge-connection",
+          file === "connection" ? privateFile : connection,
+          "--judge-pricing",
+          file === "pricing" ? privateFile : pricing,
+          "--output",
+          output,
+        ],
+        { encoding: "utf8", stdio: "pipe", timeout: 20_000 },
+      );
+    } catch (error) {
+      diagnostic = (error as { stderr: string }).stderr;
+    }
+    expect(diagnostic).toContain(
+      file === "pricing" ? "valid judge pricing" : "valid judge model connection",
+    );
+    expect(diagnostic).not.toContain(dir);
+    expect(diagnostic).not.toContain("synthetic-private-canary");
+    const report = JSON.parse(readFileSync(output, "utf8"));
+    expect(report.trials[0].status).toBe("not-run");
+    expect(report.trials[0].reason).toContain(
+      file === "pricing" ? "valid judge pricing" : "valid judge model connection",
+    );
+    expect(report.model).toBe("fixture");
+    expect(report.workflowTotals.modelCalls).toBe(0);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

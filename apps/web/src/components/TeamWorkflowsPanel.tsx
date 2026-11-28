@@ -1,6 +1,10 @@
-import { useEffect, useState } from "react";
+import { bestEffort } from "@rakazo/logging/best-effort";
+import { useEffect, useRef, useState } from "react";
 import { Check, Pause, RefreshCw, ShieldCheck, Workflow, X } from "lucide-react";
 import { withSpaceHeaders } from "../lib/rpc";
+import { useVisibleRefresh } from "../lib/use-visible-refresh";
+import { useBoundSpaceId } from "../lib/query/space-rpc";
+import { useManagedOperation } from "../lib/query/use-managed-operation";
 import type { WorkflowDefinition } from "@rakazo/contracts";
 
 export type WorkflowView = {
@@ -39,6 +43,7 @@ export async function workflowApi<T>(
   operation: string,
   body?: unknown,
   signal?: AbortSignal,
+  spaceId?: string | null,
 ): Promise<T> {
   const response = await fetch(
     operation.startsWith("leadership/")
@@ -48,7 +53,7 @@ export async function workflowApi<T>(
       method: body === undefined ? "GET" : "POST",
       credentials: "include",
       signal: AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(12_000)]),
-      headers: withSpaceHeaders(body === undefined ? {} : { "content-type": "application/json" }),
+      headers: withSpaceHeaders(body === undefined ? {} : { "content-type": "application/json" }, spaceId),
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     },
   );
@@ -70,7 +75,9 @@ export function TeamWorkflowsPanel({
   const [items, setItems] = useState<WorkflowView[]>([]);
   const [error, setError] = useState("");
   const [loaded, setLoaded] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const write = useManagedOperation();
+  const busy = write.pending;
+  const activeSpaceId = useBoundSpaceId();
   const [review, setReview] = useState<{
     item: WorkflowView;
     operation: "enable" | "pause" | "consent" | "revoke";
@@ -82,12 +89,12 @@ export function TeamWorkflowsPanel({
     item: Handover;
     operation: "offer" | "accept" | "decline" | "cancel";
   } | null>(null);
-  async function load(signal?: AbortSignal) {
+  async function load(signal?: AbortSignal, spaceId = activeSpaceId, isCurrent = () => true) {
     const [value, transfers] = await Promise.all([
-      workflowApi<WorkflowView[]>("list", undefined, signal),
-      workflowApi<Handover[]>("leadership/list", undefined, signal),
+      workflowApi<WorkflowView[]>("list", undefined, signal, spaceId),
+      workflowApi<Handover[]>("leadership/list", undefined, signal, spaceId),
     ]);
-    if (signal?.aborted) return;
+    if (signal?.aborted || !isCurrent()) return;
     setItems(
       value.filter((f) =>
         selectedId && selectedId !== "all"
@@ -106,25 +113,25 @@ export function TeamWorkflowsPanel({
       if (!controller.signal.aborted) setError(e.message);
     });
     return () => controller.abort();
-  }, [botId, selectedId]);
+  }, [botId, selectedId, activeSpaceId]);
+  const refreshVisible = useRef<(() => void) | null>(null);
   useEffect(() => {
     const controller = new AbortController();
     let loading = false;
-    const timer = setInterval(() => {
-      if (document.visibilityState !== "visible" || loading || busy || review || handoverReview)
-        return;
+    refreshVisible.current = () => {
+      if (loading || busy || review || handoverReview) return;
       loading = true;
-      void load(controller.signal)
-        .catch(() => {})
+      void bestEffort("refresh team workflows", load(controller.signal))
         .finally(() => {
           loading = false;
         });
-    }, 10_000);
+    };
     return () => {
-      clearInterval(timer);
+      refreshVisible.current = null;
       controller.abort();
     };
-  }, [botId, selectedId, busy, review, handoverReview]);
+  }, [botId, selectedId, busy, review, handoverReview, activeSpaceId]);
+  useVisibleRefresh(() => refreshVisible.current?.(), busy || review || handoverReview ? null : 10_000);
   function choose(item: WorkflowView, operation: "enable" | "pause" | "consent" | "revoke") {
     setHandoverReview(null);
     setReview({ item, operation });
@@ -137,27 +144,26 @@ export function TeamWorkflowsPanel({
     setPassword("");
     setChecked(false);
   }
-  async function confirm() {
+  function confirm() {
     const current = review ?? handoverReview;
     if (!current || !password || !checked || busy) return;
-    setBusy(true);
-    setError("");
-    try {
-      await workflowApi(handoverReview ? "leadership/decide" : "decide", {
-        id: current.item.id,
-        digest: current.item.digest,
-        operation: current.operation,
-        password,
-      });
+    write.run(async (scope) => {
+      setError("");
+      setPassword("");
+      try {
+        await workflowApi(handoverReview ? "leadership/decide" : "decide", {
+          id: current.item.id, digest: current.item.digest, operation: current.operation, password,
+        }, undefined, scope.spaceId);
+      } catch (e) {
+        if (scope.isCurrent()) setError((e as Error).message);
+        return;
+      }
+      if (!scope.isCurrent()) return;
       setReview(null);
       setHandoverReview(null);
-      await load();
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-      setPassword("");
-    }
+      try { await load(undefined, scope.spaceId, scope.isCurrent); }
+      catch { if (scope.isCurrent()) setError("Decision saved; refresh to load the current workflows."); }
+    });
   }
   return (
     <section
@@ -166,7 +172,7 @@ export function TeamWorkflowsPanel({
     >
       <header className="flex items-center gap-2">
         <Workflow size={18} />
-        <h2 className="min-w-0 flex-1 text-sm font-semibold">Team workflows</h2>
+        <h2 className="min-w-0 flex-1 text-body font-semibold">Team workflows</h2>
         <button
           className={icon}
           title="Refresh workflows"
@@ -189,48 +195,47 @@ export function TeamWorkflowsPanel({
         </button>
       </header>
       {error && (
-        <p role="alert" className="my-2 break-words text-sm text-destructive">
+        <p role="alert" className="my-2 break-words text-body text-destructive">
           {error}
         </p>
       )}
       {!loaded && !error && (
-        <p role="status" className="py-3 text-sm">
+        <p role="status" className="py-3 text-body">
           Loading workflows...
         </p>
       )}
       {loaded && !items.length && !handovers.length && (
-        <p className="py-3 text-sm text-muted-foreground">No workflow for this bot.</p>
+        <p className="py-3 text-body text-muted-foreground">No workflow for this bot.</p>
       )}
       <div className="max-h-[55vh] space-y-5 overflow-auto">
         {handovers.map((h) => (
           <article key={h.id} className="min-w-0 space-y-3 border-t border-border pt-3">
-            <h3 className="break-words text-sm font-semibold">
+            <h3 className="break-words text-body font-semibold">
               Leadership handover: {h.fromName} to {h.toName}
             </h3>
-            <p className="text-sm">
-              {h.status} ·{" "}
-              {h.sourceRemainsOwner
+            <p className="text-body">
+              {h.status}<span className="ml-2 text-muted-foreground">{h.sourceRemainsOwner
                 ? "Original owner remains owner; successor becomes a team manager."
-                : "Current manager becomes a member; successor becomes a manager."}
+                : "Current manager becomes a member; successor becomes a manager."}</span>
             </p>
-            <p className="text-sm">
+            <p className="text-body">
               Private bot histories, files and licenses stay separate. Existing solves are not
               transferred. {h.workflows.length} workflow definition(s) will become new drafts
               requiring fresh consent.
             </p>
-            <ul className="text-sm">
+            <ul className="text-body">
               {h.workflows.map((w) => (
                 <li key={w.id} className="break-words">
                   {w.name}
                 </li>
               ))}
             </ul>
-            <p className="break-all text-xs text-muted-foreground">Digest: {h.digest}</p>
+            <p className="break-all text-label text-muted-foreground">Digest: {h.digest}</p>
             {Date.parse(h.expiresAt) > Date.now() && ["draft", "offered"].includes(h.status) && (
               <div className="flex flex-wrap gap-2">
                 {h.sender && h.status === "draft" && (
                   <button
-                    className="rounded border border-border px-3 py-1.5 text-sm"
+                    className="rounded border border-border px-3 py-1.5 text-body"
                     onClick={() => chooseHandover(h, "offer")}
                   >
                     Review handover offer
@@ -238,14 +243,14 @@ export function TeamWorkflowsPanel({
                 )}
                 {!h.sender && h.status === "offered" && (
                   <button
-                    className="rounded border border-border px-3 py-1.5 text-sm"
+                    className="rounded border border-border px-3 py-1.5 text-body"
                     onClick={() => chooseHandover(h, "accept")}
                   >
                     Review acceptance
                   </button>
                 )}
                 <button
-                  className="rounded border border-border px-3 py-1.5 text-sm"
+                  className="rounded border border-border px-3 py-1.5 text-body"
                   onClick={() => chooseHandover(h, h.sender ? "cancel" : "decline")}
                 >
                   {h.sender ? "Cancel handover" : "Decline handover"}
@@ -257,13 +262,13 @@ export function TeamWorkflowsPanel({
         {items.map((item) => (
           <article key={item.id} className="min-w-0 space-y-3 border-t border-border pt-3">
             <div className="flex flex-wrap items-baseline gap-2">
-              <h3 className="break-words text-sm font-semibold">{item.name}</h3>
-              <span className="text-xs text-muted-foreground">
-                {item.status} · {item.ready ? "Ready" : "Awaiting consent / review"}
+              <h3 className="break-words text-body font-semibold">{item.name}</h3>
+              <span className="text-label text-muted-foreground">
+                {item.status}<span className="ml-2 text-muted-foreground">{item.ready ? "Ready" : "Awaiting consent / review"}</span>
               </span>
             </div>
-            <p className="whitespace-pre-wrap break-words text-sm">{item.definition.objective}</p>
-            <dl className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+            <p className="whitespace-pre-wrap break-words text-body">{item.definition.objective}</p>
+            <dl className="grid grid-cols-2 gap-2 text-label sm:grid-cols-4">
               <div>
                 <dt>Model</dt>
                 <dd className="break-all">{item.definition.modelId}</dd>
@@ -281,20 +286,20 @@ export function TeamWorkflowsPanel({
                 <dd>{new Date(item.expiresAt).toLocaleDateString()}</dd>
               </div>
             </dl>
-            <ul className="space-y-2 text-sm">
+            <ul className="space-y-2 text-body">
               {item.participants.map((p, i) => (
                 <li key={p.botId} className="flex flex-wrap items-center gap-2">
                   <span className="break-words">
                     {p.name}
-                    {i === 0 ? " · Lead" : ""}
-                    {p.you ? " · You" : ""}
+                    {i === 0 ? <span className="ml-2 text-muted-foreground">Lead</span> : null}
+                    {p.you ? <span className="ml-2 text-muted-foreground">You</span> : null}
                   </span>
-                  <span className="text-xs text-muted-foreground">
+                  <span className="text-label text-muted-foreground">
                     {p.consented ? "Consented" : "Consent needed"}
                   </span>
                   {p.you && (
                     <button
-                      className="rounded border border-border px-2 py-1 text-xs"
+                      className="rounded border border-border px-2 py-1 text-label"
                       disabled={busy}
                       onClick={() => choose(item, p.consented ? "revoke" : "consent")}
                     >
@@ -304,7 +309,7 @@ export function TeamWorkflowsPanel({
                 </li>
               ))}
             </ul>
-            <details className="text-sm">
+            <details className="text-body">
               <summary>Exact flow and shared-data boundary</summary>
               <div className="mt-2 space-y-2">
                 <p>
@@ -322,13 +327,13 @@ export function TeamWorkflowsPanel({
                     {item.participants.find((b) => b.botId === p.botId)?.name}: {p.instruction}
                   </p>
                 ))}
-                <p className="break-all text-xs text-muted-foreground">Digest: {item.digest}</p>
+                <p className="break-all text-label text-muted-foreground">Digest: {item.digest}</p>
               </div>
             </details>
             {item.manager && (
               <div className="flex flex-wrap gap-2">
                 <button
-                  className="inline-flex items-center gap-2 rounded border border-border px-3 py-1.5 text-sm"
+                  className="inline-flex items-center gap-2 rounded border border-border px-3 py-1.5 text-body"
                   disabled={busy || Date.parse(item.expiresAt) <= Date.now()}
                   onClick={() => choose(item, "enable")}
                 >
@@ -336,7 +341,7 @@ export function TeamWorkflowsPanel({
                   {item.status === "active" ? "Review grant" : "Review and enable"}
                 </button>
                 <button
-                  className="inline-flex items-center gap-2 rounded border border-border px-3 py-1.5 text-sm"
+                  className="inline-flex items-center gap-2 rounded border border-border px-3 py-1.5 text-body"
                   disabled={busy || item.status !== "active"}
                   onClick={() => choose(item, "pause")}
                 >
@@ -346,15 +351,15 @@ export function TeamWorkflowsPanel({
               </div>
             )}
             {item.executions.map((e) => (
-              <details key={e.id} className="text-sm">
+              <details key={e.id} className="text-body">
                 <summary className="break-words">
-                  {new Date(e.createdAt).toLocaleString()} · {e.status}
+                  {new Date(e.createdAt).toLocaleString()}<span className="ml-2 text-muted-foreground">{e.status}</span>
                 </summary>
                 <ul className="mt-2 space-y-3">
                   {e.steps.map((s) => (
                     <li key={s.botId} className="whitespace-pre-wrap break-words">
                       <strong>
-                        {item.participants.find((p) => p.botId === s.botId)?.name} · {s.status}
+                        {item.participants.find((p) => p.botId === s.botId)?.name}<span className="ml-2 text-muted-foreground">{s.status}</span>
                       </strong>
                       <p>{s.text}</p>
                     </li>
@@ -371,16 +376,16 @@ export function TeamWorkflowsPanel({
           aria-label="Review leadership handover"
           className="mt-4 space-y-3 border-t border-border pt-4"
         >
-          <h3 className="text-sm font-semibold">
+          <h3 className="text-body font-semibold">
             Confirm {handoverReview.operation}: {handoverReview.item.fromName} to{" "}
             {handoverReview.item.toName}
           </h3>
-          <p className="text-sm">
+          <p className="text-body">
             This changes team leadership only. No private history, files, credentials, licenses or
             active solves move. Both people must confirm the exact handover. Ownership is not
             transferred.
           </p>
-          <label className="flex items-start gap-2 text-sm">
+          <label className="flex items-start gap-2 text-body">
             <input
               type="checkbox"
               aria-label="Confirm exact leadership handover"
@@ -390,7 +395,7 @@ export function TeamWorkflowsPanel({
             />
             I reviewed the role changes and successor bot.
           </label>
-          <label className="block text-sm">
+          <label className="block text-body">
             Current password
             <input
               type="password"
@@ -405,14 +410,14 @@ export function TeamWorkflowsPanel({
           <div className="flex gap-2">
             <button
               disabled={busy || !checked || !password}
-              className="rounded border border-border px-3 py-2 text-sm disabled:opacity-40"
+              className="rounded border border-border px-3 py-2 text-body disabled:opacity-40"
               onClick={() => void confirm()}
             >
               Confirm leadership decision
             </button>
             <button
               disabled={busy}
-              className="px-3 py-2 text-sm"
+              className="px-3 py-2 text-body"
               onClick={() => {
                 setHandoverReview(null);
                 setPassword("");
@@ -429,16 +434,17 @@ export function TeamWorkflowsPanel({
           aria-label="Review workflow permission"
           className="mt-4 space-y-3 border-t border-border pt-4"
         >
-          <h3 className="flex items-center gap-2 text-sm font-semibold">
+          <h3 className="flex items-center gap-2 text-body font-semibold">
             <ShieldCheck size={16} />
-            Review: {review.operation} · {review.item.name}
+            <span>Review: {review.operation}</span>
+            <span className="min-w-0 break-words text-muted-foreground">{review.item.name}</span>
           </h3>
-          <p className="text-sm">
+          <p className="text-body">
             {review.operation === "enable" || review.operation === "consent"
               ? "Authorize this exact message-only flow and its stated sharing, model and limits. This does not approve policy changes, private-file access or a solve."
               : "Stop future workflow delivery. Information already received cannot be made unread."}
           </p>
-          <label className="flex items-start gap-2 text-sm">
+          <label className="flex items-start gap-2 text-body">
             <input
               type="checkbox"
               aria-label="Confirm exact workflow grant"
@@ -448,7 +454,7 @@ export function TeamWorkflowsPanel({
             />
             I reviewed the exact flow and recipients.
           </label>
-          <label className="block text-sm">
+          <label className="block text-body">
             Current password
             <input
               type="password"
@@ -463,14 +469,14 @@ export function TeamWorkflowsPanel({
           <div className="flex gap-2">
             <button
               disabled={busy || !checked || !password}
-              className="rounded border border-border px-3 py-2 text-sm disabled:opacity-40"
+              className="rounded border border-border px-3 py-2 text-body disabled:opacity-40"
               onClick={() => void confirm()}
             >
               Confirm workflow decision
             </button>
             <button
               disabled={busy}
-              className="px-3 py-2 text-sm"
+              className="px-3 py-2 text-body"
               onClick={() => {
                 setReview(null);
                 setPassword("");

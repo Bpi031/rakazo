@@ -8,12 +8,14 @@ import {
   ONCE_ROUTINE_CRON,
 } from "@rakazo/core";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
-import { checkpointThreadLock } from "@rakazo/db";
+import { checkpointThreadLock, readJsonColumn } from "@rakazo/db";
+import { z } from "zod";
 import { assertRostWatchTriggers, createRostJobWatch, RostJobObservationError, RostJobOut } from "./rost-job-watch.js";
 
 export { isOneShotRoutineCron, ONCE_ROUTINE_CRON };
 
 export const SCHEDULE_TOOL_NAMES = new Set(["schedule_create", "schedule_list", "schedule_cancel"]);
+const scheduleWatchOut = z.object({ out: RostJobOut }).nullable();
 
 export function filterBuiltinToolsForRun<T extends { name: string }>(
   tools: T[],
@@ -342,7 +344,8 @@ export async function listSchedulesFromTool(
       active: row.active,
       nextRunAt: row.nextRunAt?.toISOString() ?? null,
       oneShot: isOneShotRoutineCrons(row.crons),
-      rostJobOut: (row.jobWatch as any)?.out ?? null,
+      rostJobOut: readJsonColumn(scheduleWatchOut, row.jobWatch ?? null,
+        { table: "routines", column: "jobWatch", id: row.id }, { fallback: null })?.out ?? null,
     })),
   };
 }

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AgentRunRequest } from "@rakazo/adapter-kit";
 import { QuestionForm, QuestionFormInput, formTools } from "@rakazo/contracts";
 import { CodexProtocolRuntime } from "./codex-protocol.mjs";
+import { normalizeRunError } from "@rakazo/core";
 import { validateCodexQuestion } from "./codex-question-validation.js";
 import { NativeSessionBusyError } from './native-control.js';
 
@@ -17,7 +18,7 @@ const tooLong = () => {
   return args;
 };
 
-function scenario(calls: any[], validator: typeof validateCodexQuestion | null = validateCodexQuestion) {
+function scenario(calls: any[], validator: typeof validateCodexQuestion | null = validateCodexQuestion, replyError?: unknown) {
   const sent: any[] = [], queue: any[] = [], finished: any[] = [], writes: any[] = [];
   let closed = 0;
   const session = {
@@ -35,6 +36,9 @@ function scenario(calls: any[], validator: typeof validateCodexQuestion | null =
       if (m.method === "turn/start") queue.push(
         { method: "thread/tokenUsage/updated", params: { threadId: "t", turnId: "v", tokenUsage: { total: { inputTokens: 200, cachedInputTokens: 50, outputTokens: 30, totalTokens: 230 } } } },
         ...calls.map((call, i) => ({ id: 100 + i, method: call.native ? "item/tool/requestUserInput" : "item/tool/call", params: { threadId: "t", turnId: "v", callId: `q${i}`, tool: "rakazo__ask_form", ...(call.native ? { questions: call.native } : { arguments: call }) } })),
+        ...(replyError ? [{ method: "turn/completed", params: {
+          threadId: "t", turn: { id: "v", status: "failed", error: replyError },
+        } }] : []),
       );
     },
     messages: { async *[Symbol.asyncIterator]() { for (let i = 0; i < 100 && queue.length; i++) yield queue.shift(); } },
@@ -63,6 +67,27 @@ function scenario(calls: any[], validator: typeof validateCodexQuestion | null =
   };
   return { run, events, sent, writes, finished, request };
 }
+
+describe("model reply failures", () => {
+  it.each([
+    ["INFERENCE_OUTPUT_LIMIT", "ROST_MODEL_OUTPUT_LIMIT", "The model reached its output limit before finishing."],
+    ["INFERENCE_RESPONSE_FILTERED", "ROST_MODEL_RESPONSE_FILTERED", "The model service did not deliver a complete reply."],
+    ["INFERENCE_RESPONSE_INVALID", "ROST_MODEL_RESPONSE_INVALID", "The model service returned a reply Rost could not use."],
+  ])("maps %s without rerunning the Codex turn or leaking provider text", async (upstream, code, summary) => {
+    const f = scenario([], null, {
+      message: "Model request failed",
+      additionalDetails: JSON.stringify({ error: { code: upstream, message: "PRIVATE RESPONSE" } }),
+    });
+    let received: Error | undefined;
+    try { await f.run(); } catch (error) { if (error instanceof Error) received = error; }
+    expect(received?.message).toMatch(new RegExp(`^${code}:`));
+    expect(normalizeRunError(received!.message)).toMatchObject({ summary });
+    expect(received!.message).not.toContain("PRIVATE RESPONSE");
+    expect(f.sent.filter(event => event.method === "turn/start")).toHaveLength(1);
+    expect(f.events.some(event => event.type === "done" || event.type === "tool")).toBe(false);
+    expect(f.finished).toEqual([expect.objectContaining({ completed: false })]);
+  });
+});
 
 describe("question preflight", () => {
   it('opens no model session and emits no usage or tool calls when ownership is busy', async () => {

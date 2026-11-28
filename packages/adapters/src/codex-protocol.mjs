@@ -1,4 +1,5 @@
 import { createHash, createHmac } from "node:crypto";
+import { getLogger } from "@rakazo/logging";
 import { managedEffort, managedReasoning } from "./managed-reasoning.mjs";
 import { readFileSync } from "node:fs";
 import { managedModalities, codexImages, codexQuestion } from "./codex-inputs.mjs";
@@ -23,9 +24,21 @@ export function boundedToolResult(result, toolName, executionId) {
 // Error text can echo prompts or credentials. Return fixed, actionable labels only.
 export function runtimeFailure(error) {
   const message = typeof error?.message === "string" ? error.message.slice(0, 32768).toLowerCase() : "";
+  const replySignal = [message, error?.additionalDetails, error?.code]
+    .filter((part) => typeof part === "string")
+    .map((part) => part.slice(0, 32768).toLowerCase()).join(" ");
   let code = "ROST_MODEL_RUNTIME";
   let detail = "Rost's model connection failed.";
-  if (message.includes("maximum usage size allowed during peak load")
+  if (/\binference_output_limit\b/.test(replySignal)) {
+    code = "ROST_MODEL_OUTPUT_LIMIT";
+    detail = "The model reached its output limit before finishing its reply.";
+  } else if (/\binference_response_filtered\b/.test(replySignal)) {
+    code = "ROST_MODEL_RESPONSE_FILTERED";
+    detail = "The model service did not deliver a complete reply.";
+  } else if (/\binference_response_invalid\b/.test(replySignal)) {
+    code = "ROST_MODEL_RESPONSE_INVALID";
+    detail = "The model service returned a reply Rost could not use.";
+  } else if (message.includes("maximum usage size allowed during peak load")
       || message.includes("no_capacity") || message.includes("currently experiencing high demand")) {
     code = "ROST_MODEL_CAPACITY";
     detail = "Rost's model service rejected the request during high demand. Reduce configured tool/context payload or try later; an operator may need to increase model-service capacity.";
@@ -215,7 +228,11 @@ export class CodexProtocolRuntime {
         ...(preparation ? {native:{version:1,key:preparation.sessionKey,lane:request.nativeWorker?'helper':'main'}} : {}) });
     } finally { this.creating.delete(request.runId); }
     this.active.set(request.runId, session);
-    const interrupt = () => { void session.close().catch(() => {}); };
+    const interrupt = () => {
+      void session.close().catch(() => {
+        getLogger().warn("Codex session close failed during interrupt");
+      });
+    };
     context.signal?.addEventListener("abort", interrupt, { once: true });
     const pending = new Map(); let sequence = 0, threadId, turnId, completed = false, lastUsage;
     let finalizedPause=false;
@@ -455,7 +472,9 @@ export class CodexProtocolRuntime {
             }
             finally {
               await Promise.resolve(request.onToolCompleted?.({ name: tool.name, executionId,
-                durationMs: Math.max(0, Date.now() - started), result: value, error: failure })).catch(() => {});
+                durationMs: Math.max(0, Date.now() - started), result: value, error: failure })).catch(() => {
+                getLogger().warn("Codex tool completion could not be recorded");
+              });
             }
             pause = value?.terminate === true || value?.details?.approval === "paused" || value?.details?.secret === "paused";
             const contentItems = value?.kind === "agent_tool_result" ? value.content.map((item) => {
@@ -563,7 +582,11 @@ export class CodexProtocolRuntime {
         if (unacknowledgedSteering.size && request.deferSteering)
           await request.deferSteering([...unacknowledgedSteering]);
       } finally {
-        if(preparation&&!finalizedPause)await request.nativeControl.finish({completed,paused:false,threadId,turnId,usage:lastUsage}).catch(()=>{});
+        if (preparation && !finalizedPause) {
+          await request.nativeControl.finish({ completed, paused: false, threadId, turnId, usage: lastUsage }).catch(() => {
+            getLogger().warn("Codex native session finish could not be recorded");
+          });
+        }
         try { if(!finalizedPause)await session.close(); } finally { if(this.active.get(request.runId)===session)this.active.delete(request.runId); }
       }
     }

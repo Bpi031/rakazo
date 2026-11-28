@@ -23,11 +23,11 @@ export class AccountAdminService {
 
   private policy(
     settings: {
-      ownerUserId: string | null;
       signupPolicyInitialized: boolean;
       signupsEnabled: boolean;
       signupAllowlist: string;
     } | null,
+    ownerUserId: string | null,
   ) {
     const value = settings?.signupPolicyInitialized
       ? {
@@ -38,7 +38,7 @@ export class AccountAdminService {
             .filter(Boolean),
         }
       : this.fallback;
-    return { ...value, digest: teamDigest({ owner: settings?.ownerUserId ?? null, ...value }) };
+    return { ...value, digest: teamDigest({ owner: ownerUserId, ...value }) };
   }
 
   async view(actor: Actor): Promise<AccountAdminView> {
@@ -72,7 +72,10 @@ export class AccountAdminService {
       canAssignRoles: ownerRole(scope.role),
       registration:
         actor.isDeploymentOwner && settings?.ownerUserId === actor.userId
-          ? this.policy(settings)
+          ? this.policy(
+              await this.db.managedSignupPolicy.findUnique({ where: { id: "default" } }),
+              actor.userId,
+            )
           : null,
       emailDelivery: this.emailDelivery,
       members: members.map((member) => ({
@@ -108,19 +111,22 @@ export class AccountAdminService {
     return this.db.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${"rost:registration-policy"}, 0))`;
       const settings = await tx.deploymentSettings.findUnique({ where: { id: "default" } });
+      const policy = await tx.managedSignupPolicy.findUnique({ where: { id: "default" } });
       const live = await memberScope(tx as unknown as PrismaClient, actor.userId, actor.spaceId);
       if (live.organizationId !== originalScope.organizationId || !managerRole(live.role))
         throw new Error("Manager authorization changed");
-      if (settings?.ownerUserId !== actor.userId || this.policy(settings).digest !== input.digest)
+      if (settings?.ownerUserId !== actor.userId || this.policy(policy, actor.userId).digest !== input.digest)
         throw new Error("Registration policy changed; review again");
       const allowlist = [...new Set(input.allowlist)];
-      await tx.deploymentSettings.update({
+      const data = {
+        signupsEnabled: input.enabled,
+        signupAllowlist: allowlist.join(","),
+        signupPolicyInitialized: true,
+      };
+      await tx.managedSignupPolicy.upsert({
         where: { id: "default" },
-        data: {
-          signupsEnabled: input.enabled,
-          signupAllowlist: allowlist.join(","),
-          signupPolicyInitialized: true,
-        },
+        create: { id: "default", ...data },
+        update: data,
       });
       await tx.teamAudit.create({
         data: {

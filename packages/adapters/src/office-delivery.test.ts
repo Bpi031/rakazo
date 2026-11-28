@@ -1,7 +1,7 @@
 import type { ArtifactStore } from "@rakazo/adapter-kit";
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
-import { attachWorkspaceFileToThread } from "./thread-artifacts.js";
+import { attachWorkspaceFileToThread } from "./storage/thread-artifacts.js";
 
 describe("office artifact delivery", () => {
   it.each([

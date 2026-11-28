@@ -1,8 +1,11 @@
 import type { TaughtSkill } from "@rakazo/contracts";
 import { DEFAULT_COMPUTER_SCREEN, mapTeachPointer, teachCaptureKey } from "@rakazo/core";
 import { useEffect, useRef } from "react";
-import { rpc } from "../../lib/rpc";
+import { rpc } from "../../lib/query/rpc";
 import { enqueueTeachComputerInput } from "./teach-computer-input-chain";
+
+// An Escape inside one of these belongs to that popup, not to the demo.
+const POPUP_SELECTOR = "[role='dialog'], [role='alertdialog'], [role='menu'], [role='listbox']";
 
 export function TeachCaptureOverlay({
   botId,
@@ -26,12 +29,14 @@ export function TeachCaptureOverlay({
     const overlay = rootRef.current;
     if (!overlay) return;
     const target: HTMLDivElement = overlay;
+    // Input names its recording, so any still queued when it stops never lands in the next one.
+    const skillId = skill.id;
 
     function enqueueInput(task: () => Promise<void>) {
       void enqueueTeachComputerInput(botId, task);
     }
 
-    function pointerAt(event: PointerEvent) {
+    function pointerAt(event: MouseEvent) {
       return mapTeachPointer(event.clientX, event.clientY, target.getBoundingClientRect(), {
         width,
         height,
@@ -47,31 +52,39 @@ export function TeachCaptureOverlay({
       await rpc.computer.input({
         botId,
         kind: "pointer",
-        payload: { x, y, button, type },
+        payload: { x, y, button, type, skillId },
       });
     }
 
     async function sendKey(key: string) {
-      await rpc.computer.input({ botId, kind: "key", payload: { key } });
+      await rpc.computer.input({ botId, kind: "key", payload: { key, skillId } });
     }
 
-    async function sendScroll(direction: "up" | "down", amount: number) {
+    async function sendScroll(
+      direction: "up" | "down" | "left" | "right",
+      amount: number,
+      x: number,
+      y: number,
+    ) {
       await rpc.computer.input({
         botId,
         kind: "scroll",
-        payload: { direction, amount },
+        payload: { direction, amount, x, y, skillId },
       });
     }
 
-    function buttonFor(event: PointerEvent): "left" | "right" {
-      return event.button === 2 ? "right" : "left";
-    }
+    // The computer has only left and right buttons, and one mouse: only the pointer that pressed
+    // a supported button may move or release it. Middle and side buttons are not captured.
+    let pressed: { id: number; button: "left" | "right" } | null = null;
 
     function onPointerDown(event: PointerEvent) {
       event.preventDefault();
+      const button = event.button === 0 ? "left" : event.button === 2 ? "right" : null;
+      if (!button || pressed) return;
+      pressed = { id: event.pointerId, button };
       target.setPointerCapture(event.pointerId);
       const { x, y } = pointerAt(event);
-      enqueueInput(() => sendPointer("down", x, y, buttonFor(event)));
+      enqueueInput(() => sendPointer("down", x, y, button));
     }
 
     // Each input is one request, one recording write and one sandbox action, so a raw pointer
@@ -96,18 +109,29 @@ export function TeachCaptureOverlay({
     }
 
     function onPointerMove(event: PointerEvent) {
-      if (!event.buttons) return;
+      if (pressed?.id !== event.pointerId) return;
       event.preventDefault();
+      // Releasing the pressed button while another stays held fires pointermove, not pointerup.
+      if (!(event.buttons & (pressed.button === "left" ? 1 : 2))) {
+        release(event);
+        return;
+      }
       const { x, y } = pointerAt(event);
-      pendingMove = { x, y, button: event.buttons === 2 ? "right" : "left" };
+      pendingMove = { x, y, button: pressed.button };
       pumpMove();
     }
 
     function onPointerUp(event: PointerEvent) {
       event.preventDefault();
+      if (pressed?.id === event.pointerId) release(event);
+    }
+
+    function release(event: PointerEvent) {
+      if (!pressed) return;
+      const { button } = pressed;
+      pressed = null;
       if (target.hasPointerCapture(event.pointerId)) target.releasePointerCapture(event.pointerId);
       const { x, y } = pointerAt(event);
-      const button = buttonFor(event);
       const dragged = pendingMove !== null;
       pendingMove = null;
       // The final position has to reach the sandbox before the release; dropped intermediate
@@ -118,9 +142,14 @@ export function TeachCaptureOverlay({
 
     function onWheel(event: WheelEvent) {
       event.preventDefault();
-      const direction = event.deltaY < 0 ? "up" : "down";
-      const amount = Math.min(20, Math.max(1, Math.round(Math.abs(event.deltaY) / 80) || 1));
-      enqueueInput(() => sendScroll(direction, amount));
+      // A mostly sideways wheel or trackpad swipe scrolls left or right.
+      const sideways = Math.abs(event.deltaX) > Math.abs(event.deltaY);
+      const delta = sideways ? event.deltaX : event.deltaY;
+      const direction = sideways ? (delta < 0 ? "left" : "right") : delta < 0 ? "up" : "down";
+      const amount = Math.min(20, Math.max(1, Math.round(Math.abs(delta) / 80) || 1));
+      // The computer scrolls what is under the same point on its screen.
+      const { x, y } = pointerAt(event);
+      enqueueInput(() => sendScroll(direction, amount, x, y));
     }
 
     function onKeyDown(event: KeyboardEvent) {
@@ -129,6 +158,13 @@ export function TeachCaptureOverlay({
       if (
         event.target instanceof HTMLElement &&
         event.target.closest("button, input, textarea, select, a, [contenteditable]")
+      ) {
+        return;
+      }
+      if (
+        event.key === "Escape" &&
+        event.target instanceof HTMLElement &&
+        event.target.closest(POPUP_SELECTOR)
       ) {
         return;
       }
@@ -148,7 +184,9 @@ export function TeachCaptureOverlay({
     target.addEventListener("pointercancel", onPointerUp);
     target.addEventListener("wheel", onWheel, { passive: false });
     target.addEventListener("contextmenu", onContextMenu);
-    window.addEventListener("keydown", onKeyDown);
+    // Capture phase, so the overlay marks a recorded key as handled before the page's own
+    // handlers run: the computer window closes on an Escape that is not yet prevented.
+    window.addEventListener("keydown", onKeyDown, true);
     return () => {
       target.removeEventListener("pointerdown", onPointerDown);
       target.removeEventListener("pointermove", onPointerMove);
@@ -156,7 +194,7 @@ export function TeachCaptureOverlay({
       target.removeEventListener("pointercancel", onPointerUp);
       target.removeEventListener("wheel", onWheel);
       target.removeEventListener("contextmenu", onContextMenu);
-      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keydown", onKeyDown, true);
     };
   }, [botId, enabled, height, skill, width]);
 

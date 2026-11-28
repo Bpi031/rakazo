@@ -1,4 +1,4 @@
-import { setTimeout as sleep } from "node:timers/promises";
+import { abortableDelay, deadlineSignal } from "@rakazo/core";
 import { MAX_FRAME_BYTES } from "./codex-protocol.mjs";
 
 export async function openComputerRuntime(base, token, computer, request, context, fetcher = fetch) {
@@ -11,8 +11,7 @@ export async function openComputerRuntime(base, token, computer, request, contex
   const root = `${base.replace(/\/$/, "")}/computers/${encodeURIComponent(computer.id)}/agent-sessions`;
   let closed = false, poll = false;
   const call = async (url, method, body, signal = context.signal) => {
-    const response = await fetcher(url, { method, headers, redirect: "error", signal: AbortSignal.any([
-      ...(signal ? [signal] : []), AbortSignal.timeout(15000)]),
+    const response = await fetcher(url, { method, headers, redirect: "error", signal: deadlineSignal(15000, signal),
       ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     if (!response.ok) { await response.body?.cancel(); throw new Error(`Computer runtime request failed: ${response.status}`); }
     const reader = response.body?.getReader(); let bytes = 0; const chunks = [];
@@ -48,7 +47,10 @@ export async function openComputerRuntime(base, token, computer, request, contex
           }
           if (result.error) throw new Error("Computer runtime failed");
           if (result.closed) return;
-          if (!result.events.length) await sleep(100, undefined, { signal: context.signal });
+          if (!result.events.length) {
+            await abortableDelay(100, context.signal);
+            context.signal?.throwIfAborted();
+          }
         }
       },
     },

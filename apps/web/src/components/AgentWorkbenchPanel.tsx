@@ -1,6 +1,11 @@
+import { bestEffort } from "@rakazo/logging/best-effort";
+import { OptionSelect } from "@rakazo/ui-web";
 import { useEffect, useRef, useState } from "react";
 import { BookOpen, Check, GitBranch, RefreshCw, Send, X } from "lucide-react";
 import { withSpaceHeaders } from "../lib/rpc";
+import { useVisibleRefresh } from "../lib/use-visible-refresh";
+import { useBoundSpaceId } from "../lib/query/space-rpc";
+import { useManagedOperation } from "../lib/query/use-managed-operation";
 import { NativeAgentPanel } from "./NativeAgentPanel";
 
 export async function workbenchApi(
@@ -8,6 +13,7 @@ export async function workbenchApi(
   botId: string,
   body?: unknown,
   signal?: AbortSignal,
+  spaceId?: string | null,
 ) {
   const [route, extra] = operation.split("&");
   const response = await fetch(
@@ -19,7 +25,7 @@ export async function workbenchApi(
     {
       method: body === undefined ? "GET" : "POST",
       credentials: "include",
-      headers: withSpaceHeaders(body === undefined ? {} : { "content-type": "application/json" }),
+      headers: withSpaceHeaders(body === undefined ? {} : { "content-type": "application/json" }, spaceId),
       signal: AbortSignal.any([
         ...(signal ? [signal] : []),
         AbortSignal.timeout(body === undefined ? 15000 : 110000),
@@ -36,8 +42,8 @@ export async function workbenchApi(
 const tabs = ["goals", "scenarios", "changes", "skills", "helpers", "checks", "runtime"] as const;
 type Tab = (typeof tabs)[number];
 const button =
-  "inline-flex items-center justify-center gap-2 rounded border border-border px-3 py-2 text-sm disabled:opacity-40";
-const input = "w-full min-w-0 rounded border border-border bg-background p-2 text-sm";
+  "inline-flex items-center justify-center gap-2 rounded border border-border px-3 py-2 text-body disabled:opacity-40";
+const input = "w-full min-w-0 rounded border border-border bg-background p-2 text-body";
 function nonce() {
   const bytes = crypto.getRandomValues(new Uint8Array(16));
   bytes[6] = (bytes[6]! & 15) | 64;
@@ -62,7 +68,9 @@ export function AgentWorkbenchPanel({
   const [view, setView] = useState<any>();
   const [detail, setDetail] = useState<any>();
   const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
+  const write = useManagedOperation<any>();
+  const busy = write.pending;
+  const activeSpaceId = useBoundSpaceId();
   const [objective, setObjective] = useState("");
   const [goalStatus, setGoalStatus] = useState("active");
   const [editing, setEditing] = useState(false);
@@ -73,11 +81,10 @@ export function AgentWorkbenchPanel({
   const [receipt, setReceipt] = useState<any>();
   const controller = useRef<AbortController | null>(null);
   const alive = useRef(true);
-  const submitting = useRef(false);
   const detailId = useRef<string | undefined>(undefined);
-  const refresh = async (signal?: AbortSignal) => {
-    const value = await workbenchApi("view", botId, undefined, signal);
-    if (!alive.current) return;
+  const refresh = async (signal?: AbortSignal, spaceId = activeSpaceId, isCurrent = () => true) => {
+    const value = await workbenchApi("view", botId, undefined, signal, spaceId);
+    if (!alive.current || signal?.aborted || !isCurrent()) return;
     setView(value);
     if (!editing) {
       setObjective(value.goal.objective);
@@ -93,8 +100,9 @@ export function AgentWorkbenchPanel({
       botId,
       undefined,
       signal,
+      activeSpaceId,
     );
-    if (alive.current) {
+    if (alive.current && !signal?.aborted) {
       detailId.current = value.id;
       setDetail(value);
       if (value.kind === "goal_proposal") {
@@ -120,48 +128,41 @@ export function AgentWorkbenchPanel({
       alive.current = false;
       c.abort();
     };
-  }, [botId]);
-  useEffect(() => {
-    const timer = setInterval(() => {
-      if (document.visibilityState === "visible" && !busy && !editing && !password && !confirm)
-        void refresh(controller.current?.signal)
+  }, [botId, activeSpaceId]);
+  useVisibleRefresh(() => {
+        const signal = controller.current?.signal;
+        void refresh(signal)
           .then(async () => {
             const id = detailId.current;
-            if (!id) return;
+            if (!id || signal?.aborted) return;
             const value = await workbenchApi(
               "detail&id=" + encodeURIComponent(id),
               botId,
               undefined,
-              controller.current?.signal,
+              signal,
+              activeSpaceId,
             );
-            if (alive.current && detailId.current === id) setDetail(value);
+            if (!signal?.aborted && alive.current && detailId.current === id) setDetail(value);
           })
-          .catch(() => {});
-    }, 10000);
-    return () => clearInterval(timer);
-  }, [botId, busy, editing, password, confirm]);
-  const decide = async (body: any) => {
-    if (submitting.current) return;
-    submitting.current = true;
-    setBusy(true);
-    setError("");
-    try {
-      const result = await workbenchApi("decide", botId, body);
-      if (!alive.current) return;
+          .catch((error) => bestEffort("refresh agent workbench detail", Promise.reject(error)));
+  }, !busy && !editing && !password && !confirm ? 10_000 : null);
+  const decide = (body: unknown) => write.runAndWait(async (scope) => {
+      setError("");
       setPassword("");
+      let result;
+      try {
+        result = await workbenchApi("decide", botId, body, undefined, scope.spaceId);
+      } catch {
+        if (scope.isCurrent())
+          setError("The operation was not confirmed. Review the current source, permissions and finite limits before retrying.");
+        return;
+      }
+      if (!scope.isCurrent()) return;
       setConfirm(false);
-      await refresh();
-      return result;
-    } catch {
-      if (alive.current)
-        setError(
-          "The operation was not confirmed. Review the current source, permissions and finite limits before retrying.",
-        );
-    } finally {
-      submitting.current = false;
-      if (alive.current) setBusy(false);
-    }
-  };
+      try { await refresh(controller.current?.signal, scope.spaceId, scope.isCurrent); }
+      catch { if (scope.isCurrent()) setError("Operation recorded. Refresh to load the workbench state."); }
+      return scope.isCurrent() ? result : undefined;
+  });
   const records =
     view?.records?.filter((r: any) =>
       tab === "scenarios"
@@ -182,7 +183,7 @@ export function AgentWorkbenchPanel({
       className="min-w-0 border-b border-border bg-background p-3 sm:p-4"
     >
       <header className="flex items-center justify-between gap-2">
-        <h2 className="text-sm font-semibold">Agent workbench</h2>
+        <h2 className="text-body font-semibold">Agent workbench</h2>
         <div className="flex gap-1">
           <button
             className="p-2"
@@ -216,7 +217,7 @@ export function AgentWorkbenchPanel({
             role="tab"
             aria-selected={tab === t}
             className={
-              "shrink-0 border-b-2 px-3 py-2 text-sm capitalize " +
+              "shrink-0 border-b-2 px-3 py-2 text-body capitalize " +
               (tab === t ? "border-foreground" : "border-transparent text-muted-foreground")
             }
             onClick={() => {
@@ -233,12 +234,12 @@ export function AgentWorkbenchPanel({
         ))}
       </div>
       {error && (
-        <p role="alert" className="mb-3 break-words text-sm text-destructive">
+        <p role="alert" className="mb-3 break-words text-body text-destructive">
           {error}
         </p>
       )}
       {!view ? (
-        <p className="text-sm text-muted-foreground">Loading...</p>
+        <p className="text-body text-muted-foreground">Loading...</p>
       ) : (
         <div className="max-h-[60vh] min-w-0 space-y-4 overflow-auto">
           {tab==='runtime'&&<NativeAgentPanel botId={botId}/>}
@@ -267,26 +268,27 @@ export function AgentWorkbenchPanel({
                 }}
               />
               <div className="flex flex-wrap items-center gap-2">
-                <select
+                <OptionSelect
                   aria-label="Goal status"
-                  className="rounded border border-border bg-background p-2 text-sm"
+                  className="w-auto max-w-full"
                   value={goalStatus}
-                  onChange={(e) => {
-                    setGoalStatus(e.target.value);
+                  onValueChange={(value) => {
+                    setGoalStatus(value);
                     setEditing(true);
                   }}
-                >
-                  <option value="active">Active</option>
-                  <option value="paused">Paused</option>
-                  <option value="complete">User marked complete</option>
-                </select>
+                  options={[
+                    { value: "active", label: "Active" },
+                    { value: "paused", label: "Paused" },
+                    { value: "complete", label: "User marked complete" },
+                  ]}
+                />
                 <button className={button} disabled={busy || !objective.trim()}>
                   <Check size={16} />
                   Save goal
                 </button>
-                <span className="text-xs text-muted-foreground">Revision {view.goal.revision}</span>
+                <span className="text-label text-muted-foreground">Revision {view.goal.revision}</span>
               </div>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-label text-muted-foreground">
                 Task tracking only. Policy approval, solver allowance and candidate validation
                 remain separate.
               </p>
@@ -317,7 +319,7 @@ export function AgentWorkbenchPanel({
                   New analysis branch
                 </button>
               </form>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-label text-muted-foreground">
                 Private discussion snapshot only. No tools, files, approvals or active solves
                 transfer.
               </p>
@@ -340,11 +342,11 @@ export function AgentWorkbenchPanel({
                     className="flex min-w-0 items-start justify-between gap-3 py-3"
                   >
                     <div className="min-w-0">
-                      <p className="break-words text-sm font-medium">{skill.name}</p>
-                      <p className="break-words text-xs text-muted-foreground">
+                      <p className="break-words text-body font-medium">{skill.name}</p>
+                      <p className="break-words text-label text-muted-foreground">
                         {skill.description}
                       </p>
-                      <code className="break-all text-[10px] text-muted-foreground">
+                      <code className="break-all text-caption text-muted-foreground">
                         {skill.sha256}
                       </code>
                     </div>
@@ -370,10 +372,10 @@ export function AgentWorkbenchPanel({
             <ul className="divide-y divide-border">
               {view.hooks.map((h: any) => (
                 <li key={h.name} className="py-2">
-                  <p className="text-sm font-medium">
-                    {h.name} · v{h.version}
+                  <p className="text-body font-medium">
+                    {h.name}<span className="ml-2 text-muted-foreground">v{h.version}</span>
                   </p>
-                  <p className="break-words text-xs text-muted-foreground">{h.description}</p>
+                  <p className="break-words text-label text-muted-foreground">{h.description}</p>
                 </li>
               ))}
             </ul>
@@ -383,14 +385,14 @@ export function AgentWorkbenchPanel({
               {records.map((r: any) => (
                 <li key={r.id}>
                   <button
-                    className="flex w-full min-w-0 items-start justify-between gap-3 py-2 text-left text-sm hover:bg-muted"
+                    className="flex w-full min-w-0 items-start justify-between gap-3 py-2 text-left text-body hover:bg-muted"
                     disabled={busy}
                     onClick={() =>
                       void open(r.id).catch(() => setError("Record changed or unavailable"))
                     }
                   >
                     <span className="min-w-0 break-words">{r.title}</span>
-                    <span className="shrink-0 text-xs text-muted-foreground">{r.status}</span>
+                    <span className="shrink-0 text-label text-muted-foreground">{r.status}</span>
                   </button>
                 </li>
               ))}
@@ -402,27 +404,27 @@ export function AgentWorkbenchPanel({
               (tab === "helpers" && detail.kind === "helper") ||
               (tab === "checks" && detail.kind === "hook")) && (
               <article className="min-w-0 space-y-3 border-t border-border pt-3">
-                <p className="break-all text-xs text-muted-foreground">Digest: {detail.digest}</p>
+                <p className="break-all text-label text-muted-foreground">Digest: {detail.digest}</p>
                 {detail.kind === "change" ? (
                   <>
-                    <h3 className="break-words text-sm font-semibold">{detail.payload.path}</h3>
+                    <h3 className="break-words text-body font-semibold">{detail.payload.path}</h3>
                     <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2">
                       {[
                         ["Current source", detail.payload.before],
                         ["Proposed separate draft", detail.payload.proposedText],
                       ].map(([label, text]) => (
                         <div key={label} className="min-w-0">
-                          <h4 className="mb-1 text-xs font-semibold">{label}</h4>
-                          <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words border border-border p-2 text-xs">
+                          <h4 className="mb-1 text-label font-semibold">{label}</h4>
+                          <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words border border-border p-2 text-label">
                             {text}
                           </pre>
                         </div>
                       ))}
                     </div>
-                    <p className="break-all text-xs text-muted-foreground">
+                    <p className="break-all text-label text-muted-foreground">
                       Source SHA-256: {detail.payload.sourceSha256}
                     </p>
-                    <p className="text-xs text-muted-foreground">
+                    <p className="text-label text-muted-foreground">
                       Saving never overwrites this source or approves a policy. Rost review, solve
                       and validation still apply.
                     </p>
@@ -445,7 +447,7 @@ export function AgentWorkbenchPanel({
                           }
                         }}
                       >
-                        <label className="flex items-start gap-2 text-sm">
+                        <label className="flex items-start gap-2 text-body">
                           <input
                             aria-label="Confirm exact separate draft"
                             type="checkbox"
@@ -469,25 +471,25 @@ export function AgentWorkbenchPanel({
                       </form>
                     )}
                     {receipt && (
-                      <p className="break-all text-sm" role="status">
+                      <p className="break-all text-body" role="status">
                         Saved draft: {receipt.draftPath}
                       </p>
                     )}
                   </>
                 ) : detail.kind === "scenario" ? (
                   <>
-                    <p className="text-sm font-semibold">{detail.payload.title}</p>
-                    <p className="break-all text-xs text-muted-foreground">
+                    <p className="text-body font-semibold">{detail.payload.title}</p>
+                    <p className="break-all text-label text-muted-foreground">
                       Source snapshot: {detail.payload.sourceDigest}
                     </p>
                     {detail.payload.messages.map((m: any) => (
                       <div key={m.nonce} className="space-y-2 border-t border-border pt-2">
-                        <p className="whitespace-pre-wrap break-words text-sm font-medium">
+                        <p className="whitespace-pre-wrap break-words text-body font-medium">
                           {m.question}
                         </p>
-                        <p className="whitespace-pre-wrap break-words text-sm">{m.answer}</p>
+                        <p className="whitespace-pre-wrap break-words text-body">{m.answer}</p>
                         {m.needsApproval && (
-                          <p className="text-xs text-muted-foreground">
+                          <p className="text-label text-muted-foreground">
                             Human decision required. No action executed.
                           </p>
                         )}
@@ -524,7 +526,7 @@ export function AgentWorkbenchPanel({
                     </form>
                   </>
                 ) : (
-                  <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words text-xs">
+                  <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words text-label">
                     {JSON.stringify(detail.payload.result ?? detail.payload, null, 2)}
                   </pre>
                 )}

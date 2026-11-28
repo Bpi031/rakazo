@@ -2,7 +2,8 @@ import { useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { i18n } from "@lingui/core";
 import { I18nProvider } from "@lingui/react";
-import { Transcript } from "../pages/Shell";
+import { rpc } from "../lib/query/rpc";
+import { Transcript } from "../pages/shell/chat/transcript";
 import { ManagedModelPicker } from "./ManagedModelPicker";
 import "../styles.css";
 
@@ -99,12 +100,15 @@ function Fixture() {
             scrollRef={scroll}
             scrollRequest={null}
             onScrollRequestHandled={nothing}
+            followRequest={0}
             artifactTarget={{ botId: "b" }}
-            messages={messages}
+            transcript={{ messages, folded: new Map(), markerOf: new Map(), mergedInto: new Map() }}
             showToolActivity={true}
             olderCursor={null}
             loadingOlder={false}
-            answerableAskMessageId={null}
+            answerableAskIds={new Set()}
+            dismissableAskIds={new Set()}
+            unreadAfterSeq={null}
             running={false}
             workingBots={[]}
             onLoadOlder={asyncNothing}
@@ -112,6 +116,7 @@ function Fixture() {
             onAnswer={asyncNothing}
             onCompose={nothing}
             onReply={nothing}
+            onMarkUnread={nothing}
             onQuote={nothing}
             onReact={asyncNothing}
             onJumpToMessage={nothing}
@@ -122,8 +127,11 @@ function Fixture() {
             onAddRoutine={nothing}
             voiceReady={false}
             speakingMessageId={null}
+            callHoldsSpeaker={false}
             onSpeak={nothing}
             onOpenComputer={nothing}
+            onReleaseComputer={asyncNothing}
+            rpc={rpc}
           />
           {pane && (
             <aside style={{ borderLeft: "1px solid #777", padding: 16 }}>

@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# A PR head's published Playwright checkpoints, one per line as
+# `<source>\t<Markdown image>`, so the image can go in the PR description.
+#
+#   pr-screenshots [PR] [FILTER]   checkpoint captures whose source path or
+#                                  title contains FILTER (case-insensitive)
+#
+# Run it after CI has published the PR's gallery (pr-digest reports green).
+set -euo pipefail
+
+die() { echo "pr-screenshots: $*" >&2; exit 1; }
+
+pr=${1:-$(gh pr view --json number -q .number)} || die "no PR for this branch"
+filter=${2:-}
+marker="<!-- rakazo-playwright-screenshots -->"
+
+comment="$(gh api --paginate --slurp "repos/{owner}/{repo}/issues/$pr/comments?per_page=100" |
+  jq -r --arg marker "$marker" '
+    [.[][] | select(.user.login == "github-actions[bot]" and (.body | contains($marker)))]
+    | last | .body // ""')"
+screenshots_url="$(grep -oE 'https://[^)]+/runs/[0-9]+-[0-9]+/screenshots/index\.html' <<<"$comment" | head -1)" ||
+  die "PR #$pr has no screenshot comment yet; wait for CI to publish it"
+run_sha="$(grep -oE '<!-- screenshot-commit:[0-9a-f]{40} -->' <<<"$comment" | grep -oE '[0-9a-f]{40}' | head -1)" ||
+  die "the screenshot comment on PR #$pr names no commit"
+head_sha="$(gh pr view "$pr" --json headRefOid -q .headRefOid)"
+if [[ "$run_sha" != "$head_sha" ]]; then
+  die "latest published run is for ${run_sha:0:7}, PR head is ${head_sha:0:7}; wait for CI to publish the current head"
+fi
+
+curl -fsS "${screenshots_url%index.html}manifest.json" |
+  jq -r --arg base "${screenshots_url%index.html}" --arg filter "$filter" '
+    if any(.screenshots[]; .fileName == null) then
+      error("this run predates image file names in the manifest; re-run CI")
+    else . end
+    | .screenshots[]
+    | select(.captureType == "checkpoint")
+    | select(($filter == "") or ((.source + " " + .title) | ascii_downcase | contains($filter | ascii_downcase)))
+    | "\(.source)\t![\(.title)](\($base)\(.fileName))"'

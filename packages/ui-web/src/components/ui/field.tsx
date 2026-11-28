@@ -1,9 +1,11 @@
 import { Label } from "@rakazo/ui-web/components/ui/label";
 import { Separator } from "@rakazo/ui-web/components/ui/separator";
+import { Switch } from "@rakazo/ui-web/components/ui/switch";
 
 import { cn } from "@rakazo/ui-web/lib/utils";
-import { cva, type VariantProps } from "class-variance-authority";
-import { useMemo } from "react";
+import type { VariantProps } from "class-variance-authority";
+import { cva } from "class-variance-authority";
+import { useId, useMemo } from "react";
 
 function FieldSet({ className, ...props }: React.ComponentProps<"fieldset">) {
   return (
@@ -28,7 +30,7 @@ function FieldLegend({
       data-slot="field-legend"
       data-variant={variant}
       className={cn(
-        "mb-1.5 font-medium data-[variant=label]:text-sm data-[variant=legend]:text-base",
+        "mb-1.5 font-medium data-[variant=label]:text-body data-[variant=legend]:text-body-lg",
         className,
       )}
       {...props}
@@ -97,6 +99,8 @@ function FieldLabel({ className, ...props }: React.ComponentProps<typeof Label>)
       className={cn(
         "group/field-label peer/field-label flex w-fit gap-2 leading-snug group-data-[disabled=true]/field:opacity-50 has-data-checked:border-primary/30 has-data-checked:bg-primary/5 has-[>[data-slot=field]]:rounded-lg has-[>[data-slot=field]]:border has-[>[data-slot=field]]:not-has-[:disabled,[data-disabled]]:hover:bg-muted/50 has-[>[data-slot=field]]:has-[:focus-visible]:border-ring has-[>[data-slot=field]]:has-[:focus-visible]:ring-3 has-[>[data-slot=field]]:has-[:focus-visible]:ring-ring/50 *:data-[slot=field]:p-2.5 dark:has-data-checked:border-primary/20 dark:has-data-checked:bg-primary/10",
         "has-[>[data-slot=field]]:w-full has-[>[data-slot=field]]:flex-col",
+        // Above its control, a label starts where the control's text does (border plus padding).
+        "group-data-[orientation=vertical]/field:not-has-[>[data-slot=field]]:ps-3.25",
         className,
       )}
       {...props}
@@ -109,7 +113,7 @@ function FieldTitle({ className, ...props }: React.ComponentProps<"div">) {
     <div
       data-slot="field-label"
       className={cn(
-        "flex w-fit items-center gap-2 text-sm font-medium group-data-[disabled=true]/field:opacity-50",
+        "flex w-fit items-center gap-2 text-body font-medium group-data-[disabled=true]/field:opacity-50",
         className,
       )}
       {...props}
@@ -122,7 +126,7 @@ function FieldDescription({ className, ...props }: React.ComponentProps<"p">) {
     <p
       data-slot="field-description"
       className={cn(
-        "text-left text-sm leading-normal font-normal text-muted-foreground group-has-data-horizontal/field:text-balance [[data-variant=legend]+&]:-mt-1.5",
+        "text-left text-body leading-normal font-normal text-muted-foreground group-has-data-horizontal/field:text-balance [[data-variant=legend]+&]:-mt-1.5",
         "last:mt-0 nth-last-2:-mt-1",
         "[&>a]:underline [&>a]:underline-offset-4 [&>a:hover]:text-primary",
         className,
@@ -144,7 +148,7 @@ function FieldSeparator({
       data-slot="field-separator"
       data-content={!!children}
       className={cn(
-        "relative -my-2 h-5 text-sm group-data-[variant=outline]/field-group:-mb-2",
+        "relative -my-2 h-5 text-body group-data-[variant=outline]/field-group:-mb-2",
         className,
       )}
       {...props}
@@ -152,7 +156,7 @@ function FieldSeparator({
       <Separator className="absolute inset-0 top-1/2" />
       {children && (
         <span
-          className="relative mx-auto block w-fit bg-background px-2 text-muted-foreground"
+          className="relative mx-auto block w-fit bg-background px-2 text-muted-foreground in-data-[slot=dialog-content]:bg-dialog"
           data-slot="field-separator-content"
         >
           {children}
@@ -200,11 +204,62 @@ function FieldError({
     <div
       role="alert"
       data-slot="field-error"
-      className={cn("text-sm font-normal text-destructive", className)}
+      className={cn("text-body font-normal text-destructive", className)}
       {...props}
     >
       {content}
     </div>
+  );
+}
+
+/**
+ * A setting that is on or off: the switch, its label beside it, and an optional note below.
+ * Use it for every toggle so settings read as one list.
+ */
+function SwitchField({
+  label,
+  description,
+  checked,
+  onCheckedChange,
+  disabled = false,
+  className,
+  "data-testid": testId,
+}: {
+  label: React.ReactNode;
+  description?: React.ReactNode;
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+  disabled?: boolean;
+  className?: string;
+  "data-testid"?: string;
+}) {
+  const id = useId();
+  // Named from the label explicitly: Base UI only finds it after hydration otherwise.
+  const labelId = useId();
+  const descriptionId = useId();
+  return (
+    <Field
+      orientation="horizontal"
+      data-disabled={disabled}
+      className={cn("items-start gap-3", className)}
+    >
+      <Switch
+        id={id}
+        aria-labelledby={labelId}
+        aria-describedby={description ? descriptionId : undefined}
+        data-testid={testId}
+        className="mt-0.5"
+        checked={checked}
+        disabled={disabled}
+        onCheckedChange={onCheckedChange}
+      />
+      <FieldContent>
+        <FieldLabel id={labelId} htmlFor={id} className="font-normal text-foreground/75">
+          {label}
+        </FieldLabel>
+        {description ? <FieldDescription id={descriptionId}>{description}</FieldDescription> : null}
+      </FieldContent>
+    </Field>
   );
 }
 
@@ -219,4 +274,5 @@ export {
   FieldSeparator,
   FieldSet,
   FieldTitle,
+  SwitchField,
 };

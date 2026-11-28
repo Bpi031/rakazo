@@ -61,7 +61,7 @@ function ReportTable({
       aria-label={table.title}
     >
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <h4 className="min-w-0 break-words text-sm font-medium [overflow-wrap:anywhere]">
+        <h4 className="min-w-0 break-words text-body font-medium [overflow-wrap:anywhere]">
           {table.title}
         </h4>
         <input
@@ -74,7 +74,7 @@ function ReportTable({
             setPage(0);
             setExpanded(null);
           }}
-          className="max-w-full rounded border border-border bg-background px-2 py-1 text-sm"
+          className="max-w-full rounded border border-border bg-background px-2 py-1 text-body"
         />
       </div>
       <div
@@ -84,7 +84,7 @@ function ReportTable({
         className="w-full min-w-0 max-w-full max-h-[460px] overflow-auto overscroll-x-contain rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
       >
         <table
-          className="w-full text-left text-sm"
+          className="w-full text-left text-body"
           style={{ minWidth: table.columns.length * 112 }}
         >
           <thead className="sticky top-0 bg-muted">
@@ -158,14 +158,14 @@ function ReportTable({
           <dl className="grid grid-cols-2 gap-3">
             {table.columns.map((field) => (
               <div key={field.key} className="min-w-0">
-                <dt className="break-words text-xs text-muted-foreground">{field.label}</dt>
-                <dd className="break-words text-sm">{display(table.rows[expanded]![field.key])}</dd>
+                <dt className="break-words text-label text-muted-foreground">{field.label}</dt>
+                <dd className="break-words text-body">{display(table.rows[expanded]![field.key])}</dd>
               </div>
             ))}
           </dl>
           <button
             type="button"
-            className="mt-3 inline-flex items-center gap-2 text-sm underline"
+            className="mt-3 inline-flex items-center gap-2 text-body underline"
             onClick={() =>
               onRequest(
                 `${table.rowQuestion}\nSelected row: ${JSON.stringify(table.rows[expanded])}`,
@@ -178,11 +178,11 @@ function ReportTable({
         </section>
       )}
       {!rows.length && (
-        <p role="status" className="py-3 text-sm text-muted-foreground">
+        <p role="status" className="py-3 text-body text-muted-foreground">
           No matching rows.
         </p>
       )}
-      <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
+      <div className="mt-2 flex items-center justify-between text-label text-muted-foreground">
         <span>{rows.length} rows</span>
         <span className="inline-flex items-center gap-2">
           <button
@@ -234,10 +234,10 @@ export function AgentReportCard({
       className="w-full min-w-0 max-w-full space-y-4 rounded-lg border border-border bg-background p-3 [contain:inline-size] [overflow-wrap:anywhere] sm:p-4"
     >
       <header>
-        <span className="text-xs text-muted-foreground">Agent analysis</span>
-        <h3 className="mt-1 break-words text-base font-semibold">{block.report.title}</h3>
+        <span className="text-label text-muted-foreground">Agent analysis</span>
+        <h3 className="mt-1 break-words text-body-lg font-semibold">{block.report.title}</h3>
         {block.report.summary && (
-          <p className="mt-2 whitespace-pre-wrap break-words text-sm">{block.report.summary}</p>
+          <p className="mt-2 whitespace-pre-wrap break-words text-body">{block.report.summary}</p>
         )}
       </header>
       {block.report.sections.map((section, index) =>
@@ -249,11 +249,11 @@ export function AgentReportCard({
           >
             {section.items.map((metric, i) => (
               <div key={i} className="min-w-0">
-                <dt className="break-words text-xs text-muted-foreground">{metric.label}</dt>
-                <dd className="mt-1 break-words text-lg font-medium tabular-nums">
+                <dt className="break-words text-label text-muted-foreground">{metric.label}</dt>
+                <dd className="mt-1 break-words text-heading3 font-medium tabular-nums">
                   {metric.value === null ? "Unavailable" : metric.value}
                   {metric.unit ? (
-                    <span className="ml-1 text-xs font-normal">{metric.unit}</span>
+                    <span className="ml-1 text-label font-normal">{metric.unit}</span>
                   ) : null}
                 </dd>
               </div>
@@ -263,8 +263,8 @@ export function AgentReportCard({
           <ReportTable key={index} table={section} onRequest={onCompose ? request : undefined} />
         ) : (
           <section key={index} className="border-t border-border pt-3">
-            <h4 className="text-sm font-medium">{section.title}</h4>
-            <p className="mt-2 whitespace-pre-wrap break-words text-sm">{section.text}</p>
+            <h4 className="text-body font-medium">{section.title}</h4>
+            <p className="mt-2 whitespace-pre-wrap break-words text-body">{section.text}</p>
           </section>
         ),
       )}
@@ -275,7 +275,7 @@ export function AgentReportCard({
               key={index}
               type="button"
               onClick={() => request(action.request)}
-              className="inline-flex max-w-full items-center gap-2 break-words rounded border border-border px-3 py-2 text-left text-sm"
+              className="inline-flex max-w-full items-center gap-2 break-words rounded border border-border px-3 py-2 text-left text-body"
             >
               <MessageSquare size={14} />
               {action.label}
@@ -284,18 +284,19 @@ export function AgentReportCard({
         </div>
       ) : null}
       {notice && (
-        <p role="status" className="text-xs text-muted-foreground">
+        <p role="status" className="text-label text-muted-foreground">
           {notice}
         </p>
       )}
-      <details className="text-xs text-muted-foreground">
+      <details className="text-label text-muted-foreground">
         <summary className="cursor-pointer">Analysis sources</summary>
         <p className="mt-2">
           File hashes identify the captured sources. They do not certify calculations, a roster or
           policy approval.
         </p>
         <p className="mt-2 break-all">
-          {block.evidence.reportPath} · {block.evidence.reportSha256}
+          {block.evidence.reportPath}
+          <span className="block">{block.evidence.reportSha256}</span>
         </p>
         <ul className="mt-2 space-y-2">
           {block.evidence.sources.map((source) => (

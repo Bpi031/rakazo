@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
+import { CheckpointConflictError } from "@rakazo/db";
 import { expect, it, vi } from "vitest";
-import { assertCheckpointWritersIdle, stopCheckpointWriters } from "./checkpoint-processes.js";
+import { assertCheckpointWritersIdle, stopCheckpointWriters } from "./checkpoints/checkpoint-processes.js";
 
 it("runs the writer check from the sandbox home", async () => {
   const execute = vi.fn(async function* (_computer: unknown, _request: unknown, _context: unknown) {
@@ -27,7 +28,17 @@ it("refuses an unconfirmed idle state instead of capturing a running writer", as
   });
   await expect(
     assertCheckpointWritersIdle({ execute } as any, { kind: "docker" } as any, {} as any),
-  ).rejects.toThrow("writers to finish");
+  ).rejects.toThrow("Could not confirm workspace writers are idle");
+});
+
+it("reports a confirmed active writer as a conflict, not an inspection error", async () => {
+  const execute = vi.fn(async function* () {
+    yield { type: "stdout", data: "checkpoint-writers-busy\n" };
+    yield { type: "exit", code: 75 };
+  });
+  await expect(
+    assertCheckpointWritersIdle({ execute } as any, { kind: "docker" } as any, {} as any),
+  ).rejects.toBeInstanceOf(CheckpointConflictError);
 });
 
 it("restricts Team process inspection to the current Bot root", async () => {

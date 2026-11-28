@@ -1,3 +1,4 @@
+import { deferred } from "@rakazo/core/test-async";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -8,7 +9,7 @@ vi.mock("@rakazo/db", async (importOriginal) => ({ ...await importOriginal<typeo
   createRepos: () => ({ getBot: mocks.getBot }), checkpointThreadLock: vi.fn(async () => undefined) }));
 import {
   MAX_PRIORITY_AGENT_BYTES, PriorityService,
-  priorityAgentResult, prioritySchemas, priorityTools } from "./policy-priorities.js";
+  priorityAgentResult, prioritySchemas, priorityTools } from "./policy/policy-priorities.js";
 const actor = { userId: "u", spaceId: "s", email: "test@example.invalid", isDeploymentOwner: false };
 const inspection = { botId: "b", policy: "workspace/case/policy.rost", workingDirectory: "workspace/case" };
 let source = "a".repeat(64); let inputs: unknown[] = []; let directory: string; let service: PriorityService;
@@ -162,17 +163,21 @@ it("exposes agent adoption only for the selected exact draft and unchanged input
   expect((await service.current(actor, "b")).selection?.state).toBe("stale");
 });
 it("does not overlap bot reviews and releases the lock after helper failure", async () => {
-  let release!: () => void; const gate = new Promise<void>((resolve) => { release = resolve; });
-  execute.mockImplementationOnce(async function* () { await gate; throw new Error("synthetic failure"); });
+  const gate = deferred<void>();
+  execute.mockImplementationOnce(async function* () { await gate.promise; throw new Error("synthetic failure"); });
   const first = service.inspect(actor, inspection); const failure = expect(first).rejects.toThrow("synthetic failure");
   // Observe the lock rather than depending on arbitrary sleeps.
   const base = path.join(directory, "policy-priority-reviews");
-  for (let i = 0; i < 100; i++) {
-    const owners = await readdir(base).catch(() => []);
-    if (owners.length && (await readdir(path.join(base, owners[0]!))).some((name) => name.endsWith(".binding.lock"))) break;
-    await new Promise((resolve) => setTimeout(resolve, 1));
+  try {
+    await vi.waitUntil(async () => {
+      const owners = await readdir(base).catch(() => []);
+      return owners.length > 0 && (await readdir(path.join(base, owners[0]!))).some((name) => name.endsWith(".binding.lock"));
+    }, { interval: 1 });
+    await expect(service.inspect(actor, inspection)).rejects.toThrow("busy");
+  } finally {
+    gate.resolve();
+    await failure;
   }
-  await expect(service.inspect(actor, inspection)).rejects.toThrow("busy"); release(); await failure;
   await expect(service.inspect(actor, inspection)).resolves.toMatchObject({ policy: inspection.policy });
 });
 it("revalidates source through the helper even without a refresh", async () => {

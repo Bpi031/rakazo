@@ -2,24 +2,27 @@
 import {
   DEFAULT_LOCALE,
   LOCALE_HREFLANG,
+  LOCALE_HTML_LANG,
   LOCALE_LABELS,
   LOCALES,
   isLocale,
   localeHomePath,
   type Locale,
 } from "../i18n/locales";
-import { HUB_CARDS } from "../alternatives";
 import { getHomeCopy } from "../i18n/home";
+import { localizedHref, pageVersions } from "../i18n/translations";
 import type { HomeCopy } from "../i18n/home";
 import {
-  ANDROID_APK_URL,
+  AFFILIATE_PROGRAM_URL,
   CHANGELOG_URL,
   GITHUB_URL,
   INBOX_ZERO_URL,
-  IOS_APP_URL,
+  PLUGIN_SUBMIT_PATH,
   SELF_HOST_GUIDE_PATH,
 } from "../site";
+import { marketing } from "../marketing-site";
 import Logo from "./Logo.astro";
+import ProductHuntBadge from "./ProductHuntBadge.astro";
 
 type Props = {
   locale?: Locale;
@@ -44,6 +47,12 @@ const {
 } = Astro.props;
 
 const currentPath = Astro.url.pathname.replace(/\/+$/, "") || "/";
+const versions = pageVersions(Astro.url.pathname);
+
+/** The current page in `locale` when it is translated, otherwise that locale's home page. */
+function languageHref(locale: Locale): string {
+  return versions.find((version) => version.locale === locale)?.path ?? localeHomePath(locale);
+}
 
 function isCurrentPage(href: string): boolean {
   return (href.replace(/\/+$/, "") || "/") === currentPath;
@@ -55,17 +64,24 @@ const columns: Array<{ heading: string; links: FooterLink[] }> = [
   {
     heading: linkLabels.product,
     links: [
-      { href: IOS_APP_URL, label: linkLabels.iosApp, external: true },
-      { href: ANDROID_APK_URL, label: linkLabels.androidApp },
-      { href: SELF_HOST_GUIDE_PATH, label: linkLabels.docs },
+      { href: "/download/", label: linkLabels.download },
+      { href: "/docs/", label: linkLabels.docs },
+      { href: SELF_HOST_GUIDE_PATH, label: localeCopy.selfHost.heading },
+      { href: "/enterprise/", label: linkLabels.enterprise },
+      { href: "/sandboxes/", label: linkLabels.sandboxes },
+      { href: "/integration-platforms/", label: linkLabels.integrationPlatforms },
+      { href: "/voice-providers/", label: linkLabels.voiceProviders },
+      { href: "/ai-agent-cost-calculator/", label: linkLabels.costCalculator },
+      { href: PLUGIN_SUBMIT_PATH, label: linkLabels.submitPlugin },
       { href: CHANGELOG_URL, label: linkLabels.changelog, external: true },
       { href: GITHUB_URL, label: "GitHub", external: true },
+      { href: "/black-friday/", label: "Black Friday" },
     ],
   },
   {
     heading: linkLabels.alternatives,
     links: [
-      ...HUB_CARDS.map((card) => ({ href: card.href, label: card.name })),
+      ...marketing.footerAlternatives.map((card) => ({ href: card.href, label: card.name })),
       { href: "/alternatives/", label: linkLabels.all },
     ],
   },
@@ -74,6 +90,8 @@ const columns: Array<{ heading: string; links: FooterLink[] }> = [
     links: [
       { href: "/blog/", label: linkLabels.blog },
       { href: "/about/", label: linkLabels.about },
+      { href: "/brand/", label: linkLabels.brand },
+      { href: AFFILIATE_PROGRAM_URL, label: linkLabels.affiliates, external: true },
       { href: "/support/", label: linkLabels.support },
       { href: "/privacy/", label: linkLabels.privacy },
       { href: "/terms/", label: linkLabels.terms },
@@ -86,22 +104,34 @@ const columns: Array<{ heading: string; links: FooterLink[] }> = [
   <div class="site-footer__brand">
     <Logo href={homeHref} label={homeLabel} />
     <nav class="site-footer__languages" aria-label={languagesLabel}>
-      {
-        LOCALES.map((locale) => (
-          <a
-            href={localeHomePath(locale)}
-            hreflang={LOCALE_HREFLANG[locale]}
-            aria-current={isCurrentPage(localeHomePath(locale)) ? "page" : undefined}
-          >
-            {LOCALE_LABELS[locale]}
-          </a>
-        ))
-      }
+      <details class="language-menu">
+        <summary>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" /></svg>
+          {LOCALE_LABELS[currentLocale]}
+          <svg class="language-menu__chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5" /></svg>
+        </summary>
+        <ul>
+          {
+            LOCALES.map((locale) => (
+              <li>
+                <a
+                  href={languageHref(locale)}
+                  hreflang={LOCALE_HREFLANG[locale]}
+                  lang={LOCALE_HTML_LANG[locale]}
+                  aria-current={locale === currentLocale ? "true" : undefined}
+                >
+                  {LOCALE_LABELS[locale]}
+                </a>
+              </li>
+            ))
+          }
+        </ul>
+      </details>
     </nav>
+    <ProductHuntBadge />
     <span class="site-footer__legal">
-      © 2026 ·
-      <a href={INBOX_ZERO_URL} target="_blank" rel="noreferrer">Inbox Zero Inc.</a>
-      · Apache-2.0
+      <span>© 2026 <a href={INBOX_ZERO_URL} target="_blank" rel="noopener">Inbox Zero Inc.</a></span>
+      <span>Apache-2.0</span>
     </span>
   </div>
   <nav class="site-footer__columns" aria-label={navLabel}>
@@ -113,9 +143,13 @@ const columns: Array<{ heading: string; links: FooterLink[] }> = [
             {column.links.map((link) => (
               <li>
                 <a
-                  href={link.href}
-                  aria-current={!link.external && isCurrentPage(link.href) ? "page" : undefined}
-                  {...(link.external ? { target: "_blank", rel: "noreferrer" } : {})}
+                  href={link.external ? link.href : localizedHref(link.href, currentLocale)}
+                  aria-current={
+                    !link.external && isCurrentPage(localizedHref(link.href, currentLocale))
+                      ? "page"
+                      : undefined
+                  }
+                  {...(link.external ? { target: "_blank", rel: "noopener" } : {})}
                 >
                   {link.label}
                 </a>

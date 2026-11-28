@@ -1,13 +1,14 @@
-import { Prisma, type PrismaClient } from '@rakazo/db';
+import { Prisma, readJsonColumn, type PrismaClient } from '@rakazo/db';
 import type { SandboxProvider } from '@rakazo/adapter-kit';
-import { observeRostJob, RostJobOut, RostJobObservationError, StaleRostWatchError } from './rost-job-watch.js';
-import { memberScope } from './team-storage.js';
-import { managerRole, teamDigest } from './team-policy.js';
+import { observeRostJob, RostJobObservationError, RostWatchIdentity, StaleRostWatchError } from './rost-job-watch.js';
+import { memberScope } from './teams/team-storage.js';
+import { managerRole, teamDigest } from './teams/team-policy.js';
+import { z } from 'zod';
 
 type Deps = { prisma: PrismaClient; sandbox: SandboxProvider };
 type Run = { botId: string; userId: string; spaceId: string; threadId: string;
   trigger: string; routineId: string | null; checkpointGeneration?: number | null };
-type Data = Record<string, any>;
+const ConflictIdentity = z.looseObject(RostWatchIdentity.pick({ binding: true, out: true, deadlineUtc: true }).shape);
 
 /** Read an owned result or legacy checkpoint; never reserve or start diagnosis. */
 export async function readRostConflictStatus(deps: Deps, run: Run) {
@@ -21,11 +22,13 @@ export async function readRostConflictStatus(deps: Deps, run: Run) {
     ? await deps.prisma.routine.findFirst({ where: { ...thread, id: run.routineId } })
     : await deps.prisma.routine.findFirst({ where: { ...thread, jobWatch: { not: Prisma.DbNull } },
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] });
-  const watch = routine?.jobWatch as Data | null;
-  if (!watch || watch.schema !== 'rost/job-watch/v1') return inactive;
-  const generation = watch.checkpointGeneration ?? 0;
+  if (!routine?.jobWatch) return inactive;
+  const watch = readJsonColumn(RostWatchIdentity.nullable(), routine.jobWatch,
+    { table: 'routines', column: 'jobWatch', id: routine.id }, { fallback: null });
+  if (!watch) return inactive;
+  const generation = watch.checkpointGeneration;
   if (run.checkpointGeneration != null && generation !== run.checkpointGeneration) return inactive;
-  const out = RostJobOut.parse(watch.out);
+  const out = watch.out;
   let observation;
   try {
     observation = await observeRostJob(deps, scope, out);
@@ -47,7 +50,8 @@ export async function readRostConflictStatus(deps: Deps, run: Run) {
   if (existing.kind !== 'rost_conflict_loop' || existing.userId !== run.userId || existing.botId !== run.botId
       || existing.spaceId !== run.spaceId || existing.digest !== teamDigest(existing.payload))
     throw new Error('Conflict checkpoint changed');
-  const payload = existing.payload as Data;
+  const payload = readJsonColumn(ConflictIdentity, existing.payload,
+    { table: 'agent_workbench_records', column: 'payload', id }, 'reject');
   if (payload.binding !== watch.binding || payload.out !== out || payload.deadlineUtc !== watch.deadlineUtc)
     throw new Error('Conflict checkpoint job changed');
   return { ...payload, id, status: existing.status, solveStarted: false, computeAllowanceGranted: false };

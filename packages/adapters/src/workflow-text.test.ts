@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { workflowText } from "./workflow-text.js";
+import { workflowText } from "./teams/workflow-text.js";
 const root = mkdtempSync(path.join(tmpdir(), "workflow-key-"));
 const key = path.join(root, "test-key");
 writeFileSync(key, "x".repeat(48), { mode: 0o600 });

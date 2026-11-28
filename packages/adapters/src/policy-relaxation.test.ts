@@ -1,6 +1,6 @@
 import { beforeEach, expect, it, vi } from 'vitest';
-import { PolicyWorkflow } from './policy-workflow.js';
-import { teamDigest } from './team-policy.js';
+import { PolicyWorkflow } from './policy/policy-workflow.js';
+import { teamDigest } from './teams/team-policy.js';
 const actor={userId:'u',spaceId:'s',email:'synthetic@example.invalid',isDeploymentOwner:false};
 const flowId='f'.repeat(64);
 const request={operation:'relaxation_review',flowId,policy:'workspace/case/policy.rost',workingDirectory:'workspace/case',proposal:'workspace/case/change.rostrelax',seconds:15,reason:'Selected bounded exception'};

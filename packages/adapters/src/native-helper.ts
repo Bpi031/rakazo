@@ -1,9 +1,10 @@
 import { CodexProtocolRuntime, runtimeConfig } from "./codex-protocol.mjs";
 import { validateCodexQuestion } from "./codex-question-validation.js";
 import { nativeReadTools } from "@rakazo/contracts";
+import { deadlineSignal } from "@rakazo/core";
 import { AgentWorkbench } from "./agent-workbench.js";
 import { NativeControl } from "./native-control.js";
-import { teamDigest } from "./team-policy.js";
+import { teamDigest } from "./teams/team-policy.js";
 import type { PrismaClient } from "@rakazo/db";
 import type { AdapterContext, SandboxProvider, RuntimeSessionRequest } from "@rakazo/adapter-kit";
 import { managedWorkspace } from "./managed-workspace.js";
@@ -32,10 +33,7 @@ export async function nativeHelper(
       const runtime = new CodexProtocolRuntime({ ...runtimeConfig(), validateQuestion: validateCodexQuestion });
       let text = "",
         usage: any;
-      const signal = AbortSignal.any([
-        ...(context.signal ? [context.signal] : []),
-        AbortSignal.timeout(90000),
-      ]);
+      const signal = deadlineSignal(90000, context.signal);
       let calls = 0;
       for await (const event of runtime.run(
         {

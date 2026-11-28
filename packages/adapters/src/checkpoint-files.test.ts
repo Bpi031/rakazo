@@ -1,5 +1,7 @@
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  chmod,
   link,
   lstat,
   mkdir,
@@ -15,7 +17,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { CheckpointFiles } from "./checkpoint-files.js";
+import { CheckpointFiles } from "./checkpoints/checkpoint-files.js";
 
 const actor = {
   userId: "owner",
@@ -54,6 +56,15 @@ async function fixture() {
   const directories = new Set(["case", "empty"]);
   const caches = new Map<string, Buffer>();
   const pending = new Map<string, Buffer[]>();
+  const stages = new Map<
+    string,
+    {
+      files: Map<string, Buffer>;
+      dirs: Set<string>;
+      modes: Map<string, number>;
+      manifest: Buffer[];
+    }
+  >();
   const inventory = () =>
     [...directories]
       .map((name) => ({ path: name, type: "directory", mode: modes.get(name) ?? 0o700 }))
@@ -73,6 +84,7 @@ async function fixture() {
       !input.roots ||
       input.roots.some((root: string) => name === root || name.startsWith(`${root}/`));
     const selectedInventory = () => inventory().filter((item) => managed(item.path));
+    const stage = stages.get(input.stage);
     if (input.path && !managed(input.path)) throw new Error("Unmanaged fixture path");
     let value: any = {};
     switch (input.operation) {
@@ -87,7 +99,28 @@ async function fixture() {
             .toString("base64"),
         };
         break;
-      case "clear": {
+      case "stage_prepare":
+        stages.set(input.stage, {
+          files: new Map(),
+          dirs: new Set(),
+          modes: new Map(),
+          manifest: [],
+        });
+        break;
+      case "stage_manifest":
+        stage!.manifest.push(Buffer.from(input.data, "base64"));
+        break;
+      case "stage_publish": {
+        const expected = JSON.parse(Buffer.concat(stage!.manifest).toString());
+        for (const item of expected) {
+          if (
+            (item.type === "directory" && !stage!.dirs.has(item.path)) ||
+            (item.type === "file" &&
+              (!stage!.files.has(item.path) || hash(stage!.files.get(item.path)!) !== item.sha256))
+          )
+            throw new Error("Restored workspace verification failed");
+          stage!.modes.set(item.path, item.mode);
+        }
         const preserved = [...directories].filter(
           (name) =>
             managed(name) && [...caches.keys()].some((cache) => cache.startsWith(`${name}/`)),
@@ -97,27 +130,30 @@ async function fixture() {
         for (const name of modes.keys())
           if (managed(name) && !preserved.includes(name)) modes.delete(name);
         for (const name of preserved) directories.add(name);
-        value = { preservedDirectories: selectedInventory() };
+        for (const name of stage!.dirs) directories.add(name);
+        for (const [name, data] of stage!.files) files.set(name, data);
+        for (const [name, mode] of stage!.modes) modes.set(name, mode);
         break;
       }
+      case "stage_discard":
+        stages.delete(input.stage);
+        break;
       case "directory":
-        directories.add(input.path);
-        modes.set(input.path, 0o700);
+        stage!.dirs.add(input.path);
+        stage!.modes.set(input.path, 0o700);
         break;
       case "begin":
-        files.set(input.path, Buffer.alloc(0));
         pending.set(input.path, []);
-        modes.set(input.path, 0o600);
         break;
       case "write":
         pending.get(input.path)!.push(Buffer.from(input.data, "base64"));
         break;
       case "mode":
         if (pending.has(input.path)) {
-          files.set(input.path, Buffer.concat(pending.get(input.path)!));
+          stage!.files.set(input.path, Buffer.concat(pending.get(input.path)!));
           pending.delete(input.path);
         }
-        modes.set(input.path, input.mode);
+        stage!.modes.set(input.path, input.mode);
         break;
       default:
         throw new Error("Unexpected operation");
@@ -187,7 +223,9 @@ it("rejects checkpoint blobs with hard links before restoring", async () => {
   await link(blob, path.join(state.directory, "legacy-reference"));
   expect((await lstat(blob)).nlink).toBe(2);
   state.files.clear();
-  await expect(state.service.restore(actor, "bot", computer, snapshot)).rejects.toThrow("Invalid checkpoint blob");
+  await expect(state.service.restore(actor, "bot", computer, snapshot)).rejects.toThrow(
+    "Invalid checkpoint blob",
+  );
 });
 
 it("captures and restores only a Team bot's directory, preserving shared files", async () => {
@@ -278,9 +316,19 @@ it("rejects foreign Team roots, unmanaged entries and legacy scope mismatch befo
   );
   if (source.version !== 2) throw new Error("Expected Team manifest");
   const roots = ["bots/source", "shared"];
-  await expect(state.service.restore(actor, "source", computer, {
-    ...source, roots, digest: hash(JSON.stringify({ roots, entries: source.entries })),
-  }, "team")).rejects.toThrow();
+  await expect(
+    state.service.restore(
+      actor,
+      "source",
+      computer,
+      {
+        ...source,
+        roots,
+        digest: hash(JSON.stringify({ roots, entries: source.entries })),
+      },
+      "team",
+    ),
+  ).rejects.toThrow();
   const entries = [{ path: "bots/recipient", type: "directory", mode: 0o700 }];
   await expect(
     state.service.restore(
@@ -456,29 +504,111 @@ it("preserves newly created cache ancestors without treating them as restored bu
   );
 });
 
-it.each(["file", "directory", "target-mode", "cache-ancestor-mode"])(
-  "still rejects unexpected %s changes after restoring around preserved caches",
-  async (change) => {
-    const state = await fixture();
-    const snapshot = await state.service.capture(actor, "bot", computer);
-    state.directories.add("project");
-    state.caches.set("project/node_modules/dependency", Buffer.from("keep cache"));
-    const original = state.execute.getMockImplementation()!;
-    let cleared = false;
-    state.execute.mockImplementation(async function* (computer, request) {
-      const input = JSON.parse(Buffer.from(request.argv.at(-1), "base64").toString());
-      if (cleared && input.operation === "inventory") {
-        if (change === "file") state.files.set("project/unexpected.log", Buffer.from("unexpected"));
-        if (change === "directory") state.directories.add("unexpected");
-        if (change === "target-mode") state.modes.set("input.xlsx", 0o777);
-        if (change === "cache-ancestor-mode") state.modes.set("project", 0o777);
-      }
-      yield* original(computer, request);
-      if (input.operation === "clear") cleared = true;
+it("does not publish a streamed restore after writing only part of the staged tree", async () => {
+  const state = await fixture();
+  const snapshot = await state.service.capture(actor, "bot", computer);
+  state.directories.add("project");
+  state.caches.set("project/node_modules/dependency", Buffer.from("keep cache"));
+  const original = state.execute.getMockImplementation()!;
+  state.files.set("input.xlsx", Buffer.from("new workbook"));
+  const current = state.inventory();
+  state.execute.mockImplementation(async function* (computer, request) {
+    const input = JSON.parse(Buffer.from(request.argv.at(-1), "base64").toString());
+    if (input.operation === "write") throw new Error("Staged transfer interrupted");
+    yield* original(computer, request);
+  });
+  await expect(state.service.restore(actor, "bot", computer, snapshot)).rejects.toThrow(
+    "Staged transfer interrupted",
+  );
+  expect(state.inventory()).toEqual(current);
+});
+
+it.skipIf(process.platform === "win32")(
+  "streams verified files through the real sandbox helper before publication",
+  async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "checkpoint-streaming-"));
+    temporary.push(dataDir);
+    const workspace = path.join(dataDir, "workspace");
+    const workbook = path.join(workspace, "input.xlsx");
+    await mkdir(workspace);
+    const bytes = Buffer.alloc(120_000, 203);
+    await writeFile(workbook, bytes);
+    const execute = vi.fn(async function* (_computer, request: { argv: string[] }) {
+      const helper = request.argv[3]!.replace(
+        "ROOT = '/home/rakazo/workspace'",
+        `ROOT = ${JSON.stringify(workspace)}`,
+      );
+      yield {
+        type: "stdout",
+        data: execFileSync("python3", ["-I", "-c", helper, request.argv[4]!], {
+          encoding: "utf8",
+        }),
+      };
+      yield { type: "exit", code: 0 };
     });
-    await expect(state.service.restore(actor, "bot", computer, snapshot)).rejects.toThrow(
-      "Restored workspace verification failed",
+    const service = new CheckpointFiles({ sandbox: { execute } as any, dataDir });
+    const snapshot = await service.capture(actor, "bot", computer);
+    await writeFile(workbook, "changed");
+    await service.restore(actor, "bot", computer, snapshot, "dedicated", 5);
+    expect(await readFile(workbook)).toEqual(bytes);
+  },
+);
+
+it.skipIf(process.platform === "win32")(
+  "replaces a read-only live tree atomically and refuses an older publication",
+  async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "checkpoint-readonly-"));
+    temporary.push(dataDir);
+    const workspace = path.join(dataDir, "homes", "bot", "workspace");
+    const folder = path.join(workspace, "z-reviewed");
+    const workbook = path.join(workspace, "a-validated.xlsx");
+    await mkdir(folder, { recursive: true });
+    await writeFile(path.join(folder, "policy.rost"), "reviewed policy");
+    await writeFile(workbook, "original workbook");
+    await chmod(folder, 0o555);
+    vi.stubEnv("CHECKPOINT_DIRECT_DOCKER", "1");
+    const service = new CheckpointFiles({ sandbox: { execute: vi.fn() } as any, dataDir });
+    try {
+      const original = await service.capture(actor, "bot", computer);
+      await writeFile(workbook, "current workbook");
+      const rescue = await service.capture(actor, "bot", computer);
+      await service.restore(actor, "bot", computer, original, "dedicated", 3);
+      expect(await readFile(workbook, "utf8")).toBe("original workbook");
+      expect((await lstat(folder)).mode & 0o777).toBe(0o555);
+      await expect(service.restore(actor, "bot", computer, rescue, "dedicated", 2)).rejects.toThrow(
+        "newer checkpoint restore",
+      );
+      expect(await readFile(workbook, "utf8")).toBe("original workbook");
+      await service.restore(actor, "bot", computer, rescue, "dedicated", 4);
+      expect(await readFile(workbook, "utf8")).toBe("current workbook");
+    } finally {
+      await chmod(folder, 0o755);
+    }
+  },
+);
+
+it.skipIf(process.platform === "win32")(
+  "leaves the old tree untouched when excluded data conflicts with staged files",
+  async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "checkpoint-cache-conflict-"));
+    temporary.push(dataDir);
+    const workspace = path.join(dataDir, "homes", "bot", "workspace");
+    const location = path.join(workspace, "node_modules");
+    const workbook = path.join(workspace, "a-current.xlsx");
+    await mkdir(workspace, { recursive: true });
+    await writeFile(location, "previously a regular workspace file");
+    vi.stubEnv("CHECKPOINT_DIRECT_DOCKER", "1");
+    const service = new CheckpointFiles({ sandbox: { execute: vi.fn() } as any, dataDir });
+    const original = await service.capture(actor, "bot", computer);
+    await unlink(location);
+    await mkdir(location);
+    await writeFile(path.join(location, "dependency"), "excluded data");
+    await writeFile(workbook, "current workbook");
+    await expect(service.restore(actor, "bot", computer, original)).rejects.toThrow(
+      "conflicts with an excluded",
     );
+    expect(await readFile(workbook, "utf8")).toBe("current workbook");
+    expect(await readFile(path.join(location, "dependency"), "utf8")).toBe("excluded data");
   },
 );
 

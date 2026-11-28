@@ -1,4 +1,4 @@
-import type { Prisma, PrismaClient } from "./client.js";
+import type { Prisma, PrismaClient } from "./database/client.js";
 
 type CheckpointReader = Pick<PrismaClient, "thread" | "conversationBranch">;
 
@@ -28,7 +28,10 @@ export function checkpointArtifactIds(
 }
 
 export class CheckpointConflictError extends Error {
-  constructor(message = "Workspace changed or is unavailable during checkpoint recovery") {
+  constructor(
+    message = "Workspace changed or is unavailable during checkpoint recovery",
+    readonly reason: "conflict" | "stale" | "incomplete" = "conflict",
+  ) {
     super(message);
     this.name = "CheckpointConflictError";
   }

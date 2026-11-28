@@ -1,6 +1,5 @@
 import { beforeEach, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
-vi.mock('@rakazo/adapters', async () => ({ policyOwnerDecision: (await import('../../../../packages/adapters/src/policy-workflow.js')).policyOwnerDecision }));
 import { mountPolicyWorkflow } from './policy-workflow-http.js';
 let app:Hono, service:any, actor:any;
 const identity={userId:'u',spaceId:'s',email:'manager@example.invalid',isDeploymentOwner:false};
@@ -10,7 +9,8 @@ beforeEach(()=>{app=new Hono();service={get:vi.fn(async()=>({id:input.id})),deci
 const post=(data:unknown=input,headers:Record<string,string>={})=>app.request('https://test/api/policy-workflow/decide',{
   method:'POST',headers:{origin:'https://test','content-type':'application/json',cookie:'session=synthetic',...headers},body:JSON.stringify(data)});
 it('uses the signed-in manager session without password re-entry, never agent bearer',async()=>{
-  for(const headers of [{origin:'https://evil'},{authorization:'Bearer agent'},{cookie:''}])expect((await post(input,headers)).status).toBe(403);
+  const invalidHeaders: Record<string, string>[] = [{origin:'https://evil'},{authorization:'Bearer agent'},{cookie:''}];
+  for(const headers of invalidHeaders)expect((await post(input,headers)).status).toBe(403);
   expect(service.decide).not.toHaveBeenCalled();
   expect((await post()).status).toBe(200);expect(service.decide).toHaveBeenCalledWith(identity,input.id,input.digest,'approve');
 });

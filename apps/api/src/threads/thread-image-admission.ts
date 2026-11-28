@@ -1,0 +1,208 @@
+import { ORPCError } from "@orpc/server";
+import type { SecretStore } from "@rakazo/adapter-kit";
+import type { CodexLiveCatalog } from "@rakazo/adapters";
+import {
+  CHATGPT_OAUTH_PROVIDER,
+  codexLiveModel,
+  connectionModelSettings,
+  findConnectedModelCredential,
+  knownModelImageInput,
+  memberOrganizationMainModel,
+  modelAcceptsImageInput,
+  modelProviderAllowed,
+  modelProviderAllowlist,
+  ORGANIZATION_MODEL_CONNECTION_PREFIX,
+  parseModelSecret,
+  resolveMemberMainModel,
+  runModelChoice,
+  runtimeModelAcceptsImages,
+  selectConfiguredModel,
+  selectedOrganizationModelConnection,
+} from "@rakazo/adapters";
+import type { Actor, MessageBlock } from "@rakazo/contracts";
+import { OPENAI_COMPATIBLE_PROVIDER_ID } from "@rakazo/contracts";
+import { MODEL_IMAGE_INPUT_ERROR, MODEL_IMAGE_INPUT_UNKNOWN } from "@rakazo/core";
+import type { PrismaClient } from "@rakazo/db";
+import { appliedModelRole, findModelCredential, findModelCredentialById } from "@rakazo/db";
+
+type ModelChoice = {
+  modelProvider: string | null;
+  modelId: string | null;
+  thinkingLevel: string | null;
+};
+export type ImageAdmissionRun = ModelChoice & {
+  status: string;
+  modelPinned?: boolean;
+  trigger?: string | null;
+};
+
+/** Never refresh credentials while admitting a send. A supplied Codex catalog may answer image input. */
+export async function assertThreadImageInput(
+  prisma: PrismaClient,
+  actor: Actor,
+  botId: string,
+  blocks: MessageBlock[],
+  run?: ImageAdmissionRun,
+  configuration?: {
+    secrets: Pick<SecretStore, "load">;
+    deployment: { provider: string; model: string } | null;
+    hostedProvider?: string;
+    codexCatalog?: CodexLiveCatalog;
+  },
+) {
+  if (!blocks.some((block) => block.kind === "image")) return;
+  const bot = await prisma.bot.findFirst({
+    where: { id: botId, spaceId: actor.spaceId },
+    select: { modelProvider: true, modelId: true, thinkingLevel: true },
+  });
+  if (!bot) return;
+  // A running turn has already selected its model, including any backup switch.
+  const running = run?.status === "running" && run.modelProvider && run.modelId;
+  const override = run ? runModelChoice(run, bot) : bot;
+  const credentialFor = (choice: ModelChoice) =>
+    choice.modelProvider && choice.modelId
+      ? configuration
+        ? findConnectedModelCredential(
+            prisma,
+            configuration.secrets,
+            actor,
+            choice.modelProvider,
+            choice.modelId,
+          )
+        : findModelCredential(prisma, actor, choice.modelProvider, choice.modelId)
+      : null;
+  const overrideCredential = await credentialFor(override);
+  const selected = selectConfiguredModel({
+    override,
+    overrideCredential,
+    main: configuration
+      ? await resolveMemberMainModel({ prisma, secretStore: configuration.secrets }, actor)
+      : await mainModelWithoutSecrets(prisma, actor),
+    defaults: {
+      settings: await prisma.deploymentSettings.findUnique({ where: { id: "default" } }),
+      deployment: configuration?.deployment ?? null,
+    },
+    hostedProvider: configuration?.hostedProvider,
+  });
+  const provider = running ? run.modelProvider : selected.provider;
+  const id = running ? run.modelId : selected.id;
+  if (!provider || !id) return;
+  // A refused provider's run fails with the allowlist's own refusal, so it is not probed here.
+  if (!modelProviderAllowed(modelProviderAllowlist(), provider)) return;
+  let supportsImages = knownModelImageInput(provider, id);
+  const organizationConnection =
+    selected.provider === provider &&
+    selected.id === id &&
+    selected.connectionId?.startsWith(ORGANIZATION_MODEL_CONNECTION_PREFIX)
+      ? await selectedOrganizationModelConnection(
+          prisma,
+          actor,
+          selected.connectionId,
+          provider,
+          id,
+        )
+      : undefined;
+  const credential =
+    organizationConnection !== undefined
+      ? null
+      : running && (override.modelProvider !== provider || override.modelId !== id)
+        ? await credentialFor(run)
+        : running
+          ? overrideCredential
+          : selected.credential;
+  if (organizationConnection && supportsImages === undefined) {
+    const secret = configuration
+      ? await readModelSecret(configuration.secrets, organizationConnection)
+      : undefined;
+    supportsImages = secret
+      ? connectionModelSettings(secret, provider, id, {
+          defaultModel: id,
+          supportsImages: organizationConnection.supportsImages,
+        }).images
+      : (organizationConnection.supportsImages ?? undefined);
+  }
+  if (supportsImages === undefined && configuration && credential) {
+    // A model the catalog cannot describe reads images when its settings say so; without
+    // one its capability is unknown, so the user is asked to configure it.
+    const secret = await loadModelSecret(prisma, configuration.secrets, actor, credential);
+    if (secret) {
+      const settings = connectionModelSettings(secret, provider, id, {
+        defaultModel: credential.defaultModel,
+        supportsImages: await legacyImageInput(prisma, actor, credential.id),
+      });
+      supportsImages =
+        provider === OPENAI_COMPATIBLE_PROVIDER_ID
+          ? modelAcceptsImageInput(provider, id, settings.images) || settings.images
+          : settings.images;
+    }
+  }
+  if (provider === CHATGPT_OAUTH_PROVIDER && configuration?.codexCatalog && credential) {
+    const secret = await loadModelSecret(prisma, configuration.secrets, actor, credential);
+    const live = secret
+      ? await codexLiveModel(configuration.codexCatalog, actor.userId, secret, id, {
+          waitMs: 0,
+        }).catch(() => undefined)
+      : undefined;
+    if (live?.supportsImages !== undefined) supportsImages = live.supportsImages;
+  }
+  const unknownInput =
+    organizationConnection === null ||
+    (supportsImages === undefined && !runtimeModelAcceptsImages(provider, id));
+  if (supportsImages === false || unknownInput)
+    throw new ORPCError("CONFLICT", {
+      message: unknownInput ? MODEL_IMAGE_INPUT_UNKNOWN : MODEL_IMAGE_INPUT_ERROR,
+      data: { reason: "model_image_input_unsupported" },
+    });
+}
+
+/** An unreadable secret describes nothing, so the model's image input stays unknown. */
+async function loadModelSecret(
+  prisma: PrismaClient,
+  secrets: Pick<SecretStore, "load">,
+  actor: Actor,
+  credential: { secretId: string },
+) {
+  const row = await prisma.secret.findFirst({
+    where: { id: credential.secretId, userId: actor.userId, spaceId: null },
+  });
+  return row
+    ? readModelSecret(secrets, { ciphertext: row.ciphertext, secretId: row.id })
+    : undefined;
+}
+
+async function readModelSecret(
+  secrets: Pick<SecretStore, "load">,
+  row: { ciphertext: string; secretId: string },
+) {
+  try {
+    return parseModelSecret(await secrets.load(row.ciphertext, row.secretId));
+  } catch {
+    return undefined;
+  }
+}
+
+/** Connections saved before per-model image settings recorded the capability on the row. */
+async function legacyImageInput(prisma: PrismaClient, actor: Actor, credentialId: string) {
+  return (
+    await prisma.userModelCredential.findFirst({
+      where: { id: credentialId, userId: actor.userId },
+      select: { supportsImages: true },
+    })
+  )?.supportsImages;
+}
+
+/** The main model as resolveMemberMainModel picks it, without reading secrets. */
+async function mainModelWithoutSecrets(prisma: PrismaClient, actor: Actor) {
+  const organization = await memberOrganizationMainModel(prisma, actor);
+  if (organization) return organization;
+  const { primary } = await appliedModelRole(prisma, actor, "main");
+  if (!primary) return null;
+  return {
+    ...primary,
+    credential: primary.creditOfferingId
+      ? null
+      : primary.credentialId
+        ? await findModelCredentialById(prisma, actor, primary.credentialId, primary.provider)
+        : await findModelCredential(prisma, actor, primary.provider, primary.modelId),
+  };
+}

@@ -6,8 +6,8 @@ import {
   checkpointRunFields,
   resolveCheckpointSegments,
 } from "./checkpoints.js";
-import type { Prisma, PrismaClient } from "./client.js";
-import { assertRunCanWriteHistory, createThreadMessageInTransaction } from "./messages.js";
+import type { Prisma, PrismaClient } from "./database/client.js";
+import { assertRunCanWriteHistory, createThreadMessageInTransaction } from "./threads/messages.js";
 
 const branches = [
   { id: "A", parentBranchId: null, parentCutoffMessageSeq: null, parentCutoffEventSeq: null },

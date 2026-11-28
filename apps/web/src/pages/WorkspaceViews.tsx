@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Bot, RefreshCw, Users } from "lucide-react";
+import { OptionSelect } from "@rakazo/ui-web";
 import { withSpaceHeaders } from "../lib/rpc";
 import { TeamSettingsPanel } from "./TeamSettingsPanel";
 import "./workspace-motion.css";
@@ -20,7 +21,7 @@ export async function workspaceApi<T>(route: string, signal?: AbortSignal): Prom
 const number = (n: number | null | undefined) => n == null ? "Unknown" : Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 2 }).format(n);
 const money = (n: number | null | undefined) => n == null ? "Unknown" : "$" + n.toFixed(2);
 const bytes = (n: number | null | undefined) => n == null ? "Unknown" : n >= 1e9 ? (n/1e9).toFixed(2) + " GB" : (n/1e6).toFixed(1) + " MB";
-const control = "max-w-full min-w-0 rounded-md border border-border bg-background px-2 py-1.5 text-sm";
+const control = "max-w-full min-w-0 rounded-md border border-border bg-background px-2 py-1.5 text-body";
 
 function usePeople() {
   const [people, setPeople] = useState<People | null>(null); const [error, setError] = useState("");
@@ -29,9 +30,9 @@ function usePeople() {
   return { people, error };
 }
 function PersonPicker({ people, userId, onChange }: { people: People | null; userId: string; onChange: (id: string) => void }) {
-  return people?.manager ? <select className={control} aria-label="Team member" value={userId || people.userId} onChange={(e) => onChange(e.target.value)}>
-    {people.members.map((p) => <option key={p.userId} value={p.userId}>{p.name}{p.userId === people.userId ? " (you)" : ""}</option>)}
-  </select> : <span className="text-sm text-muted-foreground">Your workspace</span>;
+  return people?.manager ? <OptionSelect className={control} aria-label="Team member" value={userId || people.userId} onValueChange={onChange}
+    options={people.members.map((p) => ({ value: p.userId, label: p.name + (p.userId === people.userId ? " (you)" : "") }))}
+  /> : <span className="text-body text-muted-foreground">Your workspace</span>;
 }
 
 export function WorkspaceUsagePanel() {
@@ -66,31 +67,35 @@ export function WorkspaceUsagePanel() {
   return <section className="workspace-enter min-w-0 space-y-7 py-2" aria-label="Usage dashboard">
     <div className="flex flex-wrap items-center gap-2">
       <PersonPicker people={people} userId={userId} onChange={(id) => { setUserId(id); setModel(""); setBot(""); }}/>
-      <select className={control} aria-label="Agent filter" value={bot} onChange={(e) => setBot(e.target.value)}><option value="">All agents</option>{data?.bots.map((b) => <option value={b.id} key={b.id}>{b.name}</option>)}</select>
-      <select className={control} aria-label="Model filter" value={model} onChange={(e) => setModel(e.target.value)}><option value="">All models</option>{[...new Set(data?.rows.map((r) => r.model))].map((m) => <option key={m}>{m}</option>)}</select>
-      <select className={control} aria-label="Usage metric" value={metric} onChange={(e) => setMetric(e.target.value)}><option value="costUsd">Cost</option><option value="totalTokens">Tokens</option><option value="calls">Calls</option></select>
-      <select className={control} aria-label="Usage period" value={days} onChange={(e) => setDays(Number(e.target.value))}>{[7,30,90].map((n) => <option value={n} key={n}>{n} days</option>)}</select>
+      <OptionSelect className={control} aria-label="Agent filter" value={bot} onValueChange={setBot}
+        options={[{ value: "", label: "All agents" }, ...(data?.bots ?? []).map((b) => ({ value: b.id, label: b.name }))]} />
+      <OptionSelect className={control} aria-label="Model filter" value={model} onValueChange={setModel}
+        options={[{ value: "", label: "All models" }, ...[...new Set(data?.rows.map((r) => r.model))].map((value) => ({ value, label: value }))]} />
+      <OptionSelect className={control} aria-label="Usage metric" value={metric} onValueChange={setMetric}
+        options={[{ value: "costUsd", label: "Cost" }, { value: "totalTokens", label: "Tokens" }, { value: "calls", label: "Calls" }]} />
+      <OptionSelect className={control} aria-label="Usage period" value={String(days)} onValueChange={(value) => setDays(Number(value))}
+        options={[7, 30, 90].map((n) => ({ value: String(n), label: n + " days" }))} />
       <button className="ml-auto rounded-md p-2 hover:bg-accent" title="Refresh usage" aria-label="Refresh usage" onClick={() => setRevision((n) => n+1)}><RefreshCw size={17}/></button>
     </div>
     {(error || peopleError) && <p role="alert">{error || peopleError}</p>}
     {!data && !error && <p role="status">Loading usage…</p>}
     {data && <><div className="grid min-w-0 gap-7 lg:grid-cols-[minmax(180px,1fr)_minmax(280px,2fr)]">
-      <div><p className="break-words text-[40px] font-semibold leading-tight">{format(total)}</p><p className="mt-2 text-xs text-muted-foreground">{rows.reduce((n,r) => n+r.calls,0)} calls · {metric === "costUsd" ? "Recorded cost / estimate · USD" : metric === "totalTokens" ? "Processed tokens" : "Model calls"}</p>
-        <p className="mt-4 text-sm">{data.name}</p><p className="text-xs text-muted-foreground">{new Date(data.observedAt).toLocaleTimeString()} · UTC days</p></div>
-      <div className="min-w-0"><h3 className="mb-3 text-sm font-medium">Daily {metric === "costUsd" ? "cost" : metric === "calls" ? "calls" : "tokens"}</h3>
+      <div><p className="break-words text-display font-semibold leading-tight">{format(total)}</p><p className="mt-2 flex flex-wrap gap-x-3 text-label text-muted-foreground"><span>{rows.reduce((n,r) => n+r.calls,0)} calls</span><span>{metric === "costUsd" ? "Recorded cost estimate (USD)" : metric === "totalTokens" ? "Processed tokens" : "Model calls"}</span></p>
+        <p className="mt-4 text-body">{data.name}</p><p className="text-label text-muted-foreground">{new Date(data.observedAt).toLocaleTimeString()} <span>(UTC days)</span></p></div>
+      <div className="min-w-0"><h3 className="mb-3 text-body font-medium">Daily {metric === "costUsd" ? "cost" : metric === "calls" ? "calls" : "tokens"}</h3>
         <div className="h-44 border-b border-border" role="img" aria-label="Daily usage chart">
           <svg viewBox="0 0 600 165" preserveAspectRatio="none" className="h-full w-full" aria-hidden="true">
             {[10,85,160].map((y) => <line key={y} x1="0" y1={y} x2="600" y2={y} stroke="currentColor" opacity=".08" vectorEffect="non-scaling-stroke"/>)}
             {segments.filter((s) => s.length).map((points,i) => <polyline key={i} points={points.join(" ")} fill="none" stroke="#a78bfa" strokeWidth="2" vectorEffect="non-scaling-stroke"/>)}
           </svg>
-        </div><div className="mt-2 flex justify-between text-xs text-muted-foreground"><span>{daily[0]?.id}</span><span>{daily.at(-1)?.id}</span></div>
-        <details className="mt-3 text-xs text-muted-foreground"><summary className="cursor-pointer">Daily data</summary><table className="mt-2 w-full text-left"><tbody>{daily.map((d) => <tr key={d.id}><th className="py-1 font-normal">{d.id}</th><td className="text-right">{format(d.value)}</td></tr>)}</tbody></table></details>
+        </div><div className="mt-2 flex justify-between text-label text-muted-foreground"><span>{daily[0]?.id}</span><span>{daily.at(-1)?.id}</span></div>
+        <details className="mt-3 text-label text-muted-foreground"><summary className="cursor-pointer">Daily data</summary><table className="mt-2 w-full text-left"><tbody>{daily.map((d) => <tr key={d.id}><th className="py-1 font-normal">{d.id}</th><td className="text-right">{format(d.value)}</td></tr>)}</tbody></table></details>
       </div></div>
-      <dl className="grid grid-cols-2 gap-4 border-y border-border py-5 sm:grid-cols-3 lg:grid-cols-5">{[["Processed tokens","totalTokens"],["Cached input","cacheReadTokens"],["Uncached input","inputTokens"],["Cache creation","cacheWriteTokens"],["Output","outputTokens"]].map(([label,key]) => <div key={key}><dt className="text-xs text-muted-foreground">{label}</dt><dd className="mt-2 text-xl">{number(sum(rows,key!))}</dd></div>)}</dl>
-      <div><div className="mb-3 flex items-center justify-between gap-2"><h3 className="font-medium">Breakdown</h3><div role="group" aria-label="Breakdown" className="flex rounded-md border border-border p-1">{["model","agent","day"].map((key) => <button key={key} aria-pressed={breakdown === key} onClick={() => setBreakdown(key)} className={"rounded px-3 py-1 text-xs capitalize " + (breakdown === key ? "bg-accent" : "")}>{key}</button>)}</div></div>
-        <div className="overflow-auto"><table className="w-full text-left text-sm"><thead className="text-xs text-muted-foreground"><tr><th className="py-2 capitalize">{breakdown}</th><th>Cost</th><th>Tokens</th><th>Calls</th></tr></thead><tbody>{[...grouped].map(([key, items]) => <tr className="border-t border-border" key={key}><td className="max-w-56 break-words py-3 pr-3">{breakdown === "agent" ? data.bots.find((b) => b.id === key)?.name ?? "Removed / unattributed agent" : key}</td><td>{money(sum(items,"costUsd"))}</td><td>{number(sum(items,"totalTokens"))}</td><td>{items.reduce((n,r) => n+r.calls,0)}</td></tr>)}</tbody></table></div>
-        {!rows.length && <p className="py-4 text-sm text-muted-foreground">No recorded calls in this period.</p>}
-      </div><p className="text-xs text-muted-foreground">Unknown means the provider did not supply complete accounting. Cost is not an invoice.</p>
+      <dl className="grid grid-cols-2 gap-4 border-y border-border py-5 sm:grid-cols-3 lg:grid-cols-5">{[["Processed tokens","totalTokens"],["Cached input","cacheReadTokens"],["Uncached input","inputTokens"],["Cache creation","cacheWriteTokens"],["Output","outputTokens"]].map(([label,key]) => <div key={key}><dt className="text-label text-muted-foreground">{label}</dt><dd className="mt-2 text-heading2">{number(sum(rows,key!))}</dd></div>)}</dl>
+      <div><div className="mb-3 flex items-center justify-between gap-2"><h3 className="font-medium">Breakdown</h3><div role="group" aria-label="Breakdown" className="flex rounded-md border border-border p-1">{["model","agent","day"].map((key) => <button key={key} aria-pressed={breakdown === key} onClick={() => setBreakdown(key)} className={"rounded px-3 py-1 text-label capitalize " + (breakdown === key ? "bg-accent" : "")}>{key}</button>)}</div></div>
+        <div className="overflow-auto"><table className="w-full text-left text-body"><thead className="text-label text-muted-foreground"><tr><th className="py-2 capitalize">{breakdown}</th><th>Cost</th><th>Tokens</th><th>Calls</th></tr></thead><tbody>{[...grouped].map(([key, items]) => <tr className="border-t border-border" key={key}><td className="max-w-56 break-words py-3 pr-3">{breakdown === "agent" ? data.bots.find((b) => b.id === key)?.name ?? "Removed / unattributed agent" : key}</td><td>{money(sum(items,"costUsd"))}</td><td>{number(sum(items,"totalTokens"))}</td><td>{items.reduce((n,r) => n+r.calls,0)}</td></tr>)}</tbody></table></div>
+        {!rows.length && <p className="py-4 text-body text-muted-foreground">No recorded calls in this period.</p>}
+      </div><p className="text-label text-muted-foreground">Unknown means the provider did not supply complete accounting. Cost is not an invoice.</p>
     </>}
   </section>;
 }
@@ -110,13 +115,13 @@ export function WorkspaceStoragePanel() {
     <div className="flex items-center justify-between gap-2"><PersonPicker people={people} userId={userId} onChange={setUserId}/><button title="Measure storage again" aria-label="Measure storage again" className="rounded-md p-2 hover:bg-accent" onClick={() => setRevision((n) => n+1)}><RefreshCw size={17}/></button></div>
     {(error || peopleError) && <p role="alert">{error || peopleError}</p>}
     {!data && !error && <p role="status">Measuring storage…</p>}
-    {data && <><div><p className="text-sm text-muted-foreground">{data.name}</p><p className="mt-2 text-[36px] font-semibold">{bytes(measured)}{!complete && <span className="ml-2 text-sm font-normal text-muted-foreground">partial</span>}</p>
-      <p className="mt-2 text-xs text-muted-foreground">Measured {new Date(data.observedAt).toLocaleTimeString()} · 60-second observation window</p></div>
+    {data && <><div><p className="text-body text-muted-foreground">{data.name}</p><p className="mt-2 text-display font-semibold">{bytes(measured)}{!complete && <span className="ml-2 text-body font-normal text-muted-foreground">partial</span>}</p>
+      <p className="mt-2 text-label text-muted-foreground">Measured {new Date(data.observedAt).toLocaleTimeString()} <span className="ml-2">60-second observation window</span></p></div>
       <div><div className="flex h-3 overflow-hidden rounded-md bg-muted" aria-label="Storage categories">{amounts.map((n,i) => <div key={i} className={["bg-blue-500","bg-amber-500","bg-emerald-500"][i]} style={{ width: (measured ? n/measured*100 : 0) + "%" }}/>)}</div>
-        <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-3">{["Agent workspaces","Downloads","Chat files"].map((label,i) => <div className="flex items-center gap-2" key={label}><span className={"size-2 rounded-full " + ["bg-blue-500","bg-amber-500","bg-emerald-500"][i]}/><dt>{label}</dt><dd className="ml-auto">{bytes(amounts[i])}</dd></div>)}</dl></div>
-      <div className="flex flex-wrap gap-5 border-y border-border py-4 text-sm"><span>Quota {bytes(data.quota.limitBytes)}</span><span>{data.quota.enforced ? "Kernel enforced" : "Not enforced / not verified"}</span><span>Quota-accounted {bytes(data.quota.usedBytes)}</span></div>
-      <div><h3 className="mb-3 font-medium">Agents</h3><ul className="divide-y divide-border rounded-lg border border-border">{data.rows.map((row) => <li className="flex items-center gap-3 p-4" key={row.botId}><Bot size={21} className="shrink-0 text-muted-foreground"/><div className="min-w-0 flex-1"><p className="break-words">{row.name}</p><p className="text-xs text-muted-foreground">{row.shared ? "Shared computer; counted once" : row.usage ? number(categories.reduce((n,k) => n+(row.usage![k]?.[1] ?? 0),0)) + " files" : "Measurement unavailable"}</p></div><span className="shrink-0 text-sm">{row.shared ? "Shared" : row.usage ? bytes(categories.reduce((n,k) => n+(row.usage![k]?.[0] ?? 0),0)) : "Unknown"}</span></li>)}</ul></div>
-      <p className="text-xs text-muted-foreground">{data.scope}. No files are deleted. Workspace and published copies can occupy separate storage.</p>
+        <dl className="mt-4 grid gap-3 text-body sm:grid-cols-3">{["Agent workspaces","Downloads","Chat files"].map((label,i) => <div className="flex items-center gap-2" key={label}><span className={"size-2 rounded-full " + ["bg-blue-500","bg-amber-500","bg-emerald-500"][i]}/><dt>{label}</dt><dd className="ml-auto">{bytes(amounts[i])}</dd></div>)}</dl></div>
+      <div className="flex flex-wrap gap-5 border-y border-border py-4 text-body"><span>Quota {bytes(data.quota.limitBytes)}</span><span>{data.quota.enforced ? "Kernel enforced" : "Not enforced / not verified"}</span><span>Quota-accounted {bytes(data.quota.usedBytes)}</span></div>
+      <div><h3 className="mb-3 font-medium">Agents</h3><ul className="divide-y divide-border rounded-lg border border-border">{data.rows.map((row) => <li className="flex items-center gap-3 p-4" key={row.botId}><Bot size={21} className="shrink-0 text-muted-foreground"/><div className="min-w-0 flex-1"><p className="break-words">{row.name}</p><p className="text-label text-muted-foreground">{row.shared ? "Shared computer; counted once" : row.usage ? number(categories.reduce((n,k) => n+(row.usage![k]?.[1] ?? 0),0)) + " files" : "Measurement unavailable"}</p></div><span className="shrink-0 text-body">{row.shared ? "Shared" : row.usage ? bytes(categories.reduce((n,k) => n+(row.usage![k]?.[0] ?? 0),0)) : "Unknown"}</span></li>)}</ul></div>
+      <p className="text-label text-muted-foreground">{data.scope}. No files are deleted. Workspace and published copies can occupy separate storage.</p>
     </>}
   </section>;
 }
@@ -124,10 +129,10 @@ export function WorkspaceStoragePanel() {
 export function WorkspaceTeamPanel() {
   const { people, error } = usePeople(); const [query, setQuery] = useState("");
   return <section className="workspace-enter space-y-6 py-2">
-    <div className="flex items-center gap-3"><Users size={20}/><h3 className="font-medium">{people?.manager ? "Team members" : "Your account"}</h3><span className="ml-auto text-xs text-muted-foreground">{people?.members.length ?? "—"} members</span></div>
+    <div className="flex items-center gap-3"><Users size={20}/><h3 className="font-medium">{people?.manager ? "Team members" : "Your account"}</h3><span className="ml-auto text-label text-muted-foreground">{people?.members.length ?? "—"} members</span></div>
     {error && <p role="alert">{error}</p>}
     <input className={control + " w-full"} aria-label="Search members" placeholder="Search members" value={query} onChange={(e) => setQuery(e.target.value)}/>
-    <ul className="divide-y divide-border rounded-lg border border-border">{people?.members.filter((p) => (p.name+" "+p.email).toLowerCase().includes(query.toLowerCase())).map((p) => <li className="flex items-center justify-between gap-4 p-4" key={p.userId}><div className="min-w-0"><p className="break-words font-medium">{p.name}</p><p className="break-all text-xs text-muted-foreground">{p.email}</p></div><span className="text-xs capitalize text-muted-foreground">{p.role}</span></li>)}</ul>
+    <ul className="divide-y divide-border rounded-lg border border-border">{people?.members.filter((p) => (p.name+" "+p.email).toLowerCase().includes(query.toLowerCase())).map((p) => <li className="flex items-center justify-between gap-4 p-4" key={p.userId}><div className="min-w-0"><p className="break-words font-medium">{p.name}</p><p className="break-all text-label text-muted-foreground">{p.email}</p></div><span className="text-label capitalize text-muted-foreground">{p.role}</span></li>)}</ul>
     <TeamSettingsPanel />
   </section>;
 }

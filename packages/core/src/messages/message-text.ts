@@ -1,0 +1,45 @@
+import type { MessageBlock } from "@rakazo/contracts";
+import { messagingProviderLabel } from "../messaging/messaging-providers.js";
+
+/** A relayed chat-app message with who sent it and over what. */
+export function channelMessageLine(
+  block: Extract<MessageBlock, { kind: "channel_message" }>,
+): string {
+  return `${block.fromLabel} (${messagingProviderLabel(block.provider, block.transport)}): ${block.text}`;
+}
+
+export function feedbackReceiptText(
+  block: Extract<MessageBlock, { kind: "feedback_receipt" }>,
+): string {
+  return `${block.description}\nReceipt ${block.reportId}`;
+}
+
+export function isFeedbackReceiptMessage(blocks: readonly MessageBlock[]): boolean {
+  return blocks.length > 0 && blocks.every((block) => block.kind === "feedback_receipt");
+}
+
+/** The message text available for selection, including receipt references. */
+export function selectableMessageText(message: { blocks: readonly MessageBlock[] }): string {
+  return message.blocks
+    .map((block) => {
+      if (block.kind === "channel_message") return channelMessageLine(block);
+      if (block.kind === "feedback_receipt") return feedbackReceiptText(block);
+      if (block.kind === "text" || block.kind === "progress" || block.kind === "ask")
+        return block.text;
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+/** Plain message text for clipboard copy. */
+export function copyableMessageText(message: { blocks: readonly MessageBlock[] }): string {
+  return selectableMessageText(message).trim();
+}
+
+/** Several messages for one clipboard copy, in the order given, a blank line between them. */
+export function copyableMessagesText(
+  messages: readonly { blocks: readonly MessageBlock[] }[],
+): string {
+  return messages.map(copyableMessageText).filter(Boolean).join("\n\n");
+}

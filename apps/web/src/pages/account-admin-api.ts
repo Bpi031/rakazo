@@ -5,6 +5,7 @@ export async function accountAdminApi<T>(
   operation: string,
   body?: unknown,
   signal?: AbortSignal,
+  spaceId?: string | null,
 ): Promise<T> {
   const timeout = AbortSignal.timeout(12_000);
   const bound = signal ? AbortSignal.any([signal, timeout]) : timeout;
@@ -12,7 +13,7 @@ export async function accountAdminApi<T>(
     method: body === undefined ? "GET" : "POST",
     credentials: "include",
     signal: bound,
-    headers: withSpaceHeaders({ "content-type": "application/json" }),
+    headers: withSpaceHeaders({ "content-type": "application/json" }, spaceId),
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   if (!response.ok || !response.headers.get("content-type")?.includes("application/json"))

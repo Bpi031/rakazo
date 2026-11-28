@@ -1,9 +1,24 @@
 @import "tailwindcss";
 @import "@rakazo/ui-web/styles.css";
-@import "@fontsource-variable/geist/wght.css";
 
 @source "../../packages/ui-web/src/**/*.{ts,tsx}";
 @source "./src/**/*.{ts,tsx}";
+/* Unused, and its breakpoints would flip this sheet's media queries at common desktop widths,
+   which restyles every element on the page mid-resize. */
+@source not inline("container");
+
+/* The floating chat header draws over the transcript. The fade, the transcript's top
+   padding and its scroll padding all read this clearance; it is global so fixture
+   transcripts and any other surface that renders the transcript share the same spacing. */
+:root {
+  --chat-top-clearance: 5rem;
+}
+
+@media (min-width: 48rem) {
+  :root {
+    --chat-top-clearance: 5.25rem;
+  }
+}
 
 html,
 body,
@@ -12,7 +27,54 @@ body,
   margin: 0;
   background: var(--background);
   color: var(--foreground);
-  font-family: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--font-sans);
+  font-weight: var(--font-weight-normal);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* viewport-fit=cover lets the shell reach the screen edges; keep it clear of notches and the home indicator. */
+#root {
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
+    env(safe-area-inset-left);
+}
+
+/* Switching spaces in place (pages/shell/space-switch.ts): the sidebar holds still while the
+   conversation crossfades, instead of the whole screen redrawing. */
+.rk-space-switching [data-space-switch="sidebar"] {
+  view-transition-name: rk-space-sidebar;
+}
+.rk-space-switching [data-space-switch="main"] {
+  view-transition-name: rk-space-main;
+}
+::view-transition-group(root),
+::view-transition-group(rk-space-sidebar),
+::view-transition-group(rk-space-main) {
+  animation-duration: 0s;
+}
+::view-transition-old(root),
+::view-transition-new(root),
+::view-transition-old(rk-space-sidebar),
+::view-transition-new(rk-space-sidebar) {
+  animation-duration: 120ms;
+  animation-timing-function: ease;
+}
+::view-transition-old(rk-space-main) {
+  animation: rk-space-out 120ms ease both;
+}
+::view-transition-new(rk-space-main) {
+  animation: rk-space-in 220ms cubic-bezier(0.22, 0.61, 0.36, 1) 60ms both;
+}
+@keyframes rk-space-out {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes rk-space-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
 }
 
 .rk-scroll::-webkit-scrollbar {
@@ -33,6 +95,22 @@ body,
   background: var(--scrollbar-hover);
 }
 
+/* Keep the page width stable if its responsive layout starts or stops overflowing. */
+@media (pointer: fine) {
+  .rk-page-preview {
+    scrollbar-gutter: stable;
+  }
+}
+
+@media (hover: hover) and (pointer: fine) and (forced-colors: none) {
+  .rk-page-preview:not(:hover, :focus-visible, [data-scrolling]) {
+    scrollbar-color: transparent transparent;
+  }
+  .rk-page-preview:not(:hover, :focus-visible, [data-scrolling])::-webkit-scrollbar-thumb {
+    background: transparent;
+  }
+}
+
 .app-drag {
   -webkit-app-region: drag;
   user-select: none;
@@ -50,4 +128,30 @@ body,
   50% {
     opacity: 0.3;
   }
+}
+
+/* A page prints alone and light: the app under an open page, its popups and its backdrop stay
+   off the paper, and the paper stays white past the page's end, whatever the app's theme. */
+@media print {
+  html:has([data-page-print]),
+  html:has([data-page-print]) body,
+  html:has([data-page-print]) #root {
+    height: auto;
+    background: #fff;
+  }
+  body:has([data-page-print]) > :not(:has([data-page-print])),
+  [data-slot="dialog-overlay"]:has(~ [data-page-print]) {
+    display: none;
+  }
+}
+
+/* Find in chat (pages/shell/chat-find-bar.tsx) paints its matches without touching the transcript.
+   Only while it is open: a highlight rule slows styling every element, and a page-wide one makes
+   any style change on <html>, such as a space switch's view transition, restyle all of them. */
+[data-finding] ::highlight(rk-find) {
+  background-color: color-mix(in oklab, var(--foreground) 18%, transparent);
+}
+[data-finding] ::highlight(rk-find-current) {
+  background-color: var(--primary);
+  color: var(--primary-foreground);
 }

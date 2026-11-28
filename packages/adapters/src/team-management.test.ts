@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
-import { managerRole, teamActionSchema, teamDigest, aggregateUsage, teamTools } from "./team-policy.js";
-import { memberScope, memberStorageKey, managerComputerEligible } from "./team-storage.js";
-import { TeamService } from "./team-service.js";
+import { managerRole, teamActionSchema, teamDigest, aggregateUsage, teamTools } from "./teams/team-policy.js";
+import { memberScope, memberStorageKey, managerComputerEligible } from "./teams/team-storage.js";
+import { TeamService } from "./teams/team-service.js";
 
 afterEach(() => vi.unstubAllEnvs());
 const actor = { userId: "alice", spaceId: "space", email: "a@example.com", isDeploymentOwner: false };

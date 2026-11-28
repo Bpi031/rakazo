@@ -2,5 +2,5 @@
 export const CLAUDE_CHATGPT_SUBSCRIPTION_FAQ = {
   question: "Can I use my Claude Pro/Max or ChatGPT Plus/Pro subscription?",
   answer:
-    "Yes — sign in with that subscription, or use an API key / OpenRouter / a local OpenAI-compatible server (Ollama, LM Studio, etc.). Rakazo does not pay the model bill.",
+    "Yes. In Rakazo's model settings, sign in with your Claude Pro or Max plan or an eligible ChatGPT plan. You can also connect an API key. See Model subscriptions in the docs for details.",
 } as const;

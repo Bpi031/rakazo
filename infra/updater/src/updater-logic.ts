@@ -1,4 +1,6 @@
+import { randomBytes } from "node:crypto";
 import path from "node:path";
+import type { ServerUpdateRun } from "@rakazo/contracts";
 import {
   DEFAULT_IMAGE_TAG,
   IMAGE_TAG_ENV,
@@ -6,11 +8,15 @@ import {
   isValidImageTag,
   OFFICIAL_SERVER_IMAGE,
   PREVIOUS_IMAGE_TAG_ENV,
+  PUBLISHED_IMAGE_REPO,
   RECREATED_SERVICES,
   resolveComposeProjectName,
-  resolveUpdaterToken,
 } from "@rakazo/core";
+import { resolveUpdaterToken } from "@rakazo/core/node/secrets-guard";
 
+export const APPLICATION_IMAGE_ENV = "RAKAZO_IMAGE";
+export const COMPUTER_IMAGE_ENV = "RAKAZO_COMPUTER_IMAGE";
+export const OFFICIAL_COMPUTER_IMAGE = `ghcr.io/${PUBLISHED_IMAGE_REPO}/computer`;
 export const DEFAULT_UPDATER_PORT = 7092;
 export const DEFAULT_COMPOSE_FILE = "infra/compose/docker-compose.prod.yml";
 /** Compose's own convention for a multi-file list, matching COMPOSE_FILE. */
@@ -34,6 +40,9 @@ export interface UpdaterConfig {
   token: string;
   host: string;
   port: number;
+  /** Zero disables scheduled updates, including when the updater profile is enabled. */
+  autoUpdateIntervalMs: number;
+  autoUpdateDisabledReason: string | null;
 }
 
 /**
@@ -47,7 +56,7 @@ export function resolveUpdaterConfig(env: NodeJS.ProcessEnv): UpdaterConfig {
   if (deployDir === "" || !path.posix.isAbsolute(deployDir)) {
     throw new Error("Set RAKAZO_DEPLOY_DIR to the absolute path of the deployment directory.");
   }
-  const image = env.RAKAZO_IMAGE?.trim() || OFFICIAL_SERVER_IMAGE;
+  const image = env[APPLICATION_IMAGE_ENV]?.trim() || OFFICIAL_SERVER_IMAGE;
   if (!isValidImageName(image))
     throw new Error(`RAKAZO_IMAGE is not a usable image name: ${image}`);
   // Compose itself takes a list here (COMPOSE_FILE with COMPOSE_PATH_SEPARATOR), and a deployment
@@ -94,7 +103,20 @@ export function resolveUpdaterConfig(env: NodeJS.ProcessEnv): UpdaterConfig {
   if (!Number.isInteger(port) || port <= 0 || port > 65_535) {
     throw new Error("RAKAZO_UPDATER_PORT is not a port number.");
   }
+  const hours = Number(env.RAKAZO_AUTO_UPDATE_INTERVAL_HOURS?.trim() || "0");
+  if (!Number.isInteger(hours) || hours < 0 || hours > 168) {
+    throw new Error("RAKAZO_AUTO_UPDATE_INTERVAL_HOURS must be 0 (disabled) or 1–168.");
+  }
+  const mirroredComputer =
+    updateServices.includes("computer") &&
+    (env[COMPUTER_IMAGE_ENV]?.trim() || OFFICIAL_COMPUTER_IMAGE) !== OFFICIAL_COMPUTER_IMAGE;
+  const autoUpdateDisabledReason =
+    hours > 0 && (image !== OFFICIAL_SERVER_IMAGE || mirroredComputer)
+      ? "Scheduled updates require the official stable release images for the app and managed computer. Scheduling is disabled; manual controls remain available."
+      : null;
   return {
+    autoUpdateIntervalMs: autoUpdateDisabledReason === null ? hours * 60 * 60 * 1_000 : 0,
+    autoUpdateDisabledReason,
     deployDir,
     composeFiles: composeFiles.map((composeFile) => path.posix.join(deployDir, composeFile)),
     updateServices,
@@ -108,8 +130,8 @@ export function resolveUpdaterConfig(env: NodeJS.ProcessEnv): UpdaterConfig {
 }
 
 /**
- * Reads one assignment out of a `.env` file the way Compose does: later assignments win, comments
- * and blank lines are ignored, and one layer of quoting is removed.
+ * Reads one assignment out of a `.env` file: later assignments win, Compose-style comments and
+ * blank lines are ignored, and one layer of quoting is removed.
  */
 export function readEnvAssignment(contents: string, key: string): string | null {
   let found: string | null = null;
@@ -117,11 +139,35 @@ export function readEnvAssignment(contents: string, key: string): string | null 
     const line = raw.trim();
     if (line === "" || line.startsWith("#")) continue;
     const separator = line.indexOf("=");
-    if (separator <= 0 || line.slice(0, separator).trim() !== key) continue;
-    const value = line.slice(separator + 1).trim();
-    found = value.replace(/^"(.*)"$/, "$1").replace(/^'(.*)'$/, "$1");
+    if (separator <= 0) continue;
+    // Compose accepts `export KEY=value`; the writer strips the same prefix before matching.
+    const assigned = line
+      .slice(0, separator)
+      .trim()
+      .replace(/^export\s+/, "");
+    if (assigned !== key) continue;
+    const value = line.slice(separator + 1);
+    const quoted =
+      value.trim().match(/^"((?:\\.|[^"\\])*)"\s*(?:#.*)?$/) ??
+      value.trim().match(/^'((?:\\.|[^'\\])*)'\s*(?:#.*)?$/);
+    // Preserve hashes inside quotes or without separating whitespace. Keep the leading space
+    // until comments are removed so `KEY= # comment` is correctly read as an empty value.
+    found = quoted ? (quoted[1] ?? "") : value.replace(/\s+#.*$/, "").trim();
   }
   return found;
+}
+
+/**
+ * Secrets a newer Compose file requires that an older `.env` never had. An update writes the
+ * missing ones so its recreate does not stop at `Set POSTGRES_APP_PASSWORD in .env`; values
+ * already present, however they are set, are never replaced.
+ */
+export function missingSecretAssignments(
+  envContents: string,
+  generate: () => string = () => randomBytes(16).toString("hex"),
+): Record<string, string> {
+  const value = readEnvAssignment(envContents, "POSTGRES_APP_PASSWORD");
+  return value === null || value === "" ? { POSTGRES_APP_PASSWORD: generate() } : {};
 }
 
 export interface TagState {
@@ -150,3 +196,49 @@ export function truncateOutput(value: string): string {
  * request instead of an opaque 500.
  */
 export class UpdateRefused extends Error {}
+
+export function scheduledImageEnvironment(
+  config: UpdaterConfig,
+  env: string,
+): Record<string, string> {
+  const image = readEnvAssignment(env, APPLICATION_IMAGE_ENV) || OFFICIAL_SERVER_IMAGE;
+  const computer = readEnvAssignment(env, COMPUTER_IMAGE_ENV) || OFFICIAL_COMPUTER_IMAGE;
+  const managedComputer = config.updateServices.includes("computer");
+  if (
+    config.image !== OFFICIAL_SERVER_IMAGE ||
+    image !== OFFICIAL_SERVER_IMAGE ||
+    (managedComputer && computer !== OFFICIAL_COMPUTER_IMAGE)
+  )
+    throw new UpdateRefused(
+      "Scheduled updates require official stable image repositories in the deployment environment. Review image configuration and restart the updater after changes.",
+    );
+  return {
+    [APPLICATION_IMAGE_ENV]: image,
+    ...(managedComputer ? { [COMPUTER_IMAGE_ENV]: computer } : {}),
+  };
+}
+
+export function upToDateRecord(
+  request: { repoUrl: string; branch: string },
+  tag: string,
+  strategy: "pull" | "build",
+  commit: string | null,
+): ServerUpdateRun {
+  const now = new Date().toISOString();
+  return {
+    startedAt: now,
+    finishedAt: now,
+    ok: true,
+    fromCommit: commit,
+    toCommit: commit,
+    fromTag: tag,
+    toTag: tag,
+    strategy,
+    repoUrl: request.repoUrl,
+    branch: request.branch,
+    restart: "not-required",
+    restartAdvice: `Already running ${tag}; nothing was changed.`,
+    error: null,
+    steps: [],
+  };
+}

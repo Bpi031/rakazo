@@ -1,10 +1,10 @@
 import { useState } from "react";
-import { createRoot } from "react-dom/client";
+import { createQueryRoot } from "../../src/lib/query/query-root.test-support";
 import { CheckpointsPanel } from "../../src/components/CheckpointsPanel";
 import { CheckpointTree } from "../../src/components/CheckpointTree";
 import { useCheckpointI18n } from "../../src/lib/checkpoint-i18n";
-import { bootstrapI18n } from "../../src/lib/i18n";
-import { normalizeUiLocale } from "../../src/lib/ui-locale";
+import { bootstrapI18n } from "../../src/lib/locale/i18n";
+import { normalizeUiLocale } from "../../src/lib/locale/ui-locale";
 import { checkpointBranchesPreview } from "./checkpoint-branches";
 import "../../src/styles.css";
 
@@ -37,5 +37,5 @@ function Fixture() {
 }
 const locale = normalizeUiLocale(new URLSearchParams(window.location.search).get("locale"));
 void bootstrapI18n(locale).then(() =>
-  createRoot(document.getElementById("root")!).render(<Fixture />),
+  createQueryRoot(document.getElementById("root")!).render(<Fixture />),
 );

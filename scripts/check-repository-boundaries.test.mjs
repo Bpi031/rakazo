@@ -1,20 +1,20 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 const script = fileURLToPath(new URL("./check-repository-boundaries.mjs", import.meta.url));
-function check(paths) {
+function check(paths, contents = "SYNTHETIC_BOUNDARY_FIXTURE\n") {
   const root = mkdtempSync(join(tmpdir(), "repository-boundary-"));
   try {
     execFileSync("git", ["init", "-q", root]);
     for (const path of paths) {
       const file = join(root, path);
       mkdirSync(dirname(file), {recursive: true});
-      writeFileSync(file, "SYNTHETIC_BOUNDARY_FIXTURE\n");
+      writeFileSync(file, contents);
     }
     execFileSync("git", ["-C", root, "add", "--all"]);
     return spawnSync(process.execPath, [script], {cwd: root, encoding: "utf8"});
@@ -26,6 +26,14 @@ function check(paths) {
 test("source, notices and empty configuration examples remain allowed", () => {
   const result = check(["src/main.ts", "LICENSE", "OPENBOT_LICENSE.txt", ".env.example", "deploy/.env.images.example"]);
   assert.equal(result.status, 0, result.stderr);
+});
+
+test("the one public test certificate is permitted only at its pinned path and content", () => {
+  const path = "packages/adapters/src/providers/object-storage/azure-blob/azure-entra-test-certificate.pem";
+  const contents = readFileSync(new URL("../" + path, import.meta.url));
+  assert.equal(check([path], contents).status, 0);
+  assert.equal(check([path], Buffer.concat([contents, Buffer.from("\n")])).status, 1);
+  assert.equal(check(["vendor/azure-entra-test-certificate.pem"], contents).status, 1);
 });
 
 test("activation files, private keys and real environment paths are rejected", () => {

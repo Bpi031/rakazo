@@ -1,6 +1,6 @@
 import { expect, it, vi } from "vitest";
 import { leadershipDecision, leadershipProposal, leadershipToolInput } from "@rakazo/contracts";
-import { TeamLeadershipService } from "./team-leadership.js";
+import { TeamLeadershipService } from "./teams/team-leadership.js";
 it("an agent cannot confirm or accept a handover", () => {
   for (const operation of ["offer", "accept", "decline", "cancel", "confirm"])
     expect(leadershipToolInput.safeParse({ operation }).success).toBe(false);

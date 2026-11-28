@@ -1,12 +1,15 @@
 // @vitest-environment jsdom
 import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
+import { createQueryRoot } from "../lib/query/query-root.test-support";
 import { afterEach, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({ bots: vi.fn() }));
-vi.mock("../lib/rpc", () => ({ withSpaceHeaders: (value: unknown) => value, rpc: { bots: { list: mocks.bots } } }));
+vi.mock("../lib/query/rpc", () => {
+  const client = { bots: { list: mocks.bots } };
+  return { rpc: client, createSpaceRpc: () => client, selectedSpaceId: () => null, withSpaceHeaders: (value: unknown) => value };
+});
 import { RulePrioritiesPanel, priorityApi } from "./RulePrioritiesPanel";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-let root: Root | undefined; let container: HTMLDivElement;
+let root: ReturnType<typeof createQueryRoot> | undefined; let container: HTMLDivElement;
 afterEach(async () => { if (root) await act(async () => root!.unmount()); root = undefined; container?.remove(); vi.resetAllMocks(); vi.unstubAllGlobals(); window.history.replaceState({}, "", "/"); });
 const catalog = { status: "current", policy: "workspace/agent-created/policy.rost", workingDirectory: "workspace/agent-created",
   sourceSha256: "a".repeat(64), cnl: "Current controlled language", maxWeight: "1000000000", tiers: ["critical", "high", "normal", "low"],
@@ -17,7 +20,7 @@ const review = { id: "e375d057-e532-4416-b617-3a6d2ab5a7c1", botId: "b", digest:
     beforeRules: catalog.rules, beforeCnl: "before CNL", afterCnl: "after CNL", sourceDiff: "-weight=10\n+weight=20" } };
 async function render(fetcher: typeof fetch) {
   mocks.bots.mockResolvedValue([{ id: "b", name: "Agent workspace" }]); vi.stubGlobal("fetch", vi.fn(fetcher));
-  container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+  container = document.createElement("div"); document.body.append(container); root = createQueryRoot(container);
   await act(async () => root!.render(<RulePrioritiesPanel />)); return container;
 }
 async function click(label: string) {
@@ -28,7 +31,11 @@ it("shows live agent-defined rules with locked hard rows and exact soft controls
   await render(async () => Response.json(catalog));
   expect(container.textContent).toContain("workspace/agent-created/policy.rost");
   expect(container.querySelector('[aria-label="Weight for agent_generated_fairness"]')).not.toBeNull();
-  expect(container.querySelectorAll('[aria-label="Priority for agent_generated_fairness"] option')).toHaveLength(4);
+  const priorities = container.querySelector<HTMLButtonElement>('[aria-label="Priority for agent_generated_fairness"]')!;
+  await act(async () => priorities.click());
+  const options = Array.from(document.querySelectorAll<HTMLElement>('[role="option"]'));
+  expect(options).toHaveLength(4);
+  await act(async () => options[0]!.click());
   await click("Hard"); expect(container.textContent).toContain("coverage"); expect(container.textContent).toContain("Locked");
   expect(container.querySelector('[aria-label="Weight for coverage"]')).toBeNull(); expect(container.querySelector('[type="checkbox"]')).toBeNull();
 });
@@ -53,7 +60,7 @@ it("shows business groups and controlled language in a bot-scoped chat panel", a
   vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ...catalog, groups: [
     { id: "duties", label: "Duty fairness", description: "Balanced workload preferences.", ruleIds: ["agent_generated_fairness"] }],
     rules: catalog.rules.map((row) => ({ ...row, groupId: "duties" })) })));
-  container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+  container = document.createElement("div"); document.body.append(container); root = createQueryRoot(container);
   await act(async () => root!.render(<RulePrioritiesPanel activeBotId="b" />));
   expect(container.querySelector('[aria-label="Policy bot"]')).toBeNull();
   expect(container.textContent).toContain("Duty fairness"); expect(container.querySelector("table")).toBeNull();

@@ -1,10 +1,10 @@
 import { callIdFromClientNonce } from "@rakazo/core";
 import { resolveCheckpointSegments } from "@rakazo/db";
 import { beforeEach, expect, it, vi } from "vitest";
-import { CheckpointService } from "./checkpoint-service.js";
+import { CheckpointService } from "./checkpoints/checkpoint-service.js";
 
 const stopped = vi.hoisted(() => vi.fn(async () => undefined));
-vi.mock("./checkpoint-processes.js", () => ({
+vi.mock("./checkpoints/checkpoint-processes.js", () => ({
   stopCheckpointWriters: stopped,
   assertCheckpointWritersIdle: vi.fn(async () => undefined),
 }));
@@ -12,6 +12,7 @@ vi.mock("@rakazo/db", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   claimCheckpointWorkspace: vi.fn(async () => undefined),
   releaseCheckpointWorkspace: vi.fn(async () => undefined),
+  withCheckpointRestoreLock: vi.fn(async (_db, _computerId, operation) => operation()),
 }));
 const actor = {
   userId: "user",
@@ -48,7 +49,7 @@ function fixture() {
         parentCutoffEventSeq: null,
       },
     ],
-    bot: { instructions: "clean instructions", pendingInstructionsRunId: null },
+    bot: { id: "bot", instructions: "clean instructions", instructionHistory: [] },
     checkpoints: [],
     audits: [],
     runs: [],
@@ -71,6 +72,10 @@ function fixture() {
     entries: [{ type: "file", path: "policy.rost", sha256: "a".repeat(64), mode: 384, size: 1 }],
   };
   let binding: any = { policy: "policy A", selection: null };
+  let workspaceKey = "a".repeat(64);
+  const matchesWorkspace = (row: any, where: any) =>
+    (where.workspaceKey === undefined || (row.workspaceKey ?? null) === where.workspaceKey) &&
+    (!where.OR || where.OR.some((item: any) => (row.workspaceKey ?? null) === item.workspaceKey));
   const assign = (row: any, data: any) => {
     for (const [key, value] of Object.entries(data))
       row[key] =
@@ -107,7 +112,8 @@ function fixture() {
                 (!where.id || row.id === where.id) &&
                 (!where.botId || row.botId === where.botId) &&
                 (!where.threadId || row.threadId === where.threadId) &&
-                (!where.branchId || row.branchId === where.branchId),
+                (!where.branchId || row.branchId === where.branchId) &&
+                matchesWorkspace(row, where),
             ) ?? null,
         ),
       ),
@@ -119,9 +125,10 @@ function fixture() {
       findFirstOrThrow: vi.fn(async ({ where }) =>
         copy(state.checkpoints.find((row: any) => row.id === where.id)),
       ),
-      findMany: vi.fn(async ({ orderBy }) =>
-        copy(Array.isArray(orderBy) ? [...state.checkpoints].reverse() : state.checkpoints),
-      ),
+      findMany: vi.fn(async ({ orderBy, where }) => {
+        const rows = state.checkpoints.filter((row: any) => matchesWorkspace(row, where));
+        return copy(Array.isArray(orderBy) ? rows.reverse() : rows);
+      }),
     },
     conversationBranch: {
       create: vi.fn(async ({ data }) => {
@@ -144,21 +151,26 @@ function fixture() {
         ),
       ),
       updateMany: vi.fn(async ({ where, data }) => {
-        state.artifacts
-          .filter(
-            (row: any) =>
-              (!where.id || where.id.in.includes(row.id)) &&
-              (where.groupId !== null || row.groupId === null || row.groupId === undefined),
-          )
-          .forEach((row: any) => {
-            assign(row, data);
-          });
-        return { count: 1 };
+        const matching = state.artifacts.filter(
+          (row: any) =>
+            (!where.id || where.id.in.includes(row.id)) &&
+            (where.groupId !== null || row.groupId === null || row.groupId === undefined),
+        );
+        matching.forEach((row: any) => assign(row, data));
+        return { count: matching.length };
       }),
     },
     run: {
       count: vi.fn(async () => state.runs.filter((row: any) => row.status === "running").length),
-      findMany: vi.fn(async () => copy(state.runs.filter((row: any) => row.status === "running"))),
+      findMany: vi.fn(async ({ where }) =>
+        copy(
+          state.runs.filter(
+            (row: any) =>
+              (!where.id || where.id.in.includes(row.id)) &&
+              (!where.status || where.status.in.includes(row.status)),
+          ),
+        ),
+      ),
       findUniqueOrThrow: vi.fn(async () => copy(state.runs[0])),
       updateMany: vi.fn(async ({ data }) => {
         state.runs.forEach((row: any) => {
@@ -166,7 +178,16 @@ function fixture() {
         });
         return { count: state.runs.length };
       }),
+      updateManyAndReturn: vi.fn(async ({ where, data }) =>
+        state.runs
+          .filter(
+            (row: any) => where.id.in.includes(row.id) && where.status.in.includes(row.status),
+          )
+          .map((row: any) => assign(row, data)),
+      ),
     },
+    externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
+    secret: { deleteMany: vi.fn(async () => ({ count: 0 })) },
     task: { updateMany: vi.fn(async () => ({ count: 0 })) },
     computerExecutionLease: { updateMany: vi.fn(async () => ({ count: 0 })) },
     computer: { updateMany: vi.fn(async () => ({ count: 0 })) },
@@ -207,12 +228,14 @@ function fixture() {
         copy(
           state.messages.filter(
             (message: any) =>
-              !where.OR ||
-              where.OR.some(
-                (segment: any) =>
-                  segment.branchId === message.branchId &&
-                  (!segment.seq || message.seq <= segment.seq.lte),
-              ),
+              (!where.runId || where.runId.in.includes(message.runId)) &&
+              (!where.role || where.role === message.role) &&
+              (!where.OR ||
+                where.OR.some(
+                  (segment: any) =>
+                    segment.branchId === message.branchId &&
+                    (!segment.seq || message.seq <= segment.seq.lte),
+                )),
           ),
         ),
       ),
@@ -240,7 +263,7 @@ function fixture() {
     thread: copy(state.thread),
     computer: { id: "computer" },
     computerId: "computer",
-    workspaceKey: "a".repeat(64),
+    workspaceKey,
     scope: "dedicated",
   }));
   const fileStore = {
@@ -268,6 +291,9 @@ function fixture() {
     },
     get binding() {
       return binding;
+    },
+    replaceWorkspace() {
+      workspaceKey = "b".repeat(64);
     },
     change() {
       files = {
@@ -309,11 +335,12 @@ function fixture() {
         label,
       });
     },
-    restore(id: string) {
+    async restore(id: string) {
       return service.rollback(actor, {
         botId: "bot",
         checkpointId: id,
         expectedGeneration: state.thread.checkpointGeneration,
+        expectedRevision: (await service.status(actor, "bot")).revision,
       });
     },
   };
@@ -340,10 +367,17 @@ it("captures its own files without borrowing another Bot's checkpoint", async ()
   const f = fixture();
   await f.save();
   Object.assign(f.state.checkpoints[0], {
-    botId: "other-bot", threadId: "other-thread", branchId: "other-branch",
+    botId: "other-bot",
+    threadId: "other-thread",
+    branchId: "other-branch",
   });
   const saved = await f.save();
-  expect(f.fileStore.capture).toHaveBeenLastCalledWith(actor, "bot", { id: "computer" }, "dedicated");
+  expect(f.fileStore.capture).toHaveBeenLastCalledWith(
+    actor,
+    "bot",
+    { id: "computer" },
+    "dedicated",
+  );
   expect(saved.businessState).not.toHaveProperty("fileReuseSourceCheckpointId");
   expect(saved.businessState).toMatchObject({ parentCheckpointId: null });
 });
@@ -365,12 +399,14 @@ it("A2 repeated forks retain history without exposing sibling branches", async (
 it("restores message origin for background filtering and voice grouping without reusing retry nonces", async () => {
   const f = fixture();
   Object.assign(f.state.messages[0], {
+    authorUserId: actor.userId,
     runId: "original-run",
     clientNonce: "call:consultation:original",
   });
   const a = await f.save();
   expect((await f.restore(a.id)).ok).toBe(true);
   const restored = f.state.messages.at(-1);
+  expect(restored.authorUserId).toBe(actor.userId);
   expect(restored.runId).toBe("original-run");
   expect(callIdFromClientNonce(restored.clientNonce)).toBe("consultation");
   expect(restored.clientNonce).not.toBe("call:consultation:original");
@@ -459,6 +495,25 @@ it("collapses duplicate historical snapshots into one visible node while retaini
   expect(f.state.audits).toHaveLength(1);
 });
 
+it("does not let an identical snapshot from a replaced workspace hide the valid one", async () => {
+  const f = fixture();
+  const previous = await f.save("Old computer");
+  const ready = await f.service.status(actor, "bot");
+  f.replaceWorkspace();
+  const replaced = await f.service.status(actor, "bot");
+  expect(replaced.generation).toBe(ready.generation);
+  expect(replaced.revision).not.toBe(ready.revision);
+  expect((await f.service.list(actor, "bot")).checkpoints).toEqual([]);
+  const current = await f.save("Replacement computer");
+  const view = await f.service.list(actor, "bot");
+  expect(view.currentCheckpointId).toBe(current.id);
+  expect(view.checkpoints).toMatchObject([{ id: current.id, parentCheckpointId: null }]);
+  expect(view.revision).toBe((await f.service.status(actor, "bot")).revision);
+  await expect(f.restore(previous.id)).rejects.toThrow("different workspace");
+  await expect(f.restore(current.id)).resolves.toMatchObject({ ok: true });
+  expect(f.state.checkpoints.some((row: any) => row.id === previous.id)).toBe(true);
+});
+
 it("shows the latest optional name when equivalent checkpoints are merged", async () => {
   const f = fixture();
   const original = await f.save();
@@ -471,6 +526,38 @@ it("shows the latest optional name when equivalent checkpoints are merged", asyn
     parentCheckpointId: null,
   });
   expect(named.id).not.toBe(original.id);
+});
+
+it("shows an explicit save as manual without moving its existing automatic node", async () => {
+  const f = fixture();
+  const original = await f.save();
+  f.state.checkpoints[0].kind = "auto_turn_boundary";
+  const saved = await f.save();
+  const view = await f.service.list(actor, "bot");
+  expect(view.currentCheckpointId).toBe(original.id);
+  expect(view.checkpoints).toMatchObject([
+    {
+      id: original.id,
+      kind: "manual",
+      label: null,
+      createdAt: original.createdAt.toISOString(),
+      parentCheckpointId: null,
+    },
+  ]);
+  expect(saved.id).not.toBe(original.id);
+  expect(f.state.checkpoints[0].kind).toBe("auto_turn_boundary");
+});
+
+it("keeps historical turn checkpoints available to restore", async () => {
+  const f = fixture();
+  const original = await f.save();
+  f.state.checkpoints[0].kind = "auto_turn_boundary";
+  expect((await f.service.list(actor, "bot")).checkpoints).toMatchObject([
+    { id: original.id, kind: "auto_turn_boundary" },
+  ]);
+  f.change();
+  await expect(f.restore(original.id)).resolves.toMatchObject({ ok: true });
+  expect(f.files).toEqual(original.fileManifest);
 });
 
 it("keeps the tree acyclic when an earlier state is named again after a fork", async () => {
@@ -612,6 +699,27 @@ it("preserves the committed rescue and blocks further work when restore fails", 
   expect(f.state.audits.at(-1).status).toBe("failed");
   await expect(f.save()).rejects.toThrow(/refresh/);
 });
+
+it.each(["missing", "changed"])(
+  "rejects a restore with a %s saved attachment before stopping jobs or replacing files",
+  async (damage) => {
+    const f = fixture();
+    const original = await f.save();
+    f.change();
+    const current = copy(f.files);
+    f.state.runs.push({ id: "existing-run", taskId: "task", status: "running", trigger: "user" });
+    if (damage === "missing") f.state.artifacts = [];
+    else f.state.artifacts[0].hash = "different artifact bytes";
+    await expect(f.restore(original.id)).rejects.toThrow(
+      "Saved checkpoint attachments are unavailable",
+    );
+    expect(f.files).toEqual(current);
+    expect(f.fileStore.restore).not.toHaveBeenCalled();
+    expect(stopped).not.toHaveBeenCalled();
+    expect(f.state.runs[0].status).toBe("running");
+    expect(f.state.thread).toMatchObject({ checkpointGeneration: 0, checkpointBlocked: false });
+  },
+);
 
 it("records SQL failures on a fresh transaction while preserving the rescue", async () => {
   const f = fixture(),

@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import {
   chmodSync,
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -22,8 +23,13 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   assertVolumeSubpathSupport,
   COMPUTER_IMAGE,
+  COMPUTER_IMAGE_CONTEXT_FILES,
   computerBridgeNameFor,
+  computerBrowserProxyPacMatches,
+  computerComputeGpusMatch,
+  computerDnsMatches,
   computerHomeStorage,
+  computerMountsMatch,
   computerNetworkCreateOptions,
   computerNetworkNameFor,
   computerNetworkNamesForCleanup,
@@ -33,11 +39,18 @@ import {
   controlPortPublicationMatches,
   homeVolumeMatches,
   hostComputerUser,
+  isIpv6NetworkUnavailable,
+  isRegistryQualifiedImage,
   legacyNetworkOwnedSolelyBy,
   parseMemoryBytes,
   publishedLoopbackControlHostPort,
+  resolveComputerBrowserProxyPacUrl,
+  resolveComputerComputeGpus,
   resolveComputerControlEndpoint,
+  resolveComputerDns,
   resolveComputerEgressMode,
+  resolveComputerImage,
+  resolveComputerMounts,
   resolveScreenNetworkMode,
   resolveScreenPublishTarget,
   resolveSpaceComputerLimit,
@@ -63,6 +76,28 @@ describe("graphical computer spec", () => {
     expect(resolveTeamScreenLimit("4")).toBe(4);
     for (const value of ["-1", "1.5", "not-a-number"])
       expect(() => resolveTeamScreenLimit(value)).toThrow(/positive integer/);
+  });
+
+  it("resolves the computer image tag outside Compose", () => {
+    // Explicit "" stands for unset, so exported RAKAZO_COMPUTER_IMAGE* values cannot leak in.
+    expect(resolveComputerImage("", "")).toBe("rakazo/computer:local");
+    expect(resolveComputerImage("", "edge")).toBe("rakazo/computer:local");
+    expect(resolveComputerImage("ghcr.io/elie222/rakazo/computer", "edge")).toBe(
+      "ghcr.io/elie222/rakazo/computer:edge",
+    );
+    expect(resolveComputerImage("ghcr.io/elie222/rakazo/computer", "")).toBe(
+      "ghcr.io/elie222/rakazo/computer",
+    );
+    // Compose already appends the tag, so a tagged or pinned image is never tagged twice.
+    expect(resolveComputerImage("ghcr.io/elie222/rakazo/computer:edge", "edge")).toBe(
+      "ghcr.io/elie222/rakazo/computer:edge",
+    );
+    expect(resolveComputerImage("registry.example.com:5000/rakazo/computer", "v1.2.3")).toBe(
+      "registry.example.com:5000/rakazo/computer:v1.2.3",
+    );
+    expect(resolveComputerImage("rakazo/computer@sha256:abc", "edge")).toBe(
+      "rakazo/computer@sha256:abc",
+    );
   });
 
   it("validates space computer limit", () => {
@@ -147,8 +182,306 @@ describe("graphical computer spec", () => {
     expect(resolveComputerEgressMode("")).toBe("open");
     expect(resolveComputerEgressMode("open")).toBe("open");
     expect(resolveComputerEgressMode("restricted")).toBe("restricted");
+    expect(resolveComputerEgressMode("auto")).toBe("auto");
     for (const value of ["blocked", "RESTRICTED", "0"])
       expect(() => resolveComputerEgressMode(value)).toThrow(/SANDBOX_COMPUTER_EGRESS/);
+  });
+
+  it("parses computer DNS servers, with Docker's default when unset", () => {
+    expect(resolveComputerDns(undefined)).toBeUndefined();
+    expect(resolveComputerDns(" ")).toBeUndefined();
+    expect(resolveComputerDns("1.1.1.1, 2606:4700:4700::1111")).toEqual([
+      "1.1.1.1",
+      "2606:4700:4700::1111",
+    ]);
+    for (const value of ["dns.example.com", "1.1.1.1,resolver", "300.1.1.1"])
+      expect(() => resolveComputerDns(value)).toThrow(/SANDBOX_COMPUTER_DNS/);
+  });
+
+  it("sets DNS servers on computers only when configured", () => {
+    const base = {
+      name: "rakazo-bot-x",
+      image: "img",
+      botId: "x",
+      spaceId: "s",
+      homePath: "/data/x",
+    };
+    expect(containerCreateOptions(base).HostConfig).not.toHaveProperty("Dns");
+    expect(containerCreateOptions({ ...base, dns: ["1.1.1.1"] }).HostConfig).toMatchObject({
+      Dns: ["1.1.1.1"],
+    });
+  });
+
+  it("parses the browser PAC URL, with none when unset", () => {
+    expect(resolveComputerBrowserProxyPacUrl(undefined)).toBeUndefined();
+    expect(resolveComputerBrowserProxyPacUrl("  ")).toBeUndefined();
+    expect(resolveComputerBrowserProxyPacUrl(" https://proxy.example.com/proxy.pac ")).toBe(
+      "https://proxy.example.com/proxy.pac",
+    );
+    expect(resolveComputerBrowserProxyPacUrl("http://proxy.example.com:8080/p.pac")).toBe(
+      "http://proxy.example.com:8080/p.pac",
+    );
+    const pac = `data:application/x-ns-proxy-autoconfig;base64,${Buffer.from(
+      'function FindProxyForURL(url, host) { return shExpMatch(host, "*.example.com") ? "PROXY proxy.example.com:3128" : "DIRECT"; }',
+    ).toString("base64")}`;
+    expect(resolveComputerBrowserProxyPacUrl(pac)).toBe(pac);
+    for (const value of [
+      "proxy.example.com/proxy.pac",
+      "/etc/proxy.pac",
+      "file:///etc/proxy.pac",
+      "ftp://proxy.example.com/proxy.pac",
+      "javascript:alert(1)",
+      "https://proxy.example.com/a b.pac",
+      "https://proxy.example.com/\tproxy.pac",
+      "https://proxy.example.com/\u0000proxy.pac",
+      "https://proxy.example.com/\u007fproxy.pac",
+      "data:application/x-ns-proxy-autoconfig,function FindProxyForURL() {}",
+      `data:application/x-ns-proxy-autoconfig;base64,${"A".repeat(64 * 1024)}`,
+    ])
+      expect(() => resolveComputerBrowserProxyPacUrl(value)).toThrow(
+        /SANDBOX_COMPUTER_BROWSER_PROXY_PAC_URL/,
+      );
+  });
+
+  it("hands computers the browser PAC URL only when configured", () => {
+    const base = {
+      name: "rakazo-bot-x",
+      image: "img",
+      botId: "x",
+      spaceId: "s",
+      homePath: "/data/x",
+    };
+    const pac = "https://proxy.example.com/proxy.pac";
+    const unset = containerCreateOptions(base).Env;
+    expect(unset.some((entry) => entry.startsWith("RAKAZO_BROWSER_PROXY_PAC_URL="))).toBe(false);
+    const env = containerCreateOptions({ ...base, browserProxyPacUrl: pac }).Env;
+    expect(env).toContain(`RAKAZO_BROWSER_PROXY_PAC_URL=${pac}`);
+
+    // The environment is fixed at creation, so adding, changing or removing it replaces a computer.
+    expect(computerBrowserProxyPacMatches(unset, undefined)).toBe(true);
+    expect(computerBrowserProxyPacMatches(null, undefined)).toBe(true);
+    expect(computerBrowserProxyPacMatches(env, pac)).toBe(true);
+    expect(computerBrowserProxyPacMatches(unset, pac)).toBe(false);
+    expect(computerBrowserProxyPacMatches(env, undefined)).toBe(false);
+    expect(computerBrowserProxyPacMatches(env, "https://proxy.example.com/other.pac")).toBe(false);
+  });
+
+  it("gives computers host GPUs only when configured", () => {
+    const base = {
+      name: "rakazo-bot-x",
+      image: "img",
+      botId: "x",
+      spaceId: "s",
+      homePath: "/data/x",
+    };
+    expect(resolveComputerComputeGpus(undefined)).toBeUndefined();
+    expect(resolveComputerComputeGpus("  ")).toBeUndefined();
+    expect(resolveComputerComputeGpus(" all ")).toBe(-1);
+    expect(resolveComputerComputeGpus("2")).toBe(2);
+    // Counts too large to hold exactly, including ones that would become Infinity.
+    const huge = ["9007199254740993", "9".repeat(400)];
+    for (const value of ["0", "-1", "1.5", "ALL", "all,1", "device=0", "two", ...huge])
+      expect(() => resolveComputerComputeGpus(value)).toThrow(/SANDBOX_COMPUTER_COMPUTE_GPUS/);
+
+    expect(containerCreateOptions(base).HostConfig).not.toHaveProperty("DeviceRequests");
+    const all = containerCreateOptions({ ...base, computeGpus: -1 }).HostConfig;
+    // No driver: Docker selects the host's GPU driver, so no vendor is named here.
+    expect(all.DeviceRequests).toEqual([{ Count: -1, Capabilities: [["gpu"]] }]);
+    // The GPU does not loosen the rest of the sandbox.
+    expect(all).toMatchObject({ CapDrop: ["ALL"], SecurityOpt: ["no-new-privileges:true"] });
+  });
+
+  it("matches a computer's GPUs to the configured ones", () => {
+    // As Docker reports a request after creation, with the fields it fills in.
+    const reported = (count: number) => ({
+      Driver: "",
+      Count: count,
+      DeviceIDs: null,
+      Capabilities: [["gpu"]],
+      Options: {},
+    });
+    expect(computerComputeGpusMatch(undefined, undefined)).toBe(true);
+    expect(computerComputeGpusMatch(null, undefined)).toBe(true);
+    expect(computerComputeGpusMatch([], undefined)).toBe(true);
+    expect(computerComputeGpusMatch([reported(-1)] as never, -1)).toBe(true);
+    expect(computerComputeGpusMatch([reported(2)] as never, 2)).toBe(true);
+    // A computer created before the setting was turned on, or after it was turned off, is replaced.
+    expect(computerComputeGpusMatch(undefined, -1)).toBe(false);
+    expect(computerComputeGpusMatch([reported(-1)] as never, undefined)).toBe(false);
+    // So is one created with a different count.
+    expect(computerComputeGpusMatch([reported(1)] as never, 2)).toBe(false);
+    expect(computerComputeGpusMatch([reported(-1)] as never, 1)).toBe(false);
+  });
+
+  it("parses computer host mounts, with none when unset", () => {
+    expect(resolveComputerMounts(undefined)).toEqual([]);
+    expect(resolveComputerMounts(" , ")).toEqual([]);
+    expect(
+      resolveComputerMounts("/srv/docs:/mnt/docs:ro, /srv/shares/:/media/shares:rw:rslave"),
+    ).toEqual([
+      { source: "/srv/docs", target: "/mnt/docs", readOnly: true },
+      { source: "/srv/shares", target: "/media/shares", readOnly: false, propagation: "rslave" },
+    ]);
+    for (const value of [
+      "/srv/docs",
+      "srv/docs:/mnt/docs",
+      "/srv/docs:mnt/docs",
+      "/:/mnt/host",
+      "/srv/docs:/home/rakazo/docs",
+      "/srv/docs:/mnt",
+      "/srv/docs:/usr/local/bin",
+      "/srv/docs:/mnt/../etc/docs",
+      "/srv/docs:/mnt/docs:shared",
+      "/srv/docs:/mnt/docs:ro:rw",
+      "/srv/a:/mnt/docs,/srv/b:/mnt/docs/inner",
+      "/srv/a:/mnt/docs,/srv/b:/mnt/docs",
+    ])
+      expect(() => resolveComputerMounts(value)).toThrow(/SANDBOX_COMPUTER_MOUNTS/);
+  });
+
+  it("adds host mounts beside either kind of home", () => {
+    const base = {
+      name: "rakazo-bot-x",
+      image: "img",
+      botId: "x",
+      spaceId: "s",
+      homePath: "/data/x",
+    };
+    const mounts = resolveComputerMounts(
+      "/srv/docs:/mnt/docs:ro,/srv/shares:/mnt/shares:rw:rslave",
+    );
+    const expected = [
+      { Type: "bind", Source: "/srv/docs", Target: "/mnt/docs", ReadOnly: true },
+      {
+        Type: "bind",
+        Source: "/srv/shares",
+        Target: "/mnt/shares",
+        ReadOnly: false,
+        BindOptions: { Propagation: "rslave" },
+      },
+    ];
+    expect(containerCreateOptions(base).HostConfig.Mounts).toBeUndefined();
+    const bound = containerCreateOptions({ ...base, mounts }).HostConfig;
+    expect(bound.Binds).toEqual(["/data/x:/home/rakazo"]);
+    expect(bound.Mounts).toEqual(expected);
+    const volume = containerCreateOptions({
+      ...base,
+      homeVolume: { name: "appdata", subpath: "homes/x" },
+      mounts,
+    }).HostConfig;
+    expect(volume.Mounts?.[0]).toMatchObject({ Type: "volume", Target: "/home/rakazo" });
+    expect(volume.Mounts?.slice(1)).toEqual(expected);
+  });
+
+  it("matches a computer's host mounts to the configured ones", () => {
+    const desired = resolveComputerMounts(
+      "/srv/docs:/mnt/docs:ro,/srv/shares:/mnt/shares:rw:rslave",
+    );
+    const home = { Type: "bind", Source: "/data/x", Target: "/home/rakazo" };
+    const docs = { Type: "bind", Source: "/srv/docs", Target: "/mnt/docs", ReadOnly: true };
+    const shares = {
+      Type: "bind",
+      Source: "/srv/shares",
+      Target: "/mnt/shares",
+      ReadOnly: false,
+      BindOptions: { Propagation: "rslave" },
+    };
+    // Labels as the computer was created with `created` mounts.
+    const labels = (created: typeof desired) =>
+      containerCreateOptions({
+        name: "rakazo-bot-x",
+        image: "img",
+        botId: "x",
+        spaceId: "s",
+        homePath: "/data/x",
+        mounts: created,
+      }).Labels;
+    const match = (mounts: unknown[] | undefined, want = desired, created = want) =>
+      computerMountsMatch(
+        {
+          Config: { Labels: labels(created) },
+          HostConfig: { Mounts: mounts },
+        } as unknown as Parameters<typeof computerMountsMatch>[0],
+        want,
+      );
+    expect(match(undefined, [])).toBe(true);
+    expect(match([home], [])).toBe(true);
+    expect(match([home, shares, docs])).toBe(true);
+    // Docker Desktop stores its own VM path as the source of a bind beside a volume home.
+    const rewritten = "/run/desktop/mnt/host/wsl/docker-desktop-bind-mounts/Ubuntu/abc";
+    expect(match([home, { ...docs, Source: rewritten }, shares])).toBe(true);
+    // A computer created before a mount was added, or after one was removed, is replaced.
+    expect(match([home, docs])).toBe(false);
+    expect(match([home, docs, shares], desired.slice(0, 1))).toBe(false);
+    // So is one whose mount changed source, access or propagation.
+    const moved = resolveComputerMounts(
+      "/srv/other:/mnt/docs:ro,/srv/shares:/mnt/shares:rw:rslave",
+    );
+    expect(match([home, docs, shares], desired, moved)).toBe(false);
+    expect(match([home, { ...docs, ReadOnly: false }, shares])).toBe(false);
+    expect(match([home, docs, { ...shares, BindOptions: undefined }])).toBe(false);
+    // And one created before its sources were labeled, since its source cannot be read back.
+    expect(match([home, docs, shares], desired, [])).toBe(false);
+  });
+
+  it("mounts read-only unless rw is explicit", () => {
+    expect(resolveComputerMounts("/srv/docs:/mnt/docs")[0]?.readOnly).toBe(true);
+    // Later mounts propagated by rslave keep their own write flags.
+    for (const value of ["/srv/docs:/mnt/docs:rslave", "/srv/docs:/mnt/docs:ro:rslave"])
+      expect(() => resolveComputerMounts(value)).toThrow(/rslave requires rw/);
+    expect(resolveComputerMounts("/srv/docs:/mnt/docs:rw")[0]?.readOnly).toBe(false);
+  });
+
+  it("refuses host sources that expose the host, Docker or bot homes", () => {
+    for (const source of [
+      "/",
+      "/var/run/docker.sock",
+      "/run/docker.sock",
+      "/var/run",
+      "/run",
+      "/run/user/1000",
+      "/proc",
+      "/sys/fs",
+      "/dev",
+      "/etc",
+      "/etc/ssh",
+      "/boot",
+      "/root",
+      "/var/lib/docker",
+      "/var/lib/docker/volumes/appdata/_data",
+      // Ancestors expose what they hold.
+      "/var",
+      "/var/lib",
+      "//etc/",
+    ])
+      expect(() => resolveComputerMounts(`${source}:/mnt/x`)).toThrow(
+        /SANDBOX_COMPUTER_MOUNTS source/,
+      );
+    for (const value of ["/srv/../etc:/mnt/x", "/srv/docs/..:/mnt/x", "/srv/docs:/mnt/a/../x"])
+      expect(() => resolveComputerMounts(value)).toThrow(/must not contain \.\./);
+
+    const protectedPaths = ["/opt/rakazo/data", "/home/op/.docker/run/docker.sock", undefined];
+    for (const source of [
+      "/opt/rakazo/data",
+      "/opt/rakazo/data/homes/bot",
+      "/opt/rakazo",
+      "/home/op",
+    ])
+      expect(() => resolveComputerMounts(`${source}:/mnt/x`, protectedPaths)).toThrow(
+        /protected host path/,
+      );
+    expect(
+      resolveComputerMounts("/opt/shared:/mnt/x,/varnish:/mnt/y,/srv/run:/mnt/z", protectedPaths),
+    ).toHaveLength(3);
+  });
+
+  it("matches a computer's DNS servers to the configured ones", () => {
+    expect(computerDnsMatches(null, undefined)).toBe(true);
+    expect(computerDnsMatches([], undefined)).toBe(true);
+    expect(computerDnsMatches(["1.1.1.1"], ["1.1.1.1"])).toBe(true);
+    expect(computerDnsMatches(null, ["1.1.1.1"])).toBe(false);
+    expect(computerDnsMatches(["1.1.1.1"], undefined)).toBe(false);
+    expect(computerDnsMatches(["1.0.0.1", "1.1.1.1"], ["1.1.1.1", "1.0.0.1"])).toBe(false);
   });
 
   it("derives deterministic host bridge names within the 15-byte interface limit", () => {
@@ -167,6 +500,7 @@ describe("graphical computer spec", () => {
       Name: computerNetworkNameFor("bot_1"),
       Driver: "bridge",
       CheckDuplicate: true,
+      EnableIPv6: true,
       Labels: { "rakazo.computerOwner": "owner", "rakazo.botId": "bot_1" },
     });
     expect(open).not.toHaveProperty("Options");
@@ -179,6 +513,65 @@ describe("graphical computer spec", () => {
     // The bridge name differs from the network name so `docker network` output
     // still shows the readable rakazo-computer-* name while iptables matches the interface.
     expect(restricted.Options?.["com.docker.network.bridge.name"]).not.toBe(restricted.Name);
+  });
+
+  it("enables IPv6 with automatic subnets and can leave it out for daemons without it", () => {
+    // No IPAM config: the daemon allocates its own IPv6 ULA /64 (Docker 27+),
+    // unique per network, which keeps the payload daemon-agnostic.
+    expect(computerNetworkCreateOptions("bot_1", "owner", "open")).not.toHaveProperty("IPAM");
+
+    // The IPv4-only payload for daemons that refuse the dual-stack network
+    // (Docker 26, Docker-in-Docker without ip6_tables, IPv6 off in the kernel).
+    expect(computerNetworkCreateOptions("bot_1", "owner", "open", false)).not.toHaveProperty(
+      "EnableIPv6",
+    );
+  });
+
+  it("keeps restricted networks IPv4-only with their named bridge", () => {
+    // Restricted egress is enforced and startup-verified for IPv4 only
+    // (infra/compose/restrict-computer-egress.sh, egress-probe.ts); IPv6 would
+    // leave a restricted computer paths the ruleset does not cover.
+    const restricted = computerNetworkCreateOptions("bot_1", "owner", "restricted");
+    expect(restricted).not.toHaveProperty("EnableIPv6");
+    expect(restricted.Options).toEqual({
+      "com.docker.network.bridge.name": computerBridgeNameFor("bot_1"),
+    });
+  });
+
+  it("falls back for every IPv6 capability error the daemon wording uses", () => {
+    // Transient failures without IPv6 in them must surface, so the next start
+    // retries the dual-stack create.
+    expect(isIpv6NetworkUnavailable(new Error("daemon busy"))).toBe(false);
+    expect(isIpv6NetworkUnavailable(new Error("ETIMEDOUT"))).toBe(false);
+
+    // The daemon's IPv6 capability errors across releases, all matched broadly
+    // because the wording changes between releases.
+    const unavailable = [
+      // Engine 26, no IPv6 pool (libnetwork/ipam/allocator.go at v26.1.4).
+      "could not find an available, non-overlapping IPv6 address pool among the defaults to assign to the network",
+      // IPv6 off in the kernel (drivers/bridge/setup_ipv6_linux.go), wrapped by
+      // the daemon ("failed to create network ...").
+      "Error response from daemon: failed to create network rakazo-computer-bot_1: Cannot read IPv6 setup for bridge br-x: open /proc/sys/net/ipv6/conf/br-x/disable_ipv6: no such file or directory",
+      "Unable to enable IPv6 addresses on bridge: ...",
+      // ip6tables disabled in the daemon config (setup_ip_tables_linux.go at v26.1.4).
+      "Cannot program chains, EnableIP6Tables is disabled",
+      // Newer engines name ip6tables and forwarding directly.
+      "ip6tables is missing",
+      "ip6tables not found",
+      "IPv6 global forwarding is disabled",
+    ];
+    for (const message of unavailable) {
+      expect(isIpv6NetworkUnavailable(new Error(message)), message).toBe(true);
+    }
+
+    // A transient error that names ip6tables (fork pressure running the binary)
+    // falls back too. That is bounded: a stop gives the network back and the
+    // next start creates it again, retrying IPv6 (see reclaimComputerNetwork).
+    expect(
+      isIpv6NetworkUnavailable(
+        new Error("fork/exec /usr/sbin/ip6tables: resource temporarily unavailable"),
+      ),
+    ).toBe(true);
   });
 
   it("lists prior network name variants for cleanup", () => {
@@ -194,6 +587,46 @@ describe("graphical computer spec", () => {
     expect(legacyNetworkOwnedSolelyBy("a/b", ["a/b", undefined])).toBe(false);
     expect(legacyNetworkOwnedSolelyBy("a/b", ["a/b", "ab"])).toBe(false);
     expect(legacyNetworkOwnedSolelyBy("ab", [undefined, undefined])).toBe(false);
+  });
+
+  it("builds the local image from files that exist in the computer context", () => {
+    const root = path.resolve(import.meta.dirname, "../../computer");
+    for (const file of COMPUTER_IMAGE_CONTEXT_FILES) {
+      expect(existsSync(path.join(root, file)), file).toBe(true);
+    }
+  });
+
+  it("sends every file the computer Dockerfile copies or adds when it builds the image locally", () => {
+    const dockerfile = readFileSync(
+      path.resolve(import.meta.dirname, "../../computer/Dockerfile"),
+      "utf8",
+    );
+    const sources = dockerfile
+      .replace(/\\[ \t]*\r?\n/g, " ")
+      .split("\n")
+      .map((line) => line.trim().split(/\s+/))
+      .filter(
+        ([instruction, ...args]) =>
+          ["COPY", "ADD"].includes(instruction?.toUpperCase() ?? "") &&
+          !args.some((arg) => arg.startsWith("--from=")),
+      )
+      .flatMap(([, ...args]) => args.slice(0, -1).filter((arg) => !arg.startsWith("--")));
+    const listed = new Set<string>(COMPUTER_IMAGE_CONTEXT_FILES);
+    expect(sources.length).toBeGreaterThan(10);
+    expect(sources.filter((source) => !listed.has(source))).toEqual([]);
+  });
+
+  it("pulls a missing computer image only from a registry the name spells out", () => {
+    expect(isRegistryQualifiedImage("ghcr.io/elie222/rakazo/computer:edge")).toBe(true);
+    expect(isRegistryQualifiedImage("registry.test/rakazo/computer@sha256:0123")).toBe(true);
+    expect(isRegistryQualifiedImage("localhost:5000/rakazo/computer")).toBe(true);
+    expect(isRegistryQualifiedImage("localhost/rakazo/computer:local")).toBe(true);
+    expect(isRegistryQualifiedImage("docker.io/rakazo/computer:edge")).toBe(true);
+    expect(isRegistryQualifiedImage("Registry/rakazo/computer:edge")).toBe(true);
+    expect(isRegistryQualifiedImage("rakazO/computer:edge")).toBe(true);
+    expect(isRegistryQualifiedImage("rakazo/computer:local")).toBe(false);
+    expect(isRegistryQualifiedImage("rakazo/computer@sha256:0123")).toBe(false);
+    expect(isRegistryQualifiedImage("computer:local")).toBe(false);
   });
 
   it("ships a browser desktop, not a fullscreen terminal", () => {
@@ -218,7 +651,7 @@ describe("graphical computer spec", () => {
     expect(start).toMatch(/failed to set default web browser/);
     expect(start).toMatch(/xdg-settings set default-web-browser rakazo-browser\.desktop/);
     expect(start).not.toMatch(/xdg-mime default rakazo-browser\.desktop .*\|\| true/);
-    expect(start).toMatch(/x11vnc .* -viewonly /);
+    expect(start).toMatch(/x11vnc .* -viewonly -repeat /);
     expect(browser).toMatch(/\.browser-profiles\/chromium/);
     expect(browser).toMatch(/chromium-screen-\$DISPLAY_NUM/);
     expect(browser).toMatch(/USER_DATA_DIR_SET/);
@@ -232,6 +665,164 @@ describe("graphical computer spec", () => {
     expect(dockerfile).toMatch(/wmctrl/);
     expect(dockerfile).toMatch(/rakazo-focus-or-launch/);
   });
+
+  it("creates every browser policy directory before copying the policy into it", () => {
+    const root = path.resolve(import.meta.dirname, "../../computer");
+    const dockerfile = readFileSync(path.join(root, "Dockerfile"), "utf8");
+    // COPY --chmod=644 gives the directories it creates that mode too, and the browser user
+    // then cannot enter them, so the browser silently runs without the policy.
+    const created = dockerfile.match(/mkdir -p (\/etc\/rakazo\/fluxbox [^\\\n]+)/)?.[1]?.split(" ");
+    const targets = [...dockerfile.matchAll(/COPY --chmod=644 browser-policy\.json (\S+)\//g)].map(
+      (match) => match[1],
+    );
+    expect(targets).toEqual([
+      "/etc/chromium/policies/managed",
+      "/etc/brave/policies/managed",
+      "/etc/opt/chrome/policies/managed",
+    ]);
+    for (const target of targets) expect(created).toContain(target);
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "fetches Google's signing key only for a Google Chrome build on amd64",
+    () => {
+      const root = path.resolve(import.meta.dirname, "../../computer");
+      const dockerfile = readFileSync(path.join(root, "Dockerfile"), "utf8");
+      const stage = dockerfile.split(/^FROM /m).find((part) => / AS chrome-keyring\n/.test(part));
+      const run = stage
+        ?.replace(/\\\n/g, " ")
+        .split("\n")
+        .filter((line) => line.startsWith("RUN "))
+        .at(-1)
+        ?.slice(4);
+      expect(run).toBeTruthy();
+      const temp = mkdtempSync(path.join(tmpdir(), "rakazo-chrome-keyring-"));
+      const bin = path.join(temp, "bin");
+      const keyring = path.join(temp, "google-chrome.gpg");
+      const calls = path.join(temp, "calls");
+      mkdirSync(bin);
+      // Every network step records itself; the download fails as if Google were unreachable.
+      for (const [name, body] of [
+        ["dpkg", 'printf "%s\\n" "$RAKAZO_TEST_ARCH"'],
+        ["apt-security.sh", 'printf "apt-security\\n" >> "$RAKAZO_TEST_CALLS"'],
+        ["apt-get", 'printf "apt-get %s\\n" "$*" >> "$RAKAZO_TEST_CALLS"'],
+        ["curl", 'printf "curl\\n" >> "$RAKAZO_TEST_CALLS"; exit 7'],
+        ["gpg", 'printf "gpg\\n" >> "$RAKAZO_TEST_CALLS"'],
+      ] as const) {
+        writeFileSync(path.join(bin, name), `#!/bin/sh\n${body}\n`);
+        chmodSync(path.join(bin, name), 0o755);
+      }
+      const build = (browser: string, arch: string) => {
+        rmSync(keyring, { force: true });
+        writeFileSync(calls, "");
+        const result = spawnSync(
+          "sh",
+          [
+            "-c",
+            run!
+              .replaceAll("/google-chrome.gpg", keyring)
+              .replaceAll("/tmp/apt-security.sh", path.join(bin, "apt-security.sh"))
+              .replaceAll("/tmp/google.pub", path.join(temp, "google.pub")),
+          ],
+          {
+            env: {
+              ...process.env,
+              BROWSER: browser,
+              PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}`,
+              RAKAZO_TEST_ARCH: arch,
+              RAKAZO_TEST_CALLS: calls,
+            },
+            encoding: "utf8",
+          },
+        );
+        return {
+          status: result.status,
+          calls: readFileSync(calls, "utf8").trim().split("\n").filter(Boolean),
+          stderr: result.stderr,
+        };
+      };
+      try {
+        for (const browser of ["chromium", "brave"]) {
+          // No network at all, and an empty keyring for the image's COPY.
+          expect(build(browser, "amd64"), browser).toMatchObject({ status: 0, calls: [] });
+          expect(readFileSync(keyring, "utf8")).toBe("");
+        }
+        // Google publishes no Chrome for arm64: the build says so instead of falling back.
+        const arm = build("chrome", "arm64");
+        expect(arm).toMatchObject({ status: 1, calls: [] });
+        expect(arm.stderr).toMatch(/amd64 only/);
+        expect(build("chrome", "amd64")).toMatchObject({
+          status: 7,
+          calls: [
+            "apt-security",
+            "apt-get update",
+            "apt-get upgrade -y --no-install-recommends",
+            "apt-get install -y --no-install-recommends ca-certificates curl gnupg",
+            "curl",
+          ],
+        });
+      } finally {
+        rmSync(temp, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "finds Google Chrome and passes over Ubuntu's snap chromium",
+    () => {
+      const root = path.resolve(import.meta.dirname, "../../computer");
+      const temp = mkdtempSync(path.join(tmpdir(), "rakazo-browser-find-"));
+      const bin = path.join(temp, "bin");
+      const tools = path.join(temp, "tools");
+      const capture = path.join(temp, "launched");
+      const snapChromium = path.join(bin, "chromium-browser");
+      const chrome = path.join(bin, "google-chrome");
+      mkdirSync(bin);
+      writeFileSync(snapChromium, '#!/bin/sh\nexec /snap/bin/chromium "$@"\n');
+      writeFileSync(chrome, '#!/bin/sh\nprintf "%s" "$0" > "$RAKAZO_TEST_LAUNCHED"\n');
+      chmodSync(snapChromium, 0o755);
+      chmodSync(chrome, 0o755);
+
+      try {
+        mkdirSync(tools);
+        // Expose only shell utilities, never browsers from the host PATH.
+        const utilities = [
+          "sh",
+          "mkdir",
+          "readlink",
+          "head",
+          "grep",
+          "rm",
+          "find",
+          "tr",
+          "sed",
+          "cat",
+        ];
+        if (process.platform === "linux") utilities.push("timeout");
+        for (const utility of utilities) {
+          const resolved = spawnSync("/bin/sh", ["-c", 'command -v "$1"', "sh", utility], {
+            encoding: "utf8",
+          });
+          expect(resolved.status, resolved.stderr).toBe(0);
+          symlinkSync(resolved.stdout.trim(), path.join(tools, utility));
+        }
+        const result = spawnSync("sh", [path.join(root, "rakazo-browser")], {
+          env: {
+            ...process.env,
+            DISPLAY: ":1",
+            HOME: path.join(temp, "home"),
+            PATH: `${bin}${path.delimiter}${tools}`,
+            RAKAZO_TEST_LAUNCHED: capture,
+          },
+          encoding: "utf8",
+        });
+        expect(result.status, result.error?.message ?? result.stderr).toBe(0);
+        expect(readFileSync(capture, "utf8")).toBe(chrome);
+      } finally {
+        rmSync(temp, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("ships a sha256-pinned gh CLI", () => {
     const root = path.resolve(import.meta.dirname, "../../computer");
@@ -247,6 +838,37 @@ describe("graphical computer spec", () => {
     expect(dockerfile).toMatch(/gh --version/);
   });
 
+  it("ships file search, identification, and SQLite commands", () => {
+    const dockerfile = readFileSync(
+      path.resolve(import.meta.dirname, "../../computer/Dockerfile"),
+      "utf8",
+    );
+    const runtimeStage = dockerfile.slice(dockerfile.lastIndexOf("FROM debian:"));
+    const install = runtimeStage.match(
+      /apt-get install -y --no-install-recommends ([\s\S]*?)&& rm -rf \/var\/lib\/apt\/lists\/\*/,
+    )?.[1];
+    expect(install).toBeDefined();
+    const packages = install?.split(/\s+/);
+    // Every apt package behind a command the shell environment map names.
+    for (const name of [
+      "curl",
+      "git",
+      "jq",
+      "openssh-client",
+      "unzip",
+      "ripgrep",
+      "fd-find",
+      "file",
+      "sqlite3",
+    ]) {
+      expect(packages).toContain(name);
+    }
+    expect(runtimeStage).toContain("ln -s /usr/bin/fdfind /usr/local/bin/fd");
+    for (const command of ["rg", "fd", "file", "sqlite3"]) {
+      expect(runtimeStage).toContain(`&& ${command} --version`);
+    }
+  });
+
   it("ships document text extractors", () => {
     const root = path.resolve(import.meta.dirname, "../../computer");
     const dockerfile = readFileSync(path.join(root, "Dockerfile"), "utf8");
@@ -259,6 +881,22 @@ describe("graphical computer spec", () => {
     expect(dockerfile).toMatch(/pdfinfo -v/);
     expect(dockerfile).toMatch(/pandoc --version/);
     expect(dockerfile).toMatch(/import openpyxl/);
+  });
+
+  it("ships search and inspection tools agents reach for", () => {
+    const root = path.resolve(import.meta.dirname, "../../computer");
+    const dockerfile = readFileSync(path.join(root, "Dockerfile"), "utf8");
+    expect(dockerfile).toMatch(/\bripgrep\b/);
+    expect(dockerfile).toMatch(/\bfd-find\b/);
+    // "file" is a common word in the Dockerfile; anchor it to the package list.
+    expect(dockerfile).toMatch(/^ {4}file \\/m);
+    expect(dockerfile).toMatch(/\bsqlite3\b/);
+    // Debian names fd-find's binary fdfind; the image exposes it as fd.
+    expect(dockerfile).toMatch(/ln -s \/usr\/bin\/fdfind \/usr\/local\/bin\/fd/);
+    expect(dockerfile).toMatch(/rg --version/);
+    expect(dockerfile).toMatch(/fd --version/);
+    expect(dockerfile).toMatch(/file --version/);
+    expect(dockerfile).toMatch(/sqlite3 --version/);
   });
 
   it.skipIf(process.platform === "win32")(
@@ -336,7 +974,10 @@ describe("graphical computer spec", () => {
           "[begin] (Desktop)\n[exec] (Browser) {/tmp/rakazo/browser-launch-1}\n[end]\n",
         );
         writeFileSync(initPath, init);
-        const lines = generated.replaceAll("/tmp/fluxbox-home-1", fluxHome).split("\n");
+        const lines = generated
+          .replaceAll("/tmp/fluxbox-home-1", fluxHome)
+          .replaceAll("/etc/rakazo/fluxbox/menu", path.join(temp, "no-image-menu"))
+          .split("\n");
         const start = lines.indexOf(`mkdir -p ${fluxHome}/.fluxbox`);
         const end = lines.findIndex((line, index) => index > start && line === "fi");
         expect(start).toBeGreaterThanOrEqual(0);
@@ -365,6 +1006,52 @@ describe("graphical computer spec", () => {
           ].join("\n"),
         );
         expect(readFileSync(initPath, "utf8")).toBe(init);
+      } finally {
+        rmSync(temp, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "removes only libnss_wrapper from the Chromium preload environment",
+    () => {
+      const root = path.resolve(import.meta.dirname, "../../computer");
+      const temp = mkdtempSync(path.join(tmpdir(), "rakazo-browser-preload-"));
+      try {
+        const chromium = path.join(temp, "chromium");
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: shell parameter expansion
+        writeFileSync(chromium, '#!/bin/sh\nprintf "%s" "${LD_PRELOAD-unset}"\n');
+        chmodSync(chromium, 0o755);
+        for (const [preload, expected] of [
+          ["/usr/local/lib/libnss_wrapper.so", "unset"],
+          [
+            "/tmp/first.so:/usr/local/lib/libnss_wrapper.so:/tmp/last.so",
+            "/tmp/first.so:/tmp/last.so",
+          ],
+          [":libnss_wrapper.so::", "unset"],
+          ["/usr/local/lib/libnss_wrapper.so /tmp/other.so", "/tmp/other.so"],
+          [" /tmp/first.so:libnss_wrapper.so /tmp/last.so ", "/tmp/first.so:/tmp/last.so"],
+          ["/tmp/other.so", "/tmp/other.so"],
+          ["", ""],
+        ]) {
+          const result = spawnSync(
+            "sh",
+            [path.join(root, "rakazo-browser"), "https://example.test"],
+            {
+              env: {
+                ...process.env,
+                HOME: temp,
+                RAKAZO_BROWSER_PROFILE: path.join(temp, "profile"),
+                PATH: `${temp}${path.delimiter}${process.env.PATH ?? ""}`,
+                LD_PRELOAD: preload,
+              },
+              encoding: "utf8",
+              timeout: 5_000,
+            },
+          );
+          expect(result.status, result.stderr).toBe(0);
+          expect(result.stdout).toBe(expected);
+        }
       } finally {
         rmSync(temp, { recursive: true, force: true });
       }
@@ -402,8 +1089,6 @@ describe("graphical computer spec", () => {
       try {
         expect(run(":1")).toContain(`--user-data-dir=${home}/.browser-profiles/chromium`);
         expect(run(":1")).toContain("--restore-last-session");
-        expect(run(":1")).toContain("--disable-gpu");
-        expect(run(":1")).toContain("--enable-unsafe-swiftshader");
         expect(run(":1")).not.toContain("--disable-software-rasterizer");
         expect(run(":1").some((arg) => arg.startsWith("--remote-debugging-port="))).toBe(true);
         expect(run(":2")).toContain(`--user-data-dir=${home}/.browser-profiles/chromium-screen-2`);
@@ -421,6 +1106,225 @@ describe("graphical computer spec", () => {
         expect(explicit).not.toContain(
           `--user-data-dir=${home}/.browser-profiles/chromium-screen-3`,
         );
+      } finally {
+        rmSync(temp, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "offers pages the account's language on new and saved profiles",
+    () => {
+      const root = path.resolve(import.meta.dirname, "../../computer");
+      const temp = mkdtempSync(path.join(tmpdir(), "rakazo-browser-language-"));
+      const bin = path.join(temp, "bin");
+      const capture = path.join(temp, "args");
+      mkdirSync(bin);
+      const chromium = path.join(bin, "chromium");
+      writeFileSync(
+        chromium,
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: shell parameter expansion
+        '#!/bin/sh\nprintf "LANGUAGE=%s\\n" "${LANGUAGE-unset}" > "$RAKAZO_TEST_ARGS"\nprintf "%s\\n" "$@" >> "$RAKAZO_TEST_ARGS"\n',
+      );
+      chmodSync(chromium, 0o755);
+      const run = (language: string | undefined) => {
+        const { LANGUAGE: _host, ...env } = process.env;
+        const result = spawnSync("sh", [path.join(root, "rakazo-browser")], {
+          env: {
+            ...env,
+            ...(language === undefined ? {} : { LANGUAGE: language }),
+            DISPLAY: ":1",
+            HOME: path.join(temp, "home"),
+            PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}`,
+            RAKAZO_TEST_ARGS: capture,
+          },
+          encoding: "utf8",
+        });
+        expect(result.status, result.error?.message ?? result.stderr).toBe(0);
+        const [first, ...args] = readFileSync(capture, "utf8").trim().split(/\r?\n/);
+        return { language: first, accept: args.filter((arg) => arg.startsWith("--accept-lang")) };
+      };
+      try {
+        // Unknown: the browser's own default, as before.
+        expect(run(undefined)).toEqual({ language: "LANGUAGE=unset", accept: [] });
+        // Chrome reads LANGUAGE itself; --accept-lang also reaches a profile saved in English.
+        expect(run("pl")).toEqual({
+          language: "LANGUAGE=pl",
+          accept: ["--accept-lang=pl,en-US,en"],
+        });
+        expect(run("pt_BR:pt").accept).toEqual(["--accept-lang=pt-BR,pt,en-US,en"]);
+        expect(run("en-GB").accept).toEqual(["--accept-lang=en-GB,en"]);
+        expect(run("en").accept).toEqual(["--accept-lang=en-US,en"]);
+        expect(run("en:en_US").accept).toEqual(["--accept-lang=en-US,en"]);
+        expect(run("EN").accept).toEqual(["--accept-lang=en-US,en"]);
+        expect(run("en-US").accept).toEqual(["--accept-lang=en-US,en"]);
+        expect(run("en_US").accept).toEqual(["--accept-lang=en-US,en"]);
+        for (const value of ["", "pl;id", "-x", "pl pl"]) expect(run(value).accept).toEqual([]);
+      } finally {
+        rmSync(temp, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("cleans conflicting Debian /etc/chromium.d defaults in the Chromium computer image", () => {
+    const root = path.resolve(import.meta.dirname, "../../computer");
+    const dockerfile = readFileSync(path.join(root, "Dockerfile"), "utf8");
+    expect(dockerfile).toContain("rm -f /etc/chromium.d/default-flags /etc/chromium.d/dev-shm;");
+    expect(dockerfile).toContain(
+      "'export CHROMIUM_FLAGS=\"$CHROMIUM_FLAGS --enable-remote-extensions\"'",
+    );
+    expect(dockerfile).toContain("> /etc/chromium.d/extensions ;;");
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "renders on a usable render node and in software otherwise",
+    () => {
+      const root = path.resolve(import.meta.dirname, "../../computer");
+      const temp = mkdtempSync(path.join(tmpdir(), "rakazo-browser-gpu-"));
+      const bin = path.join(temp, "bin");
+      const dri = path.join(temp, "dri");
+      const capture = path.join(temp, "args");
+      // The host's own /dev/dri must not decide the result.
+      const script = path.join(temp, "rakazo-browser");
+      writeFileSync(
+        script,
+        readFileSync(path.join(root, "rakazo-browser"), "utf8").replaceAll("/dev/dri/", `${dri}/`),
+      );
+      mkdirSync(bin);
+      mkdirSync(dri);
+      const chromium = path.join(bin, "chromium");
+      writeFileSync(chromium, '#!/bin/sh\nprintf "%s\\n" "$@" > "$RAKAZO_TEST_ARGS"\n');
+      chmodSync(chromium, 0o755);
+      // vulkaninfo prints what RAKAZO_TEST_VULKAN holds, or fails as on a GPU Mesa cannot drive.
+      const vulkaninfo = path.join(bin, "vulkaninfo");
+      writeFileSync(
+        vulkaninfo,
+        '#!/bin/sh\n[ -n "$RAKAZO_TEST_VULKAN" ] || exit 1\nprintf "%s\\n" "$RAKAZO_TEST_VULKAN"\n',
+      );
+      chmodSync(vulkaninfo, 0o755);
+      // The launcher bounds vulkaninfo with GNU timeout, which macOS lacks; run the command as is.
+      const timeout = path.join(bin, "timeout");
+      writeFileSync(timeout, '#!/bin/sh\nshift\nexec "$@"\n');
+      chmodSync(timeout, 0o755);
+      const integrated = "\tdeviceType         = PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU";
+      const cpuOnly = "\tdeviceType         = PHYSICAL_DEVICE_TYPE_CPU";
+      const run = (args: string[] = [], devices = integrated, intent = "1") => {
+        const result = spawnSync("sh", [script, ...args], {
+          env: {
+            ...process.env,
+            RAKAZO_BROWSER_GPU: intent,
+            DISPLAY: ":1",
+            HOME: path.join(temp, "home"),
+            PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}`,
+            RAKAZO_TEST_ARGS: capture,
+            RAKAZO_TEST_VULKAN: devices,
+          },
+          encoding: "utf8",
+        });
+        expect(result.status, result.error?.message ?? result.stderr).toBe(0);
+        return readFileSync(capture, "utf8").trim().split(/\r?\n/);
+      };
+      const software = ["--disable-gpu", "--enable-unsafe-swiftshader"];
+      const vulkan = [
+        "--use-angle=vulkan",
+        "--enable-features=Vulkan,VulkanFromANGLE,DefaultANGLEVulkan",
+      ];
+      // The per-screen launcher's flags, then a URL with a space.
+      const launcher = ["--test-type", ...software, "--no-first-run", "https://example.test/a b"];
+      try {
+        const plain = run();
+        expect(plain).toEqual(expect.arrayContaining(software));
+        for (const flag of [...vulkan, "--disable-software-rasterizer"])
+          expect(plain).not.toContain(flag);
+
+        const card = path.join(dri, "card0");
+        writeFileSync(card, "");
+        expect(run()).toEqual(expect.arrayContaining(software));
+
+        const node = path.join(dri, "renderD128");
+        writeFileSync(node, "");
+        const gpu = run(launcher);
+        expect(gpu).toEqual(expect.arrayContaining([...vulkan, "--enable-unsafe-swiftshader"]));
+        expect(gpu).not.toContain("--disable-gpu");
+        expect(gpu.filter((flag) => flag === "--enable-unsafe-swiftshader")).toHaveLength(1);
+        expect(gpu.slice(-3)).toEqual([
+          "--test-type",
+          "--no-first-run",
+          "https://example.test/a b",
+        ]);
+
+        // Without the render node setting (GPUs only for programs), the browser stays in software.
+        for (const intent of ["", "0"]) {
+          const compute = run(launcher, integrated, intent);
+          expect(compute).toEqual(expect.arrayContaining(software));
+          expect(compute).not.toContain(vulkan[0]);
+        }
+
+        // A GPU the image's Mesa cannot drive, or only a software Vulkan device, stays in software.
+        for (const devices of ["", cpuOnly]) {
+          const fallback = run(launcher, devices);
+          expect(fallback).toEqual(expect.arrayContaining(software));
+          expect(fallback).not.toContain(vulkan[0]);
+        }
+
+        // A node the browser user cannot open is no GPU. Root opens any file, so only checked as a user.
+        if (process.getuid?.() !== 0) {
+          chmodSync(node, 0o400);
+          const unusable = run(launcher);
+          expect(unusable).toEqual(expect.arrayContaining(software));
+          expect(unusable).not.toContain(vulkan[0]);
+        }
+      } finally {
+        rmSync(temp, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "passes the operator's PAC URL to the browser as one flag, and nothing when unset",
+    () => {
+      const root = path.resolve(import.meta.dirname, "../../computer");
+      const temp = mkdtempSync(path.join(tmpdir(), "rakazo-browser-proxy-pac-"));
+      const bin = path.join(temp, "bin");
+      const capture = path.join(temp, "args");
+      mkdirSync(bin);
+      // A path the unquoted flag list would glob a data: URL's * into.
+      mkdirSync(path.join(temp, "data:text"));
+      writeFileSync(path.join(temp, "data:text", "plain"), "");
+      const chromium = path.join(bin, "chromium");
+      writeFileSync(chromium, '#!/bin/sh\nprintf "%s\\n" "$@" > "$RAKAZO_TEST_ARGS"\n');
+      chmodSync(chromium, 0o755);
+      const run = (pac: string | undefined, args: string[] = []) => {
+        const { RAKAZO_BROWSER_PROXY_PAC_URL: _host, ...env } = process.env;
+        const result = spawnSync("sh", [path.join(root, "rakazo-browser"), ...args], {
+          cwd: temp,
+          env: {
+            ...env,
+            ...(pac === undefined ? {} : { RAKAZO_BROWSER_PROXY_PAC_URL: pac }),
+            DISPLAY: ":1",
+            HOME: path.join(temp, "home"),
+            PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}`,
+            RAKAZO_TEST_ARGS: capture,
+          },
+          encoding: "utf8",
+        });
+        expect(result.status, result.error?.message ?? result.stderr).toBe(0);
+        return readFileSync(capture, "utf8")
+          .trim()
+          .split(/\r?\n/)
+          .filter((arg) => arg.startsWith("--proxy-pac-url"));
+      };
+      try {
+        expect(run(undefined)).toEqual([]);
+        expect(run("")).toEqual([]);
+        const url = "https://proxy.example.com/proxy.pac";
+        expect(run(url)).toEqual([`--proxy-pac-url=${url}`]);
+        expect(run(url, [`--user-data-dir=${path.join(temp, "custom")}`])).toEqual([
+          `--proxy-pac-url=${url}`,
+        ]);
+        expect(run("data:text/*")).toEqual(["--proxy-pac-url=data:text/*"]);
+        for (const value of [`${url} --no-sandbox`, `${url}\tx`, `${url}\nx`])
+          expect(run(value)).toEqual([]);
       } finally {
         rmSync(temp, { recursive: true, force: true });
       }
@@ -803,7 +1707,7 @@ describe("graphical computer spec", () => {
                 env: { ...process.env, JOINED_READY: ready },
               });
               try {
-                const deadline = Date.now() + 2_000;
+                const deadline = Date.now() + 15_000;
                 while (spawnSync("test", ["-s", ready]).status !== 0) {
                   if (Date.now() > deadline)
                     throw new Error("space-joined command line was not published");
@@ -1015,7 +1919,7 @@ describe("graphical computer spec", () => {
       });
       const children = [endpointProcess];
       const publishedPort = (file: string) => {
-        const deadline = Date.now() + 2_000;
+        const deadline = Date.now() + 15_000;
         while (spawnSync("test", ["-s", file]).status !== 0) {
           if (Date.now() > deadline) throw new Error("debug endpoint did not publish a port");
           spawnSync("sleep", ["0.02"]);
@@ -1183,6 +2087,8 @@ describe("graphical computer spec", () => {
               "spec = importlib.util.spec_from_file_location('control', sys.argv[1])",
               "module = importlib.util.module_from_spec(spec)",
               "spec.loader.exec_module(module)",
+              // The fixture launcher lives outside the image's trusted command folders.
+              "module.CHILD_PATH = sys.argv[3] + ':' + module.CHILD_PATH",
               "argv = ['env', 'DISPLAY=:1', 'rakazo-browser', sys.argv[2]]",
               "try:",
               "    module.run_control_argv(argv, ':1')",
@@ -1194,6 +2100,7 @@ describe("graphical computer spec", () => {
             ].join("\n"),
             path.join(root, "control.py"),
             "https://example.com/unanswered",
+            bin,
           ],
           { env: launchEnv, encoding: "utf8" },
         );
@@ -1222,13 +2129,6 @@ describe("graphical computer spec", () => {
 
   it("points the screen at the chrome-less noVNC embed", () => {
     expect(screenUrlFor("16080")).toBe("http://127.0.0.1:16080/embed.html");
-  });
-
-  it("wires host clipboard paste into the chrome-less embed", () => {
-    const root = path.resolve(import.meta.dirname, "../../computer");
-    const embed = readFileSync(path.join(root, "embed.html"), "utf8");
-    expect(embed).toMatch(/clipboard-bridge\.js/);
-    expect(embed).toMatch(/attachHostClipboardPaste/);
   });
 
   it("uses the published host mapping in the default topology even when a container IP exists", () => {
@@ -1553,6 +2453,39 @@ describe("graphical computer spec", () => {
       "1",
     ]);
   });
+
+  it("maps DOM key names to X11 keysyms for xdotool", () => {
+    expect(xdotoolCommand({ kind: "key", key: "PageDown" })).toEqual([
+      "xdotool",
+      "key",
+      "--clearmodifiers",
+      "Page_Down",
+    ]);
+    expect(xdotoolCommand({ kind: "key", key: "ArrowDown" })).toEqual([
+      "xdotool",
+      "key",
+      "--clearmodifiers",
+      "Down",
+    ]);
+    expect(xdotoolCommand({ kind: "key", key: "ArrowLeft", modifiers: ["ctrl"] })).toEqual([
+      "xdotool",
+      "key",
+      "--clearmodifiers",
+      "ctrl+Left",
+    ]);
+    expect(xdotoolCommand({ kind: "key", key: "a" })).toEqual([
+      "xdotool",
+      "key",
+      "--clearmodifiers",
+      "a",
+    ]);
+    expect(xdotoolCommand({ kind: "key", key: "F5" })).toEqual([
+      "xdotool",
+      "key",
+      "--clearmodifiers",
+      "F5",
+    ]);
+  });
 });
 
 describe("computer resource limits", () => {
@@ -1773,6 +2706,49 @@ describe("computer home storage", () => {
     for (const version of ["1.45", "1.46", "2.0"])
       expect(() => assertVolumeSubpathSupport(version)).not.toThrow();
   });
+
+  it("supervises computer control with a bounded restart delay", () => {
+    const start = readFileSync(
+      path.resolve(import.meta.dirname, "../../computer/start.sh"),
+      "utf8",
+    );
+    expect(start).toMatch(
+      /while true; do\s+\/usr\/local\/bin\/rakazo-computer-control\s+sleep 1\s+done >\/tmp\/rakazo\/control\.log 2>&1 &/,
+    );
+    // PID 1 terminates both the background loop and its current child on stop.
+    expect(start).toContain("kill -TERM -- -1");
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "restarts computer control after an abnormal exit",
+    () => {
+      const start = readFileSync(
+        path.resolve(import.meta.dirname, "../../computer/start.sh"),
+        "utf8",
+      );
+      const loop = start.match(
+        /while true; do[\s\S]*?done >\/tmp\/rakazo\/control\.log 2>&1 &/,
+      )?.[0];
+      expect(loop).toBeDefined();
+      const result = spawnSync(
+        "bash",
+        [
+          "-c",
+          [
+            "attempts=0",
+            "control() { echo control; return 137; }",
+            'sleep() { echo "delay $1"; attempts=$((attempts + 1)); if [ "$attempts" -eq 2 ]; then exit 0; fi; }',
+            loop
+              ?.replace("/usr/local/bin/rakazo-computer-control", "control")
+              .replace(" >/tmp/rakazo/control.log 2>&1 &", ""),
+          ].join("\n"),
+        ],
+        { encoding: "utf8", timeout: 5_000 },
+      );
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toBe("control\ndelay 1\ncontrol\ndelay 1\n");
+    },
+  );
 
   it("stops promptly when Docker sends SIGTERM to the start script", () => {
     const root = path.resolve(import.meta.dirname, "../../computer");

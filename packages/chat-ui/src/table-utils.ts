@@ -1,9 +1,6 @@
 import { droppedTableHtmlText } from "@rakazo/contracts";
-
-/**
- * Pure helpers behind the markdown table card: hast extraction, type
- * inference, sorting, and copy/export serialization.
- */
+import type { MarkdownCopy } from "./markdown-copy";
+import { defaultMarkdownCopy } from "./markdown-copy";
 
 /** Structural hast subset — avoids a direct @types/hast dependency. */
 export interface HastNode {
@@ -127,8 +124,11 @@ export function parseNumericText(value: string): number | null {
   const trimmed = value.trim();
   if (!trimmed) return null;
   const negative = /^\(.*\)$/.test(trimmed);
-  const cleaned = trimmed.replace(/^\((.*)\)$/, "$1").replace(/[$€£%\s]/g, "");
-  if (!/^-?(\d{1,3}(,\d{3})+|\d+)(\.\d+)?$/.test(cleaned)) return null;
+  const cleaned = trimmed
+    .replace(/^\((.*)\)$/, "$1")
+    .replace(/[$€£%\s]/g, "")
+    .replace(/\u2212/g, "-");
+  if (!/^[+-]?((\d{1,3}(,\d{3})+|\d+)(\.\d+)?|\.\d+)$/.test(cleaned)) return null;
   const n = Number(cleaned.replace(/,/g, ""));
   return Number.isFinite(n) ? (negative ? -Math.abs(n) : n) : null;
 }
@@ -146,27 +146,28 @@ export function isNumericColumn(rows: string[][], columnIndex: number): boolean 
 }
 
 /** Accessible sort label: empty → position; duplicates / collisions append position. */
-export function columnSortLabel(columns: string[], index: number): string {
+export function columnSortLabel(
+  columns: string[],
+  index: number,
+  copy: Pick<
+    MarkdownCopy,
+    "columnFallback" | "columnDuplicate" | "columnCollision"
+  > = defaultMarkdownCopy,
+): string {
   const column = columns[index] ?? "";
-  if (!column) {
-    // Empty header falls back to its position; a literal header may already
-    // claim that name (or the ", empty" disambiguation), so keep suffixing.
-    let label = `column ${index + 1}`;
-    while (columns.includes(label)) label += ", empty";
-    return label;
-  }
-  const duplicated = columns.indexOf(column) !== columns.lastIndexOf(column);
-  if (!duplicated) return column;
-  let label = `${column}, column ${index + 1}`;
-  while (columns.includes(label)) label += ", empty";
+  if (column && columns.indexOf(column) === columns.lastIndexOf(column)) return column;
+  let label = column ? copy.columnDuplicate(column, index + 1) : copy.columnFallback(index + 1);
+  // A literal header can claim a generated name, including its disambiguation.
+  while (columns.includes(label)) label = copy.columnCollision(label);
   return label;
 }
 
-/** Compare non-empty cells: numeric when both parse, else text. */
+/** Compare non-empty cells with numbers before text in ascending order. */
 export function compareCellText(a: string, b: string): number {
   const an = parseNumericText(a);
   const bn = parseNumericText(b);
-  if (an !== null && bn !== null) return an - bn;
+  if (an !== null) return bn !== null ? an - bn : -1;
+  if (bn !== null) return 1;
   return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
 }
 
@@ -197,7 +198,7 @@ export function nextSort(
   return null;
 }
 
-// Matches the .rk-table-cell-text max-width so min-width never outgrows it.
+// The .rk-table-cell-text max-width, so min-width never outgrows it.
 const MAX_WIDTH_CHARS = 60;
 
 /** ch-based min-width per column from the longest cell, capped. */
@@ -215,9 +216,18 @@ export function columnMinWidths(columns: string[], rows: string[][]): Record<num
 }
 
 // Leading = + - @ after any whitespace would be evaluated as a formula by
-// spreadsheet apps; prefix a quote so exports stay inert.
+// spreadsheet apps; prefix a quote so exports stay inert. Plain numbers
+// ("-12.5", "+4", "-3%") and a lone "-" placeholder are not formulas, so they
+// pass through and stay numeric in the sheet.
 const FORMULA_PREFIX = /^\s*[=+\-@]/;
-const neutralizeFormula = (value: string) => (FORMULA_PREFIX.test(value) ? `'${value}` : value);
+// Deliberately stricter than parseNumericText, which ignores spaces and
+// currency symbols anywhere in the cell: only digits, one sign, grouping commas,
+// a decimal part and a trailing % stay unquoted.
+const PLAIN_NUMBER = /^[+-]?(?:(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?|\.\d+)%?$/;
+const neutralizeFormula = (value: string) =>
+  FORMULA_PREFIX.test(value) && value.trim() !== "-" && !PLAIN_NUMBER.test(value.trim())
+    ? `'${value}`
+    : value;
 
 export function tableToCsv(columns: string[], rows: string[][]): string {
   const cell = (value: string) => {
@@ -231,7 +241,10 @@ export function tableToCsv(columns: string[], rows: string[][]): string {
 }
 
 export function tableToTsv(columns: string[], rows: string[][]): string {
-  const clean = (value: string) => neutralizeFormula(value).replace(/[\t\r\n]/g, " ");
+  const clean = (value: string) => {
+    const safe = neutralizeFormula(value).replace(/[\t\r\n]/g, " ");
+    return safe.includes('"') ? `"${safe.replace(/"/g, '""')}"` : safe;
+  };
   const line = (cells: string[]) => cells.map(clean).join("\t");
   return [line(columns), ...rows.map((row) => line(columns.map((_, i) => row[i] ?? "")))].join(
     "\n",

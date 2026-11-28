@@ -1,4 +1,6 @@
+import { bestEffort } from "@rakazo/logging/best-effort";
 import { useEffect, useRef, useState } from "react";
+import { useVisibleRefresh } from "../lib/use-visible-refresh";
 import { GitBranch, ScanText, SearchCheck, RefreshCw } from "lucide-react";
 import { workbenchApi } from "./AgentWorkbenchPanel";
 
@@ -16,16 +18,12 @@ export function NativeAgentPanel({ botId, compact = false }: { botId: string; co
     const c = new AbortController();
     active.current = c;
     setView(undefined);
-    void refresh(c.signal).catch(() => {});
-    const timer = setInterval(() => {
-      if (!submitting.current && document.visibilityState === "visible")
-        void refresh(c.signal).catch(() => {});
-    }, 15000);
-    return () => {
-      c.abort();
-      clearInterval(timer);
-    };
+    void bestEffort("read native agent state", refresh(c.signal));
+    return () => c.abort();
   }, [botId]);
+  useVisibleRefresh(() => {
+    if (!submitting.current) void bestEffort("refresh native agent state", refresh());
+  }, 15_000);
   const save = async (change: any) => {
     if (!view || submitting.current) return;
     const signal = active.current?.signal;
@@ -58,7 +56,7 @@ export function NativeAgentPanel({ botId, compact = false }: { botId: string; co
   };
   if (!view?.enabled)
     return compact ? null : (
-      <p className="text-sm text-muted-foreground">Native controls unavailable.</p>
+      <p className="text-body text-muted-foreground">Native controls unavailable.</p>
     );
   const p = view.preferences;
   const mode = (
@@ -79,7 +77,7 @@ export function NativeAgentPanel({ botId, compact = false }: { botId: string; co
           }
           disabled={busy}
           className={
-            "rounded px-2 py-1 text-xs capitalize " +
+            "rounded px-2 py-1 text-label capitalize " +
             (p.mode === mode ? "bg-accent text-foreground" : "text-muted-foreground")
           }
           onClick={() => void save({ mode, action: "none" })}
@@ -94,7 +92,7 @@ export function NativeAgentPanel({ botId, compact = false }: { botId: string; co
       <div className="flex min-w-0 flex-wrap gap-1">
         {mode}
         {error && (
-          <span role="alert" className="text-xs text-destructive">
+          <span role="alert" className="text-label text-destructive">
             {error}
           </span>
         )}
@@ -107,7 +105,7 @@ export function NativeAgentPanel({ botId, compact = false }: { botId: string; co
     <section aria-label="Native agent controls" className="min-w-0 space-y-3">
       <div className="flex flex-wrap items-center gap-3">
         {mode}
-        <label className="flex items-center gap-2 text-sm">
+        <label className="flex items-center gap-2 text-body">
           <input
             type="checkbox"
             checked={p.persistence}
@@ -126,7 +124,7 @@ export function NativeAgentPanel({ botId, compact = false }: { botId: string; co
         </button>
       </div>
       {error && (
-        <p role="alert" className="text-sm text-destructive">
+        <p role="alert" className="text-body text-destructive">
           {error}
         </p>
       )}
@@ -138,7 +136,7 @@ export function NativeAgentPanel({ botId, compact = false }: { botId: string; co
         ].map(({ action, label, Icon }) => (
           <button
             key={action}
-            className="inline-flex items-center gap-2 rounded border border-border px-3 py-2 text-sm disabled:opacity-40"
+            className="inline-flex items-center gap-2 rounded border border-border px-3 py-2 text-body disabled:opacity-40"
             disabled={busy || (action !== "review" && !completed)}
             onClick={() => void save({ action })}
           >
@@ -147,17 +145,17 @@ export function NativeAgentPanel({ botId, compact = false }: { botId: string; co
           </button>
         ))}
       </div>
-      <p className="text-xs text-muted-foreground">
+      <p className="text-label text-muted-foreground">
         Next turn{p.action !== "none" ? `: ${p.action}` : ""}. Forks are read-only discussions;
         tool inheritance is unavailable in this runtime. No solve is started or changed.
       </p>
       <div className="min-w-0 divide-y divide-border">
         {view.records.map((r: any) => (
           <details key={r.id} className="min-w-0 py-2">
-            <summary className="cursor-pointer break-words text-sm">
-              {r.kind.replace("native_", "")} · {r.status}
+            <summary className="cursor-pointer break-words text-body">
+              {r.kind.replace("native_", "")}<span className="ml-2 text-muted-foreground">{r.status}</span>
             </summary>
-            <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words text-xs">
+            <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words text-label">
               {JSON.stringify(r.payload, null, 2)}
             </pre>
           </details>

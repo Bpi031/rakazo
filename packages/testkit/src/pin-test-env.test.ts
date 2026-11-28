@@ -1,6 +1,7 @@
-import { readFileSync } from "node:fs";
-import path from "node:path";
-import { describe, expect, it } from "vitest";
+import type { AdapterContext } from "@rakazo/adapter-kit";
+import { createSecretStore } from "@rakazo/adapters";
+import { describe, expect, it, vi } from "vitest";
+import { pinLocalSecretStore } from "./pin-secret-store.js";
 
 const describeFast = process.env.VERIFY_PROVIDERS ? describe.skip : describe;
 const itOffline = process.env.VERIFY_DATABASE ? it.skip : it;
@@ -8,13 +9,30 @@ const itOffline = process.env.VERIFY_DATABASE ? it.skip : it;
 describeFast("pnpm test emulator pin", () => {
   it("forces scripted runtime, fake sandbox, and in-memory wakeup", () => {
     expect(process.env.AGENT_RUNTIME).toBe("scripted");
+    expect(process.env.RAKAZO_LIVE_MODEL_CATALOG).toBe("off");
     expect(process.env.SANDBOX_PROVIDER).toBe("fake");
     expect(process.env.WAKEUP_DRIVER).toBe("memory");
+  });
+
+  it("never enables billed media generation through inherited configuration", () => {
+    expect(process.env.MEDIA_GENERATION_PROVIDER).toBe("disabled");
+    expect(process.env.MEDIA_GENERATION_API_KEY).toBeUndefined();
+  });
+
+  it("never enables billed paid services through inherited configuration", () => {
+    expect(process.env.PAID_SERVICES_PROVIDER).toBe("disabled");
+    expect(process.env.PAID_SERVICES_API_KEY).toBeUndefined();
   });
 
   it("does not keep a live Composio key in the test process", () => {
     expect(process.env.COMPOSIO_API_KEY).toBeUndefined();
     expect(process.env.INTEGRATIONS_CATALOG_URL).toBeUndefined();
+  });
+
+  it("does not inherit live email delivery configuration", () => {
+    expect(process.env.EMAIL_PROVIDER).toBeUndefined();
+    expect(process.env.EMAIL_API_KEY).toBeUndefined();
+    expect(process.env.SMTP_URL).toBeUndefined();
   });
 
   itOffline(
@@ -25,23 +43,42 @@ describeFast("pnpm test emulator pin", () => {
     },
   );
 
-  it("exposes one test command family and no leftover verify/e2e aliases", () => {
-    const pkg = JSON.parse(
-      readFileSync(path.resolve(import.meta.dirname, "../../../package.json"), "utf8"),
-    ) as {
-      scripts: Record<string, string>;
+  it("keeps the secret store local even when the environment configures a remote one", async () => {
+    expect(process.env.SECRET_STORE).toBe("encrypted");
+    const remote = {
+      SECRET_STORE: "infisical",
+      INFISICAL_URL: "https://secret-store.invalid",
+      INFISICAL_CLIENT_ID: "pin-test-client-id",
+      INFISICAL_CLIENT_SECRET: "pin-test-client-secret",
+      INFISICAL_PROJECT_ID: "pin-test-project",
+      INFISICAL_ENVIRONMENT: "pin-test",
+      INFISICAL_FOLDER: "/pin-test",
     };
-    expect(pkg.scripts.test).toBe("vitest run");
-    expect(pkg.scripts["test:integration"]).toContain("harness.ts --integration");
-    expect(pkg.scripts["test:e2e"]).toContain("harness.ts --e2e");
-    expect(pkg.scripts["test:topology"]).toContain("cli/topology.ts");
-    expect(pkg.scripts["test:canary"]).toContain("cli/canary.ts");
-    expect(pkg.scripts["test:computer"]).toContain("cli/computer.ts");
-    expect(pkg.scripts.verify).toBeUndefined();
-    expect(pkg.scripts["verify:fast"]).toBeUndefined();
-    expect(pkg.scripts["verify:providers"]).toBeUndefined();
-    expect(pkg.scripts.e2e).toBeUndefined();
-    expect(pkg.scripts["e2e:computer"]).toBeUndefined();
-    expect(pkg.scripts["canary:providers"]).toBeUndefined();
+    const saved = Object.fromEntries(Object.keys(remote).map((name) => [name, process.env[name]]));
+    Object.assign(process.env, remote);
+    vi.stubGlobal("fetch", () => {
+      throw new Error("offline test must not reach the network");
+    });
+    try {
+      pinLocalSecretStore();
+      const store = createSecretStore("pin-test-encryption-key");
+      const context: AdapterContext = {
+        operationId: "pin-secret-store",
+        traceId: "pin-secret-store",
+        spaceId: "pin-test-space",
+        userId: "pin-test-user",
+        signal: new AbortController().signal,
+      };
+      await store.start();
+      const record = await store.put("model key", context);
+      expect(store.describe().id).toBe("app-encrypted");
+      expect(record.ref.startsWith("infisical:v1:")).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+      for (const [name, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
   });
 });

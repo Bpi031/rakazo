@@ -1,12 +1,190 @@
 /// <reference path="./linkify-it.d.ts" />
+
+import type { MessageBlock } from "@rakazo/contracts";
+import { httpUrl } from "@rakazo/contracts";
+import { urlSite } from "@rakazo/core/egress";
 import LinkifyIt from "linkify-it";
 import type { ReactNode } from "react";
-import { createContext, useContext, useEffect, useSyncExternalStore } from "react";
+import { createContext, useContext, useEffect, useMemo, useSyncExternalStore } from "react";
+
+import remarkGfm from "remark-gfm";
+import remarkParse from "remark-parse";
+import { unified } from "unified";
 
 export type ChatMarkdownProps = {
   children: string;
   streaming?: boolean;
+  /** Draws a mention link from `withMentions`; returning nothing leaves its plain name. */
+  renderMention?: (id: string, name: string) => ReactNode;
+  /** Opens a page linked as `[title](page:<pageId>)`; without it the title stays plain text. */
+  onOpenPage?: (pageId: string) => void;
 };
+
+const PAGE_URL_PATTERN = /^page:([A-Za-z0-9_-]{1,64})$/;
+
+/** The page id of a `page:<pageId>` link, if this href is one. */
+export function markdownPageId(href: string | undefined): string | undefined {
+  return href ? PAGE_URL_PATTERN.exec(href)?.[1] : undefined;
+}
+
+const MENTION_URL_PREFIX = "rakazo-mention:";
+// Ends a mention the renderer put in front of text that doesn't name the bot. An encoded id
+// never holds a `#`, so the mark can't be part of one.
+const ADDED_MENTION_MARK = "#added";
+
+/** Whether a mention link was put in front of the text, so its name isn't part of the message. */
+export function markdownMentionAdded(href: string | undefined): boolean {
+  return Boolean(href?.startsWith(MENTION_URL_PREFIX) && href.endsWith(ADDED_MENTION_MARK));
+}
+
+/** The id of a mention link, if this href is one. */
+export function markdownMentionId(href: string | undefined): string | undefined {
+  if (!href?.startsWith(MENTION_URL_PREFIX)) return undefined;
+  const id = href.slice(MENTION_URL_PREFIX.length);
+  try {
+    return (
+      decodeURIComponent(
+        id.endsWith(ADDED_MENTION_MARK) ? id.slice(0, -ADDED_MENTION_MARK.length) : id,
+      ) || undefined
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+const mentionParser = unified().use(remarkParse).use(remarkGfm);
+
+type MentionTrees = Map<string, ReturnType<typeof mentionParser.parse> | null>;
+
+function rewriteOutsideCode(
+  text: string,
+  rewrite: (part: string) => string,
+  trees: MentionTrees,
+  skipLinks = false,
+) {
+  if (trees.get(text) === null) return text;
+  try {
+    const tree = trees.get(text) ?? mentionParser.parse(text);
+    trees.set(text, tree);
+    let result = "";
+    let offset = 0;
+    function visit(node: typeof tree | (typeof tree.children)[number]) {
+      if (
+        node.type === "link" ||
+        node.type === "code" ||
+        node.type === "inlineCode" ||
+        (skipLinks &&
+          ["link", "image", "linkReference", "imageReference", "definition"].includes(node.type))
+      ) {
+        const start = node.position?.start.offset;
+        const end = node.position?.end.offset;
+        if (start !== undefined && end !== undefined) {
+          const source = text.slice(start, end);
+          result +=
+            rewrite(text.slice(offset, start)) +
+            (!skipLinks &&
+            node.type === "link" &&
+            node.url.toLowerCase().startsWith(MENTION_URL_PREFIX)
+              ? rewrite(source)
+              : source);
+          offset = end;
+        }
+        return;
+      }
+      if ("children" in node) for (const child of node.children) visit(child);
+    }
+    visit(tree);
+    return result + rewrite(text.slice(offset));
+  } catch {
+    trees.set(text, null);
+    return text;
+  }
+}
+const MODEL_MENTION_LINK = /\[([^\]\n]*)\]\(\s*<?rakazo-mention:[^)\n]*\)/gi;
+const OPENS_WITH_BLOCK = /^\s*(#|>|\||```|~~~|[-*+]\s|\d+[.)]\s)/;
+
+function linkFirstName(
+  text: string,
+  name: string,
+  link: string,
+  trees: MentionTrees,
+): string | undefined {
+  const pattern = new RegExp(`(^|[^\\p{L}\\p{N}_])${escapeRegExp(name)}(?![\\p{L}\\p{N}_])`, "u");
+  if (!pattern.test(text)) return undefined;
+  let placed = false;
+  const result = rewriteOutsideCode(
+    text,
+    (part) => {
+      if (placed) return part;
+      return part.replace(pattern, (_match, prefix: string) => {
+        placed = true;
+        return `${prefix}${link}`;
+      });
+    },
+    trees,
+    true,
+  );
+  return placed ? result : undefined;
+}
+
+/**
+ * Markdown texts of one message naming each entry once as a mention link: at its first
+ * appearance across the texts, or at the start of the first text when none names it.
+ */
+export function withMentions(
+  texts: readonly string[],
+  mentions: readonly { id: string; name: string }[],
+): string[] {
+  const trees: MentionTrees = new Map();
+  // Only links placed here draw as mentions; ones already in the text keep just their name.
+  const result = texts.map((text) =>
+    rewriteOutsideCode(text, (part) => part.replace(MODEL_MENTION_LINK, "$1"), trees),
+  );
+  if (result.length === 0) return result;
+  for (const mention of mentions) {
+    const name = mention.name.trim();
+    if (!name) continue;
+    const link = `[${name.replace(/[\\[\]*_`<>]/g, "\\$&")}](${MENTION_URL_PREFIX}${encodeURIComponent(mention.id)})`;
+    const placed = result.some((text, index) => {
+      const linked = linkFirstName(text, name, link, trees);
+      if (linked !== undefined) result[index] = linked;
+      return linked !== undefined;
+    });
+    if (placed) continue;
+    const firstIndex = result.findIndex((text) => trees.get(text) !== null);
+    if (firstIndex === -1) continue;
+    const first = result[firstIndex]!;
+    const added = `${link.slice(0, -1)}${ADDED_MENTION_MARK})`;
+    result[firstIndex] = OPENS_WITH_BLOCK.test(first)
+      ? `${added}\n\n${first}`
+      : `${added} ${first}`;
+  }
+  return result;
+}
+
+/** Message blocks whose prose names each entry once as a mention link. Tool activity is left alone. */
+export function withBlockMentions(
+  blocks: readonly MessageBlock[],
+  mentions: readonly { id: string; name: string }[],
+): MessageBlock[] {
+  const prose = blocks.flatMap((block, index) =>
+    block.kind === "text" || (block.kind === "progress" && !block.activity) ? [index] : [],
+  );
+  const texts = withMentions(
+    prose.map((index) => (blocks[index] as { text: string }).text),
+    mentions,
+  );
+  return blocks.map((block, index) => {
+    const prosePosition = prose.indexOf(index);
+    return prosePosition === -1
+      ? block
+      : ({ ...block, text: texts[prosePosition] } as MessageBlock);
+  });
+}
 
 type LinkifyRules = {
   set(options: { fuzzyLink: boolean }): unknown;
@@ -54,7 +232,12 @@ const safeProtocols = new Set(["http", "https", "mailto", "tel"]);
 
 export type PlainTextPart =
   | { type: "text"; value: string }
-  | { type: "link"; value: string; href: string };
+  | { type: "link"; value: string; href: string }
+  | { type: "page"; value: string; pageId: string };
+
+// The link pageReply puts before a sent reply: `[title](page:<pageId>)`, title brackets escaped.
+// The bound fits any escaped title and keeps unclosed brackets from rescanning the message.
+const PLAIN_PAGE_LINK = /\[((?:\\[\\[\]]|[^\\[\]\n]){0,400})\]\(page:([A-Za-z0-9_-]{1,64})\)/g;
 
 function appendPlainText(parts: PlainTextPart[], value: string) {
   if (!value) return;
@@ -67,13 +250,25 @@ function appendPlainText(parts: PlainTextPart[], value: string) {
 }
 
 /**
- * Split plain user-message text into literal runs and tappable links.
- * User bubbles stay plain text on web and mobile. Bold, headings, and other
- * markdown remain characters. Links use the same explicit autolinker as bot
- * messages, so a balanced parenthesis stays inside the URL and a closing
- * parenthesis that only wraps the surrounding prose does not.
+ * User bubbles stay plain text: markdown remains characters, except a page link, which opens the
+ * page as it does in bot messages. Links use the bot messages' autolinker, so a balanced
+ * parenthesis stays inside the URL and one wrapping the prose does not.
  */
 export function plainTextLinkParts(text: string): PlainTextPart[] {
+  const parts: PlainTextPart[] = [];
+  let cursor = 0;
+  for (const match of text.matchAll(PLAIN_PAGE_LINK)) {
+    if (match.index > cursor) parts.push(...urlLinkParts(text.slice(cursor, match.index)));
+    const value = match[1]!.replace(/\\([\\[\]])/g, "$1");
+    parts.push({ type: "page", value, pageId: match[2]! });
+    cursor = match.index + match[0].length;
+  }
+  if (cursor === 0) return urlLinkParts(text);
+  if (cursor < text.length) parts.push(...urlLinkParts(text.slice(cursor)));
+  return parts;
+}
+
+function urlLinkParts(text: string): PlainTextPart[] {
   const matches = plainTextLinkify.match(text);
   if (!matches || matches.length === 0) return [{ type: "text", value: text }];
 
@@ -143,6 +338,25 @@ export function markdownLinkRequiresConfirmation(url: string, appOrigin?: string
   } catch {
     return true;
   }
+}
+
+/**
+ * The site "Always open" trusts for a link: its registrable domain, so every subdomain is
+ * included, while each tenant of a shared host stays its own site. The server stores the same.
+ */
+export function markdownLinkSite(url: string): string | undefined {
+  return urlSite(url);
+}
+
+/** Whether a link shows the external-link prompt: it leaves the app to a site not trusted. */
+export function markdownLinkNeedsPrompt(
+  url: string,
+  appOrigin?: string | null,
+  trustedSites: readonly string[] = [],
+): boolean {
+  if (!markdownLinkRequiresConfirmation(url, appOrigin)) return false;
+  const site = markdownLinkSite(url);
+  return !site || !trustedSites.includes(site);
 }
 
 export type MarkdownLinkDisplayParts = {
@@ -231,57 +445,6 @@ export function markRemoteImageLoaded(href: string): void {
   loadedRemoteImages.add(href);
 }
 
-const SHORT_LINK_LABEL_MAX = 40;
-const SHORT_LINK_PATH_MIN = 12;
-// Control and format characters (bidi overrides, zero-width joiners and spaces, the BOM) that a
-// decoded path could use to disguise itself.
-const HIDDEN_PATH_CHARACTERS = /[\p{Cc}\p{Cf}]/gu;
-
-function httpUrl(href: string): URL | undefined {
-  try {
-    const url = new URL(href);
-    return url.protocol === "http:" || url.protocol === "https:" ? url : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function decodedUrl(value: string): string {
-  try {
-    return decodeURI(value);
-  } catch {
-    return value;
-  }
-}
-
-function comparableUrl(value: string): string {
-  return value
-    .trim()
-    .replace(/^https?:\/\//i, "")
-    .replace(/\/$/, "")
-    .toLowerCase();
-}
-
-/**
- * The words a link shows. An author's label stays as written; a bare URL (an autolink, or a
- * label that just repeats the address) shortens to host and path, like `x.com/elonmusk`. The
- * host is what tells a reader where the link goes, so it is never cut and stays in its ASCII
- * (punycode) form; only a long path is trimmed.
- */
-export function linkLabel(text: string, href: string): string {
-  const url = httpUrl(href);
-  // Some parsers show an autolink with its escapes decoded (`caf%C3%A9` as `café`), so a label
-  // that matches the decoded address is bare too.
-  const label = comparableUrl(text);
-  if (!url || (label !== comparableUrl(href) && label !== comparableUrl(decodedUrl(href)))) {
-    return text;
-  }
-  const host = url.host.replace(/^www\./i, "");
-  const path = decodedUrl(url.pathname.replace(/\/+$/, "")).replace(HIDDEN_PATH_CHARACTERS, "");
-  const room = Math.max(SHORT_LINK_LABEL_MAX - host.length, SHORT_LINK_PATH_MIN);
-  return path.length > room ? `${host}${path.slice(0, room - 1)}…` : `${host}${path}`;
-}
-
 /** The origin a link's site icon is looked up by, or undefined for links that get no icon. */
 export function linkFaviconOrigin(href: string): string | undefined {
   return httpUrl(href)?.origin;
@@ -358,36 +521,45 @@ function requestLinkFavicon(source: LinkFavicons, origin: string, key: string, a
   );
 }
 
+function faviconKey(source: LinkFavicons | null, origin: string) {
+  return JSON.stringify([source?.endpoint ?? "", origin]);
+}
+
+/** Counts a link to this origin as on screen until the returned release runs. */
+function showFaviconLink(key: string) {
+  mountedFaviconLinks.set(key, (mountedFaviconLinks.get(key) ?? 0) + 1);
+  return () => {
+    const left = (mountedFaviconLinks.get(key) ?? 1) - 1;
+    if (left > 0) {
+      mountedFaviconLinks.set(key, left);
+      return;
+    }
+    mountedFaviconLinks.delete(key);
+    const retry = busyFaviconRetries.get(key);
+    if (retry === undefined) return;
+    clearTimeout(retry);
+    busyFaviconRetries.delete(key);
+    pendingFavicons.delete(key);
+  };
+}
+
+function askForFavicon(source: LinkFavicons, origin: string, key: string) {
+  if (linkFavicons.has(key) || pendingFavicons.has(key)) return;
+  if (Date.now() - (failedFavicons.get(key) ?? -Infinity) < FAILED_FAVICON_RETRY_MS) return;
+  requestLinkFavicon(source, origin, key, 1);
+}
+
 /** The icon for a link once the API has one, and a way to drop an image that turns out unusable. */
 export function useLinkFavicon(href: string): { icon: string | null; unusable: () => void } {
   const source = useContext(LinkFaviconsContext);
   const paused = useContext(LinkFaviconsPausedContext);
   const origin = linkFaviconOrigin(href);
-  const key = JSON.stringify([source?.endpoint ?? "", origin]);
+  const key = faviconKey(source, origin ?? "");
   const snapshot = () => (origin ? (linkFavicons.get(key) ?? null) : null);
   const icon = useSyncExternalStore(subscribeLinkFavicons, snapshot, snapshot);
+  useEffect(() => (origin ? showFaviconLink(key) : undefined), [key, origin]);
   useEffect(() => {
-    if (!origin) return;
-    mountedFaviconLinks.set(key, (mountedFaviconLinks.get(key) ?? 0) + 1);
-    return () => {
-      const left = (mountedFaviconLinks.get(key) ?? 1) - 1;
-      if (left > 0) {
-        mountedFaviconLinks.set(key, left);
-        return;
-      }
-      mountedFaviconLinks.delete(key);
-      const retry = busyFaviconRetries.get(key);
-      if (retry === undefined) return;
-      clearTimeout(retry);
-      busyFaviconRetries.delete(key);
-      pendingFavicons.delete(key);
-    };
-  }, [key, origin]);
-  useEffect(() => {
-    if (!source || paused || !origin) return;
-    if (linkFavicons.has(key) || pendingFavicons.has(key)) return;
-    if (Date.now() - (failedFavicons.get(key) ?? -Infinity) < FAILED_FAVICON_RETRY_MS) return;
-    requestLinkFavicon(source, origin, key, 1);
+    if (source && !paused && origin) askForFavicon(source, origin, key);
   }, [source, paused, origin, key]);
   return {
     icon,
@@ -397,15 +569,54 @@ export function useLinkFavicon(href: string): { icon: string | null; unusable: (
   };
 }
 
+/** The icons the API has for these links so far, by link. */
+export function useLinkFavicons(hrefs: readonly string[]): ReadonlyMap<string, string> {
+  const source = useContext(LinkFaviconsContext);
+  const paused = useContext(LinkFaviconsPausedContext);
+  const origins = [...new Set(hrefs.flatMap((href) => linkFaviconOrigin(href) ?? []))].sort();
+  const originList = JSON.stringify(origins);
+  // The joined icons are a string, so an unchanged answer keeps the same snapshot.
+  const snapshot = () =>
+    JSON.stringify(origins.map((origin) => linkFavicons.get(faviconKey(source, origin)) ?? null));
+  const icons = useSyncExternalStore(subscribeLinkFavicons, snapshot, snapshot);
+  useEffect(() => {
+    const shown: string[] = JSON.parse(originList);
+    const releases = shown.map((origin) => showFaviconLink(faviconKey(source, origin)));
+    return () => {
+      for (const release of releases) release();
+    };
+  }, [source, originList]);
+  useEffect(() => {
+    if (!source || paused) return;
+    for (const origin of JSON.parse(originList) as string[]) {
+      askForFavicon(source, origin, faviconKey(source, origin));
+    }
+  }, [source, paused, originList]);
+  return useMemo(() => {
+    const byOrigin = new Map<string, string>();
+    (JSON.parse(icons) as (string | null)[]).forEach((icon, index) => {
+      const origin = (JSON.parse(originList) as string[])[index];
+      if (icon && origin) byOrigin.set(origin, icon);
+    });
+    const byHref = new Map<string, string>();
+    for (const href of hrefs) {
+      const icon = byOrigin.get(linkFaviconOrigin(href) ?? "");
+      if (icon) byHref.set(href, icon);
+    }
+    return byHref;
+  }, [icons, originList, hrefs]);
+}
+
 export function closeUnterminatedFence(markdown: string): string {
   let openFence: { marker: "`" | "~"; length: number } | undefined;
 
-  for (const line of markdown.split("\n")) {
+  for (const line of markdown.split(/\r\n|\r|\n/)) {
     const match = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
     if (!match?.[1]) continue;
 
     const marker = match[1][0] as "`" | "~";
     if (!openFence) {
+      if (marker === "`" && (match[2] ?? "").includes("`")) continue;
       openFence = { marker, length: match[1].length };
       continue;
     }
@@ -420,4 +631,12 @@ export function closeUnterminatedFence(markdown: string): string {
   }
 
   return openFence ? `${markdown}\n${openFence.marker.repeat(openFence.length)}` : markdown;
+}
+
+/**
+ * A fence explicitly marked as plain text, such as a draft email: it wraps in the body font. Every
+ * other fence, including one with no language, keeps the monospaced font and sideways scrolling.
+ */
+export function isProseFence(language: string): boolean {
+  return ["text", "txt", "plaintext"].includes(language.toLowerCase());
 }

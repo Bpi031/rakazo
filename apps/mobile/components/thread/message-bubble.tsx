@@ -1,0 +1,986 @@
+import { ph, t } from "@lingui/core/macro";
+import { useLingui } from "@lingui/react/macro";
+import { ChatMarkdown, MarkdownLongPressContext, withBlockMentions } from "@rakazo/chat-ui/native";
+import type { LoginFieldInput, MessageBlock } from "@rakazo/contracts";
+import { isAttachmentAudioMimeType } from "@rakazo/contracts";
+import type { ChildBotBlock, PeerExchange } from "@rakazo/core";
+import {
+  isApprovalAskBlock,
+  isQuestionAskBlock,
+  messagingProviderLabel,
+  resolveAskChoice,
+  selectedAskActionLabel,
+} from "@rakazo/core";
+import { fontWeight, typeScale } from "@rakazo/ui-tokens";
+import type { ComponentProps } from "react";
+import { memo, useContext, useMemo, useState } from "react";
+import type { TextProps } from "react-native";
+import { Alert, Pressable, Text, View } from "react-native";
+import type { MobileBot, MobileMessage, MobileSnapshot } from "../../lib/api/mobile-types";
+import { blockText } from "../../lib/api/mobile-types";
+import { errorText } from "../../lib/api/user-error";
+import { mobileTokens } from "../../lib/appearance/appearance";
+import type { MobileArtifactTarget } from "../../lib/artifacts/artifact-open";
+import { openMobileArtifact } from "../../lib/artifacts/artifact-open";
+import { allowsSpace } from "../../lib/cards/ask-action-label";
+import { plainAskTitle } from "../../lib/cards/ask-title";
+import { attachmentGroups } from "../../lib/messages/attachment-groups";
+import { isInlineImageBlock } from "../../lib/messages/inline-image";
+import {
+  mentionedBots,
+  textWithMentions,
+  UserMentionsContext,
+  userMentionTargets,
+} from "../../lib/messages/message-mentions";
+import {
+  askOptions,
+  hasMessageSenderContent,
+  messagePresentationSegments,
+  splitMessageBlocks,
+} from "../../lib/messages/message-presentation";
+import type { RoutineEventBlock } from "../../lib/messages/routine-event-label";
+import type { UserBubble } from "../../lib/messages/user-bubble";
+import { withUserBubble } from "../../lib/messages/user-bubble";
+import { useResolvedAppearance } from "../../lib/native/native";
+import { PageCard } from "../../lib/pages/page-card";
+import { botDisplayName, speakerColorFor } from "../../lib/thread/thread-message-text";
+import { AppConnectCard } from "../cards/AppConnectCard";
+import { AskActions } from "../cards/AskActions";
+import { AskReceiptView } from "../cards/ask-receipt";
+import { ChoiceCard } from "../cards/ChoiceCard";
+import { ComputerCard } from "../cards/ComputerCard";
+import { ChangeUndo, isUndoableChange } from "../cards/change-undo";
+import { FeedbackReceiptCard } from "../cards/feedback-receipt-card";
+import { ImportSetupCard } from "../cards/ImportSetupCard";
+import { McpApprovalCard } from "../cards/McpApprovalCard";
+import { OutgoingDraftCard } from "../cards/OutgoingDraftCard";
+import { RoutineApprovalDetail } from "../cards/routine-approval-detail";
+import { ToolQuestionCard } from "../cards/ToolQuestionCard";
+import { AttachmentFile } from "../media/attachment-file";
+import { AudioAttachment } from "../media/audio-attachment";
+import { ImageAttachmentDeck } from "../media/image-attachment-deck";
+import { InlineImageAttachment } from "../media/inline-image-attachment";
+import { MessageMentions } from "../messages/bot-mention";
+import { MessageCaption } from "../messages/message-caption";
+import { NativeSymbol } from "../native/native-symbol";
+import { AskBlock } from "./ask-block";
+import { McpAppCard } from "./mcp-app-card";
+import type { MessageRowActions } from "./message-row";
+import { PeerReceiptLine } from "./peer-receipt-line";
+import { RoutineEventRows } from "./routine-event-row";
+import { isSpecialMessageBlock, SpecialMessageCard } from "./special-message-card";
+
+type AskAction = NonNullable<Extract<MessageBlock, { kind: "ask" }>["actions"]>[number];
+
+function formatApprovalAnswer(
+  answer: string | undefined,
+  actions: AskAction[] | undefined,
+  approval: boolean,
+): string {
+  if (!answer) return t`Answered`;
+  const selectedAction = actions?.find((action) => action.id === answer);
+  const outcome = selectedAction?.outcome;
+  if (approval && outcome === "created") return t`Created`;
+  if (approval && outcome === "cancelled") return t`Cancelled`;
+  if (approval && answer === "allow")
+    return allowsSpace(actions) ? t`Allowed in this space` : t`Allowed once`;
+  if (approval && answer === "always") return t`Always allowed`;
+  if (approval && answer === "deny") return t`Denied`;
+  return t`Answered: ${ph({ answer: selectedAskActionLabel(answer, actions) })}`;
+}
+
+export type MessageActionProps = Pick<
+  TextProps,
+  "onLongPress" | "accessibilityActions" | "onAccessibilityAction"
+>;
+
+export const MessageBubble = memo(function MessageBubble({
+  mentions,
+  ...props
+}: ComponentProps<typeof MessageBubbleContent> & {
+  mentions?: readonly ChildBotBlock[];
+}) {
+  const { members, onOpenBot } = props;
+  const userMentions = useMemo(
+    () =>
+      members?.length
+        ? { targets: userMentionTargets(members, blockText(props.message)), onOpenBot }
+        : undefined,
+    [members, onOpenBot, props.message],
+  );
+  const body = (
+    <MarkdownLongPressContext.Provider value={props.actionProps.onLongPress}>
+      <MessageBubbleWithMentions mentions={mentions} {...props} />
+    </MarkdownLongPressContext.Provider>
+  );
+  return props.message.role === "user" && userMentions ? (
+    <UserMentionsContext.Provider value={userMentions}>{body}</UserMentionsContext.Provider>
+  ) : (
+    body
+  );
+});
+
+function MessageBubbleWithMentions({
+  mentions,
+  ...props
+}: ComponentProps<typeof MessageBubbleContent> & {
+  mentions?: readonly ChildBotBlock[];
+}) {
+  if (!mentions?.length) return <MessageBubbleBody {...props} />;
+  return (
+    <MessageMentions
+      mentions={mentions}
+      colorOf={(id) =>
+        props.bots.find((bot) => bot.id === id)?.color ??
+        props.members?.find((member) => member.botId === id)?.color
+      }
+      onOpenBot={props.onOpenBot}
+    >
+      <MessageBubbleBody
+        {...props}
+        message={{
+          ...props.message,
+          blocks: withBlockMentions(
+            props.message.blocks,
+            mentions.map((bot) => ({ id: bot.botId, name: bot.name })),
+          ),
+        }}
+      />
+    </MessageMentions>
+  );
+}
+
+/** Blocks drawn as their own card between the message's text pieces. */
+function isOwnCardBlock(block: MessageBlock): boolean {
+  return (
+    isSpecialMessageBlock(block) ||
+    block.kind === "page" ||
+    block.kind === "app" ||
+    block.kind === "feedback_receipt" ||
+    block.kind === "tool_question"
+  );
+}
+
+function pieceShowsSender(blocks: readonly MessageBlock[]): boolean {
+  return !blocks.some(isOwnCardBlock) && hasMessageSenderContent(blocks);
+}
+
+export function hasSenderLabelContent(message: { blocks: MessageBlock[] }): boolean {
+  return splitMessageBlocks(message.blocks, isOwnCardBlock).some(pieceShowsSender);
+}
+
+function MessageBubbleBody(props: ComponentProps<typeof MessageBubbleContent>) {
+  const { message } = props;
+  const pieces = splitMessageBlocks(message.blocks, isOwnCardBlock);
+  if (pieces[0] === message.blocks) return <MessageBubbleContent {...props} />;
+  const firstContent = pieces.findIndex(pieceShowsSender);
+  const content = pieces.map((blocks, index) => {
+    const first = blocks[0]!;
+    if (first.kind === "page")
+      return <PageCard key={`page-${index}`} block={first} messageId={message.id} />;
+    if (first.kind === "feedback_receipt")
+      return (
+        <FeedbackReceiptCard key={first.reportId} block={first} actionProps={props.actionProps} />
+      );
+    if (first.kind === "tool_question")
+      return (
+        <ToolQuestionCard
+          key={`question-${index}`}
+          block={first}
+          messageId={message.id}
+          target={props.groupId ? { groupId: props.groupId } : { botId: props.botId }}
+          canAnswer={props.canAnswer}
+        />
+      );
+    if (first.kind === "app")
+      return (
+        <McpAppCard
+          key={`app-${index}`}
+          block={first}
+          target={props.groupId ? { groupId: props.groupId } : { botId: props.botId }}
+        />
+      );
+    return isSpecialMessageBlock(first) ? (
+      <SpecialMessageCard
+        key={first.kind === "subagent" ? first.agentId : `${first.kind}-${index}`}
+        special={first}
+        actionProps={props.actionProps}
+        bots={props.bots}
+        members={props.members}
+        onOpenBot={props.onOpenBot}
+        onHelperToggle={props.onHelperToggle}
+        userBubble={props.userBubble}
+        // A saved running card is a background helper's; a live one belongs to this turn.
+        stopHelper={
+          first.kind === "subagent" && message.botId && !message.id.startsWith("subagent:")
+            ? { botId: message.botId, messageId: message.id }
+            : undefined
+        }
+      />
+    ) : (
+      <MessageBubbleContent
+        {...props}
+        key={`content-${index}`}
+        hideSenderLabel={props.hideSenderLabel || index !== firstContent}
+        message={{ ...message, blocks }}
+        onAnswer={(_, ...answer) => props.onAnswer(message, ...answer)}
+      />
+    );
+  });
+  return content.length === 1 ? (
+    content[0]
+  ) : (
+    <View style={{ gap: 8, width: "100%" }}>{content}</View>
+  );
+}
+
+const MessageBubbleContent = memo(function MessageBubbleContent({
+  botId,
+  authorName,
+  botName,
+  hideSenderLabel,
+  showBotSenderName,
+  bots,
+  groupId,
+  message,
+  members,
+  canAnswer,
+  separateAnswers,
+  canDismiss,
+  onAnswer,
+  onOpenComputer,
+  onChoiceDismissed,
+  onPreviewFile,
+  onPreviewImage,
+  imageStackMaxWidth,
+  peerExchange,
+  onOpenPeerChat,
+  actionProps,
+  doubleTapSurface = false,
+  userBubble,
+}: {
+  onHelperToggle?: MessageRowActions["helperToggle"];
+  botId: string;
+  /** Someone else in a shared space wrote this message: named and set apart. */
+  authorName?: string;
+  botName?: string;
+  hideSenderLabel?: boolean;
+  showBotSenderName: boolean;
+  bots: MobileBot[];
+  groupId?: string;
+  message: MobileMessage;
+  members?: MobileSnapshot["members"];
+  canAnswer: boolean;
+  separateAnswers?: ReadonlySet<MessageBlock>;
+  canDismiss: boolean;
+  onAnswer: (
+    message: MobileMessage,
+    answer: string,
+    fields?: readonly LoginFieldInput[],
+    dismiss?: boolean,
+    remember?: false,
+  ) => Promise<void>;
+  onOpenBot: (botId: string, name: string) => void;
+  onOpenComputer: (botId: string, name: string) => void;
+  onChoiceDismissed?: (question: string) => void;
+  /** Opens a file the app can show; other types go to the share sheet. */
+  onPreviewFile: (artifactId: string) => void;
+  onPreviewImage: MessageRowActions["previewImage"];
+  imageStackMaxWidth?: number;
+  peerExchange?: PeerExchange;
+  onOpenPeerChat: (peer: { peerBotId: string; peerBotName: string }) => void;
+  actionProps: MessageActionProps;
+  doubleTapSurface?: boolean;
+  userBubble?: UserBubble;
+}) {
+  const colorScheme = useResolvedAppearance();
+  const tokens = withUserBubble(mobileTokens(), userBubble);
+  const { t } = useLingui();
+  const [peerExpanded, setPeerExpanded] = useState(false);
+  const outgoing = message.role === "user" && !authorName;
+  const showSpeaker = !hideSenderLabel && (showBotSenderName || Boolean(authorName));
+  const artifactTarget: MobileArtifactTarget = groupId ? { groupId } : { botId };
+  const cardBotId = message.botId ?? botId;
+  const computerBotId = message.botId ?? (groupId ? undefined : botId);
+  const appConnectBlocks = message.blocks.filter(
+    (block): block is Extract<MessageBlock, { kind: "app_connect" }> =>
+      block.kind === "app_connect",
+  );
+  const mcpApprovalBlocks = message.blocks.filter(
+    (block): block is Extract<MessageBlock, { kind: "mcp_approval" }> =>
+      block.kind === "mcp_approval",
+  );
+  const undoBlock = message.blocks.find(isUndoableChange);
+  if (undoBlock?.kind === "ask") return <ChangeUndo block={undoBlock} />;
+  const ask = message.blocks.find(
+    (block): block is Extract<MessageBlock, { kind: "ask" }> =>
+      block.kind === "ask" && !isApprovalAskBlock(block) && !block.actions?.length,
+  );
+  if (ask) {
+    return (
+      <View style={{ gap: 8, width: "100%" }}>
+        <AskBlock
+          ask={ask}
+          answerIsSeparate={separateAnswers?.has(ask)}
+          actionProps={actionProps}
+          canAnswer={canAnswer}
+          canDismiss={canDismiss}
+          onAnswer={(answer, fields, remember) =>
+            onAnswer(message, answer, fields, undefined, remember)
+          }
+          onDismiss={() => onAnswer(message, "", undefined, true)}
+        />
+        {appConnectBlocks.map((block, index) => (
+          <AppConnectCard
+            key={`${block.provider}-${index}`}
+            botId={cardBotId}
+            threadId={message.threadId}
+            messageId={message.id}
+            block={block}
+            accessibilityActions={actionProps.accessibilityActions}
+            onAccessibilityAction={actionProps.onAccessibilityAction}
+          />
+        ))}
+        {mcpApprovalBlocks.map((block) => (
+          <McpApprovalCard
+            key={block.serverId}
+            botId={cardBotId}
+            threadId={message.threadId}
+            block={block}
+            accessibilityActions={actionProps.accessibilityActions}
+            onAccessibilityAction={actionProps.onAccessibilityAction}
+          />
+        ))}
+      </View>
+    );
+  }
+  const handoff = message.blocks.find((block) => block.kind === "handoff");
+  if (handoff) {
+    const from = botDisplayName(members, bots, handoff.fromBotId) ?? t`bot`;
+    const to = botDisplayName(members, bots, handoff.toBotId) ?? t`bot`;
+    return (
+      <AgentEventLabel
+        actionProps={actionProps}
+        label={t`${from} messaged ${to}`}
+        detail={handoff.text}
+        expanded={peerExpanded}
+        onToggle={() => setPeerExpanded((expanded) => !expanded)}
+      />
+    );
+  }
+  const peerMessage = message.blocks.find(
+    (
+      block,
+    ): block is Extract<MessageBlock, { kind: "bot_message_sent" | "bot_message_received" }> =>
+      block.kind === "bot_message_sent" || block.kind === "bot_message_received",
+  );
+  if (peerMessage) {
+    const sent = peerMessage.kind === "bot_message_sent";
+    const peer = sent ? peerMessage.toBotName : peerMessage.fromBotName;
+    const peerBotId = sent ? peerMessage.toBotId : peerMessage.fromBotId;
+    const peerBot = bots.find((bot) => bot.id === peerBotId);
+    const peerMember = members?.find((member) => member.botId === peerBotId);
+    const peerColor = peerBot?.color ?? peerMember?.color ?? tokens.mutedForeground;
+    return (
+      <PeerReceiptLine
+        peerBotId={peerBotId}
+        peerBotName={peerExchange?.peerBotName ?? peer ?? t`Bot`}
+        color={peerColor}
+        avatarSet={peerBot?.avatarSet ?? peerMember?.avatarSet}
+        count={peerExchange?.count ?? 1}
+        direction={sent ? "sent" : "received"}
+        actionProps={actionProps}
+        onPress={
+          !groupId && botId && peerBotId !== botId
+            ? () => onOpenPeerChat({ peerBotId, peerBotName: peer ?? t`Bot` })
+            : undefined
+        }
+      />
+    );
+  }
+  const channelMessage = message.blocks.find(
+    (block): block is Extract<MessageBlock, { kind: "channel_message" }> =>
+      block.kind === "channel_message",
+  );
+  if (channelMessage) {
+    return (
+      <Pressable
+        {...actionProps}
+        style={{ width: "100%", paddingVertical: 4, alignItems: "center" }}
+      >
+        <Text style={{ color: tokens.mutedForeground, fontSize: 12, textAlign: "center" }}>
+          {messagingProviderLabel(channelMessage.provider, channelMessage.transport)}
+        </Text>
+        <Text style={{ color: tokens.mutedForeground, fontSize: 13.5, textAlign: "center" }}>
+          {channelMessage.fromLabel}: {channelMessage.text}
+        </Text>
+      </Pressable>
+    );
+  }
+  const routineEvents = message.blocks.filter(
+    (block): block is RoutineEventBlock => block.kind === "routine_event",
+  );
+  if (routineEvents.length > 0 && routineEvents.length === message.blocks.length) {
+    return (
+      <RoutineEventRows blocks={routineEvents} botId={message.botId} actionProps={actionProps} />
+    );
+  }
+  const inlineCardCount = appConnectBlocks.length + mcpApprovalBlocks.length;
+  if (inlineCardCount > 0 && inlineCardCount === message.blocks.length) {
+    return (
+      <View style={{ gap: 8, width: "100%" }}>
+        {appConnectBlocks.map((block, index) => (
+          <AppConnectCard
+            key={`${block.provider}-${index}`}
+            botId={cardBotId}
+            threadId={message.threadId}
+            messageId={message.id}
+            block={block}
+            accessibilityActions={actionProps.accessibilityActions}
+            onAccessibilityAction={actionProps.onAccessibilityAction}
+          />
+        ))}
+        {mcpApprovalBlocks.map((block) => (
+          <McpApprovalCard
+            key={block.serverId}
+            botId={cardBotId}
+            threadId={message.threadId}
+            block={block}
+            accessibilityActions={actionProps.accessibilityActions}
+            onAccessibilityAction={actionProps.onAccessibilityAction}
+          />
+        ))}
+      </View>
+    );
+  }
+  const askBlock = message.blocks.find(
+    (block) => block.kind === "ask" && Boolean(block.actions?.length),
+  );
+  if (askBlock?.kind === "ask" && askBlock.actions?.length) {
+    const question = isQuestionAskBlock(askBlock);
+    const answered = askBlock.status === "answered";
+    const answeredQuestion = question && answered;
+    const selectedChoice = answeredQuestion
+      ? resolveAskChoice(askBlock.answer ?? "", askBlock.actions)
+      : undefined;
+    return (
+      <View style={{ gap: 8, width: "100%" }}>
+        <View
+          style={{
+            // No percentage width: the iOS menu host has no definite width to resolve it against.
+            maxWidth: 576,
+            borderRadius: 18,
+            backgroundColor: askBlock.outgoingDraft ? undefined : tokens.card,
+            paddingHorizontal: askBlock.outgoingDraft ? 0 : 16,
+            paddingVertical: askBlock.outgoingDraft ? 0 : 14,
+          }}
+        >
+          {askBlock.outgoingDraft ? (
+            <OutgoingDraftCard
+              block={askBlock}
+              messageId={message.id}
+              runId={message.runId}
+              target={artifactTarget}
+              canAnswer={canAnswer}
+            />
+          ) : isUndoableChange(askBlock) ? (
+            <ChangeUndo block={askBlock} />
+          ) : (
+            <>
+              {askBlock.text ? (
+                <Text
+                  {...actionProps}
+                  style={{
+                    color: answeredQuestion ? tokens.mutedForeground : tokens.foreground,
+                    ...typeScale.cardTitle,
+                  }}
+                >
+                  {askBlock.instructionUpdate
+                    ? t`Update instructions?`
+                    : plainAskTitle(askBlock.text)}
+                </Text>
+              ) : null}
+              {askBlock.routineUpdate ? (
+                <RoutineApprovalDetail review={askBlock.routineUpdate} />
+              ) : askBlock.receipt ? (
+                <AskReceiptView receipt={askBlock.receipt} />
+              ) : askBlock.detail ? (
+                <Text
+                  {...(askBlock.text ? {} : actionProps)}
+                  style={{
+                    color:
+                      askBlock.detailFormat === "text" && !answeredQuestion
+                        ? tokens.foreground
+                        : tokens.mutedForeground,
+                    marginTop: askBlock.text ? 8 : 0,
+                    // Commands and an approval's tool arguments read as code; a bot's own note
+                    // under its question is text.
+                    ...(askBlock.detailFormat === "code" ||
+                    (!askBlock.detailFormat && askBlock.approvalEffectId)
+                      ? { ...typeScale.caption, fontFamily: "Menlo" }
+                      : typeScale.secondary),
+                  }}
+                >
+                  {askBlock.detail}
+                </Text>
+              ) : null}
+              {question && (answered || canAnswer) ? (
+                <AskActions
+                  actions={askOptions(askBlock)}
+                  approval={false}
+                  disabled={answered}
+                  selectedAnswer={answered ? askBlock.answer : undefined}
+                  accessibilityActions={actionProps.accessibilityActions}
+                  onAccessibilityAction={actionProps.onAccessibilityAction}
+                  onAnswer={(answer) => onAnswer(message, answer)}
+                />
+              ) : null}
+              {separateAnswers?.has(askBlock) || selectedChoice ? null : answered ? (
+                <Text
+                  {...actionProps}
+                  style={{
+                    color:
+                      question || askBlock.answer === "deny"
+                        ? tokens.mutedForeground
+                        : tokens.success,
+                    marginTop: 12,
+                    ...typeScale.secondary,
+                    fontWeight: fontWeight.medium,
+                  }}
+                >
+                  {askBlock.expired
+                    ? t`Expired`
+                    : askBlock.instructionUpdate
+                      ? askBlock.answer === "deny"
+                        ? t`Dismissed`
+                        : t`Allowed once`
+                      : formatApprovalAnswer(
+                          askBlock.answer,
+                          askBlock.actions,
+                          isApprovalAskBlock(askBlock),
+                        )}
+                </Text>
+              ) : question && canAnswer ? null : canAnswer && onAnswer ? (
+                <AskActions
+                  actions={askBlock.actions}
+                  site={askBlock.site}
+                  approval={isApprovalAskBlock(askBlock)}
+                  instructions={askBlock.instructionUpdate?.after}
+                  routineUpdate={Boolean(askBlock.routineUpdate)}
+                  accessibilityActions={actionProps.accessibilityActions}
+                  onAccessibilityAction={actionProps.onAccessibilityAction}
+                  onAnswer={(answer) => onAnswer(message, answer)}
+                />
+              ) : (
+                <Text
+                  {...actionProps}
+                  style={{ color: tokens.mutedForeground, marginTop: 12, ...typeScale.caption }}
+                >
+                  {t`No longer active`}
+                </Text>
+              )}
+            </>
+          )}
+        </View>
+        {appConnectBlocks.map((block, index) => (
+          <AppConnectCard
+            key={`${block.provider}-${index}`}
+            botId={cardBotId}
+            threadId={message.threadId}
+            messageId={message.id}
+            block={block}
+            accessibilityActions={actionProps.accessibilityActions}
+            onAccessibilityAction={actionProps.onAccessibilityAction}
+          />
+        ))}
+        {mcpApprovalBlocks.map((block) => (
+          <McpApprovalCard
+            key={block.serverId}
+            botId={cardBotId}
+            threadId={message.threadId}
+            block={block}
+            accessibilityActions={actionProps.accessibilityActions}
+            onAccessibilityAction={actionProps.onAccessibilityAction}
+          />
+        ))}
+      </View>
+    );
+  }
+  const attachments = attachmentGroups(message.blocks);
+  const caption = message.blocks
+    .flatMap((block) => {
+      if (block.kind === "channel_message" && block.text) {
+        return [
+          `${block.fromLabel} (${messagingProviderLabel(block.provider, block.transport)}): ${block.text}`,
+        ];
+      }
+      return block.kind === "text" && block.text ? [block.text] : [];
+    })
+    .join("\n");
+  if (attachments.length > 0) {
+    const speaker =
+      message.role === "bot"
+        ? (botDisplayName(members, bots, message.botId) ?? botName)
+        : authorName;
+    const speakerColor =
+      message.role === "bot" ? speakerColorFor(bots, members, message.botId) : undefined;
+    const hasInlineImages = attachments.some(
+      (group) => group.kind === "pictures" || isInlineImageBlock(group.attachment),
+    );
+    const bubbleStyle = {
+      maxWidth: "100%",
+      borderRadius: 20,
+      backgroundColor: outgoing ? tokens.chatUser : tokens.muted,
+      paddingHorizontal: 14,
+      paddingVertical: 12,
+      gap: 8,
+    } as const;
+    return (
+      <View style={hasInlineImages ? { maxWidth: "100%", gap: 8 } : bubbleStyle}>
+        {(showSpeaker && speaker) || caption ? (
+          <View style={hasInlineImages ? bubbleStyle : undefined}>
+            {showSpeaker && speaker ? (
+              <Text
+                style={{ color: speakerColor ?? tokens.mutedForeground, ...typeScale.footnote }}
+              >
+                {speaker}
+              </Text>
+            ) : null}
+            {caption ? (
+              <MessageCaption
+                role={message.role}
+                received={!outgoing}
+                text={caption}
+                tokens={tokens}
+                colorScheme={colorScheme}
+                streaming={message.id.startsWith("progress:")}
+              />
+            ) : null}
+          </View>
+        ) : null}
+        {attachments.map((group) =>
+          group.kind === "pictures" ? (
+            <ImageAttachmentDeck
+              key={`stack-${group.index}`}
+              threadTarget={artifactTarget}
+              images={group.pictures}
+              onOpen={onPreviewImage}
+              actionProps={actionProps}
+              maxWidth={imageStackMaxWidth}
+            />
+          ) : (
+            <View
+              key={`${group.attachment.artifactId ?? group.attachment.name ?? group.attachment.kind}-${group.index}`}
+              style={
+                hasInlineImages && !isInlineImageBlock(group.attachment) ? bubbleStyle : undefined
+              }
+            >
+              {group.attachment.kind === "image" ? (
+                isInlineImageBlock(group.attachment) ? (
+                  <InlineImageAttachment
+                    threadTarget={artifactTarget}
+                    artifactId={group.attachment.artifactId}
+                    name={group.attachment.name ?? t`Image`}
+                    mimeType={group.attachment.mimeType ?? "image/png"}
+                    labelColor={outgoing ? tokens.chatUserForeground : tokens.foreground}
+                    pressableProps={actionProps}
+                    onOpen={() =>
+                      onPreviewImage({
+                        artifactId: group.attachment.artifactId!,
+                        name: group.attachment.name ?? t`Image`,
+                        mimeType: group.attachment.mimeType ?? "image/png",
+                      })
+                    }
+                  />
+                ) : (
+                  <Pressable
+                    {...actionProps}
+                    onPress={() =>
+                      group.attachment.artifactId
+                        ? void openMobileArtifact(
+                            artifactTarget,
+                            group.attachment.artifactId,
+                            group.attachment.name ?? t`Image`,
+                            group.attachment.mimeType ?? "image/png",
+                          ).catch((err) =>
+                            Alert.alert(t`Could not open image`, errorText(err, t`Try again.`)),
+                          )
+                        : undefined
+                    }
+                  >
+                    <Text
+                      style={{
+                        color: outgoing ? tokens.chatUserForeground : tokens.foreground,
+                        fontSize: 15,
+                      }}
+                    >
+                      🖼 {group.attachment.name ?? t`Image`}
+                    </Text>
+                  </Pressable>
+                )
+              ) : group.attachment.artifactId &&
+                isAttachmentAudioMimeType(group.attachment.mimeType ?? "") ? (
+                <AudioAttachment
+                  pressableProps={actionProps}
+                  target={artifactTarget}
+                  artifactId={group.attachment.artifactId}
+                  name={group.attachment.name ?? t`File`}
+                  mimeType={group.attachment.mimeType!}
+                  labelColor={outgoing ? tokens.chatUserForeground : undefined}
+                />
+              ) : (
+                <AttachmentFile
+                  attachment={group.attachment}
+                  target={artifactTarget}
+                  color={outgoing ? tokens.chatUserForeground : tokens.foreground}
+                  secondaryColor={outgoing ? tokens.chatUserForeground : tokens.mutedForeground}
+                  pressableProps={actionProps}
+                  onPreviewFile={onPreviewFile}
+                />
+              )}
+            </View>
+          ),
+        )}
+        {appConnectBlocks.map((block, index) => (
+          <AppConnectCard
+            key={`${block.provider}-${index}`}
+            botId={cardBotId}
+            threadId={message.threadId}
+            messageId={message.id}
+            block={block}
+            accessibilityActions={actionProps.accessibilityActions}
+            onAccessibilityAction={actionProps.onAccessibilityAction}
+          />
+        ))}
+        {mcpApprovalBlocks.map((block) => (
+          <McpApprovalCard
+            key={block.serverId}
+            botId={cardBotId}
+            threadId={message.threadId}
+            block={block}
+            accessibilityActions={actionProps.accessibilityActions}
+            onAccessibilityAction={actionProps.onAccessibilityAction}
+          />
+        ))}
+      </View>
+    );
+  }
+  const segments = messagePresentationSegments(message.blocks);
+  const speaker =
+    message.role === "bot" ? (botDisplayName(members, bots, message.botId) ?? botName) : authorName;
+  const speakerColor =
+    message.role === "bot" ? speakerColorFor(bots, members, message.botId) : undefined;
+  const firstContent = segments.findIndex((segment) => segment.kind === "content");
+  const choiceBlocks = message.blocks.filter(
+    (block): block is Extract<MessageBlock, { kind: "choice" }> => block.kind === "choice",
+  );
+  const computerBlocks = message.blocks.filter(
+    (block): block is Extract<MessageBlock, { kind: "computer" }> => block.kind === "computer",
+  );
+  const setupBlocks = message.blocks.filter(
+    (block): block is Extract<MessageBlock, { kind: "import_setup" }> =>
+      block.kind === "import_setup",
+  );
+  return (
+    <View style={{ gap: 8, width: "100%" }}>
+      {segments.map((segment, index) => (
+        <MessageTextCard
+          key={`${message.id}-content-${index}`}
+          message={{ ...message, blocks: segment.blocks }}
+          outgoing={outgoing}
+          speaker={showSpeaker && index === firstContent ? speaker : undefined}
+          speakerColor={showSpeaker && index === firstContent ? speakerColor : undefined}
+          actionProps={actionProps}
+          doubleTapSurface={doubleTapSurface}
+          userBubble={userBubble}
+        />
+      ))}
+      {choiceBlocks.map((block, index) => (
+        <ChoiceCard
+          key={`choice-${index}`}
+          botId={cardBotId}
+          block={block}
+          onDismissed={onChoiceDismissed ? () => onChoiceDismissed(block.question) : undefined}
+          accessibilityActions={actionProps.accessibilityActions}
+          onAccessibilityAction={actionProps.onAccessibilityAction}
+        />
+      ))}
+      {computerBlocks.map((block, index) => (
+        <ComputerCard
+          key={`computer-${index}`}
+          block={block}
+          botId={computerBotId}
+          runId={message.runId}
+          onOpen={
+            computerBotId ? () => onOpenComputer(computerBotId, speaker ?? t`Bot`) : undefined
+          }
+          accessibilityActions={actionProps.accessibilityActions}
+          onAccessibilityAction={actionProps.onAccessibilityAction}
+        />
+      ))}
+      {appConnectBlocks.map((block, index) => (
+        <AppConnectCard
+          key={`${block.provider}-${index}`}
+          botId={cardBotId}
+          threadId={message.threadId}
+          messageId={message.id}
+          block={block}
+          accessibilityActions={actionProps.accessibilityActions}
+          onAccessibilityAction={actionProps.onAccessibilityAction}
+        />
+      ))}
+      {setupBlocks.map((block, index) => (
+        <ImportSetupCard
+          key={`import-setup-${index}`}
+          botId={cardBotId}
+          botName={speaker}
+          block={block}
+          accessibilityActions={actionProps.accessibilityActions}
+          onAccessibilityAction={actionProps.onAccessibilityAction}
+        />
+      ))}
+    </View>
+  );
+});
+
+const OPEN_BOT_ACTION = "open-bot:";
+
+function MessageTextCard({
+  message,
+  outgoing,
+  speaker,
+  speakerColor,
+  actionProps,
+  doubleTapSurface = false,
+  userBubble,
+}: {
+  message: MobileMessage;
+  outgoing: boolean;
+  speaker?: string;
+  speakerColor?: string;
+  actionProps: MessageActionProps;
+  doubleTapSurface?: boolean;
+  userBubble?: UserBubble;
+}) {
+  const colorScheme = useResolvedAppearance();
+  const tokens = withUserBubble(mobileTokens(), userBubble);
+  const contentText = blockText(message);
+  const { t } = useLingui();
+  const userMentions = useContext(UserMentionsContext);
+  if (!contentText) return null;
+  // The surface is one accessibility element, so the bots a message names are offered as its
+  // actions too; a tap on the name still opens the chat for everyone else.
+  const bots =
+    message.role === "user" && userMentions
+      ? mentionedBots(textWithMentions(contentText, userMentions.targets))
+      : [];
+  const accessibilityActions = bots.length
+    ? [
+        ...(actionProps.accessibilityActions ?? []),
+        ...bots.map((bot) => ({
+          name: `${OPEN_BOT_ACTION}${bot.id}`,
+          label: t`Open ${ph({ name: bot.name })}`,
+        })),
+      ]
+    : actionProps.accessibilityActions;
+  // The menu wrapper owns surface gestures; links and code controls remain responders.
+  const Surface = doubleTapSurface ? View : Pressable;
+  return (
+    <Surface
+      {...actionProps}
+      accessible
+      accessibilityActions={accessibilityActions}
+      onAccessibilityAction={(event) => {
+        const actionName = event.nativeEvent.actionName;
+        const bot = bots.find((candidate) => `${OPEN_BOT_ACTION}${candidate.id}` === actionName);
+        if (bot) userMentions?.onOpenBot(bot.id, bot.name);
+        else actionProps.onAccessibilityAction?.(event);
+      }}
+      onLongPress={doubleTapSurface ? undefined : actionProps.onLongPress}
+      style={{
+        flexShrink: 1,
+        minWidth: 0,
+        maxWidth: "100%",
+        backgroundColor: outgoing ? tokens.chatUser : tokens.muted,
+        paddingHorizontal: 14,
+        paddingVertical: 9,
+        borderRadius: 20,
+      }}
+    >
+      {speaker ? (
+        <Text
+          style={{
+            color: speakerColor ?? tokens.mutedForeground,
+            ...typeScale.footnote,
+            marginBottom: 4,
+          }}
+        >
+          {speaker}
+        </Text>
+      ) : null}
+      <MessageCaption
+        role={message.role}
+        received={!outgoing}
+        text={contentText}
+        tokens={tokens}
+        colorScheme={colorScheme}
+        streaming={message.id.startsWith("progress:")}
+      />
+    </Surface>
+  );
+}
+
+function AgentEventLabel({
+  label,
+  detail,
+  expanded,
+  onToggle,
+  actionProps,
+}: {
+  label: string;
+  detail?: string;
+  expanded: boolean;
+  onToggle: () => void;
+  actionProps: MessageActionProps;
+}) {
+  const colorScheme = useResolvedAppearance();
+  const tokens = mobileTokens();
+  const { t } = useLingui();
+  return (
+    <Pressable
+      {...actionProps}
+      onPress={onToggle}
+      accessibilityRole="button"
+      accessibilityLabel={expanded ? t`Hide ${label}` : t`Show ${label}`}
+      style={{ width: "100%", paddingVertical: 4, alignItems: "center" }}
+    >
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+        <NativeSymbol
+          ios="arrow.left.arrow.right"
+          android="swap-horizontal"
+          size={12}
+          color={tokens.mutedForeground}
+        />
+        <Text style={{ color: tokens.mutedForeground, fontSize: 13.5, textAlign: "center" }}>
+          {label}
+        </Text>
+      </View>
+      {expanded && detail ? (
+        <View
+          style={{
+            width: "100%",
+            marginTop: 6,
+            borderRadius: 14,
+            backgroundColor: tokens.card,
+            paddingHorizontal: 14,
+            paddingVertical: 10,
+          }}
+        >
+          <ChatMarkdown palette={tokens} colorScheme={colorScheme}>
+            {detail}
+          </ChatMarkdown>
+        </View>
+      ) : null}
+    </Pressable>
+  );
+}

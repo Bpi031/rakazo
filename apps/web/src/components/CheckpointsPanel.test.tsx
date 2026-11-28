@@ -1,12 +1,15 @@
 // @vitest-environment jsdom
+import { deferred } from "@rakazo/core/test-async";
 
 import { i18n } from "@lingui/core";
 import { act } from "react";
-import type { Root } from "react-dom/client";
-import { createRoot } from "react-dom/client";
+import { createQueryRoot } from "../lib/query/query-root.test-support";
 import { afterEach, expect, it, vi } from "vitest";
 
-vi.mock("../lib/rpc", () => ({
+vi.mock("../lib/query/rpc", () => ({
+  rpc: {},
+  selectedSpaceId: () => "selected-test-space",
+  rpcForSpace: () => ({}),
   withSpaceHeaders: (headers: Record<string, string>) => ({
     ...headers,
     "x-rakazo-space-id": "space",
@@ -17,7 +20,7 @@ import { checkpointNeedsReload } from "../lib/checkpoints";
 import { CheckpointGenerationMonitor, CheckpointsPanel } from "./CheckpointsPanel";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-let root: Root | undefined;
+let root: ReturnType<typeof createQueryRoot> | undefined;
 let host: HTMLDivElement;
 afterEach(async () => {
   if (root) await act(async () => root!.unmount());
@@ -67,7 +70,7 @@ async function render(
   vi.stubGlobal("fetch", fetcher);
   host = document.createElement("div");
   document.body.append(host);
-  root = createRoot(host);
+  root = createQueryRoot(host);
   await act(async () =>
     root!.render(
       <CheckpointsPanel botId="bot" workspaceBusy={options.workspaceBusy} onRestored={restored} />,
@@ -76,7 +79,7 @@ async function render(
   return { restored, fetcher };
 }
 
-it("requires a target confirmation and submits the current generation", async () => {
+it("requires a target confirmation and submits the current generation and revision", async () => {
   const { restored, fetcher } = await render();
   expect(host.querySelector('[aria-label="Restore checkpoint 人员已确认"]')).toBeTruthy();
   expect(host.textContent).not.toContain("人员已确认");
@@ -93,11 +96,37 @@ it("requires a target confirmation and submits the current generation", async ()
     "/api/checkpoints/clean/rollback",
     expect.objectContaining({
       method: "POST",
-      body: JSON.stringify({ checkpointId: "clean", expectedGeneration: 3, botId: "bot" }),
+      body: JSON.stringify({
+        checkpointId: "clean",
+        expectedGeneration: 3,
+        expectedRevision: view.revision,
+        botId: "bot",
+      }),
       headers: expect.objectContaining({ "x-rakazo-space-id": "space" }),
     }),
   );
   expect(restored).toHaveBeenCalledTimes(1);
+});
+
+it("names an incomplete checkpoint error and lets the user choose a different one", async () => {
+  const { fetcher, restored } = await render();
+  fetcher.mockImplementation(async (_url: string, init: RequestInit) =>
+    init.method === "POST"
+      ? Response.json({ code: "CHECKPOINT_INCOMPLETE", error: "hidden details" }, { status: 409 })
+      : Response.json(view),
+  );
+  const checkpoint = host.querySelector<HTMLButtonElement>(
+    '[aria-label="Restore checkpoint 人员已确认"]',
+  )!;
+  await act(async () => checkpoint.click());
+  await act(async () => button("Restore").click());
+  expect(host.textContent).toContain(
+    "This checkpoint is missing saved data. Choose another checkpoint.",
+  );
+  expect(host.textContent).not.toContain("hidden details");
+  expect(host.querySelector('[role="alertdialog"]')).toBeNull();
+  expect(checkpoint.disabled).toBe(false);
+  expect(restored).not.toHaveBeenCalled();
 });
 
 it("shows a branching tree without an Undo action", async () => {
@@ -115,7 +144,7 @@ it("does not reload on a failed restore and refreshes stale state for retry", as
   expect(host.querySelector('[role="alert"]')?.textContent).toContain("Workspace changed");
   expect(restored).not.toHaveBeenCalled();
   expect(fetcher.mock.calls.filter((call) => call[1].method === "GET")).toHaveLength(2);
-  expect(button("Restore").disabled).toBe(false);
+  expect(host.querySelector('[role="alertdialog"]')).toBeNull();
 });
 
 it("blocks saving an incomplete workspace while allowing recovery", async () => {
@@ -137,12 +166,10 @@ it("keeps a reopened panel disabled while a workspace operation is still running
 });
 
 it("does not reload a different chat when an unmounted restore completes", async () => {
-  let complete!: (response: Response) => void;
+  const completion = deferred<Response>();
   const fetcher = vi.fn((_url: string, init: RequestInit) =>
     init.method === "POST"
-      ? new Promise<Response>((resolve) => {
-          complete = resolve;
-        })
+      ? completion.promise
       : Promise.resolve(Response.json(view)),
   );
   vi.stubGlobal("fetch", fetcher);
@@ -150,7 +177,7 @@ it("does not reload a different chat when an unmounted restore completes", async
   const busy = vi.fn();
   host = document.createElement("div");
   document.body.append(host);
-  root = createRoot(host);
+  root = createQueryRoot(host);
   await act(async () =>
     root!.render(<CheckpointsPanel botId="bot" onRestored={restored} onBusyChange={busy} />),
   );
@@ -161,7 +188,7 @@ it("does not reload a different chat when an unmounted restore completes", async
   expect(busy).toHaveBeenLastCalledWith(true);
   await act(async () => root!.unmount());
   root = undefined;
-  await act(async () => complete(Response.json({ ok: true, generation: 4, branchId: "new" })));
+  await act(async () => completion.resolve(Response.json({ ok: true, generation: 4, branchId: "new" })));
   expect(restored).not.toHaveBeenCalled();
   expect(busy).toHaveBeenLastCalledWith(false);
 });
@@ -179,12 +206,33 @@ it("recovers from an initial load error when the next status poll succeeds", asy
   vi.stubGlobal("fetch", fetcher);
   host = document.createElement("div");
   document.body.append(host);
-  root = createRoot(host);
+  root = createQueryRoot(host);
   await act(async () => root!.render(<CheckpointsPanel botId="bot" />));
   expect(host.querySelector('[role="alert"]')).toBeTruthy();
   await act(async () => {
     await vi.advanceTimersByTimeAsync(4000);
   });
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+  expect(button("Set a checkpoint").disabled).toBe(false);
+});
+
+it("ignores a failed initial load after status has already refreshed the timeline", async () => {
+  vi.useFakeTimers();
+  const initial = deferred<Response>();
+  vi.stubGlobal(
+    "fetch",
+    vi
+      .fn()
+      .mockReturnValueOnce(initial.promise)
+      .mockImplementation(async () => Response.json(view)),
+  );
+  host = document.createElement("div");
+  document.body.append(host);
+  root = createQueryRoot(host);
+  await act(async () => root!.render(<CheckpointsPanel botId="bot" />));
+  await act(async () => vi.advanceTimersByTimeAsync(4000));
+  expect(button("Set a checkpoint").disabled).toBe(false);
+  await act(async () => initial.reject(new Error("obsolete request failed")));
   expect(host.querySelector('[role="alert"]')).toBeNull();
   expect(button("Set a checkpoint").disabled).toBe(false);
 });
@@ -200,6 +248,29 @@ it("saves using the displayed generation and reloads the timeline", async () => 
     }),
   );
   expect(fetcher.mock.calls.filter((call) => call[1].method === "GET")).toHaveLength(2);
+});
+
+it("retries only the list after an acknowledged save, even when status is unchanged", async () => {
+  vi.useFakeTimers();
+  const { fetcher } = await render();
+  let failed = false;
+  fetcher.mockImplementation(async (url: string, init: RequestInit) => {
+    if (init.method === "POST") return Response.json({ id: "saved" }, { status: 201 });
+    if (!url.includes("/status") && !failed) {
+      failed = true;
+      return Response.json({ error: "Temporary read failure" }, { status: 503 });
+    }
+    return Response.json(view);
+  });
+  await act(async () => button("Set a checkpoint").click());
+  expect(host.textContent).toContain("Checkpoint saved. The list has not refreshed yet.");
+  expect(button("Set a checkpoint").disabled).toBe(true);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(4000);
+  });
+  expect(button("Set a checkpoint").disabled).toBe(false);
+  expect(host.textContent).not.toContain("The list has not refreshed");
+  expect(fetcher.mock.calls.filter((call) => call[1].method === "POST")).toHaveLength(1);
 });
 
 it("saves an optional checkpoint name", async () => {
@@ -230,7 +301,7 @@ it("reloads another tab only after recovery completes", async () => {
   const reload = vi.fn();
   host = document.createElement("div");
   document.body.append(host);
-  root = createRoot(host);
+  root = createQueryRoot(host);
   await act(async () =>
     root!.render(
       <CheckpointGenerationMonitor botId="bot" onBlockedChange={blocked} onReload={reload} />,
@@ -261,7 +332,7 @@ it("polls cheap status and refreshes the tree only when its revision changes", a
   vi.stubGlobal("fetch", fetcher);
   host = document.createElement("div");
   document.body.append(host);
-  root = createRoot(host);
+  root = createQueryRoot(host);
   await act(async () => root!.render(<CheckpointsPanel botId="bot" />));
   await act(async () => {
     await vi.advanceTimersByTimeAsync(4000);

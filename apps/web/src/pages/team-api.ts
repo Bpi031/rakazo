@@ -4,10 +4,10 @@ export class TeamUnavailable extends Error {
   constructor(public readonly disabled: boolean, message: string) { super(message); }
 }
 
-export async function teamApi<T>(route: string, body?: unknown): Promise<T> {
+export async function teamApi<T>(route: string, body?: unknown, spaceId?: string | null): Promise<T> {
   const response = await fetch("/api/team/" + route, {
     method: body === undefined ? "GET" : "POST", credentials: "include",
-    headers: withSpaceHeaders({ "content-type": "application/json" }),
+    headers: withSpaceHeaders({ "content-type": "application/json" }, spaceId),
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   if (!response.headers.get("content-type")?.includes("application/json"))

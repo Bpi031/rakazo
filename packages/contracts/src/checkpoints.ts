@@ -19,8 +19,10 @@ export const CheckpointRollback = z
     botId,
     checkpointId: z.string().min(1).max(160),
     expectedGeneration: z.number().int().nonnegative(),
+    expectedRevision: z.string().min(1).max(256),
   })
   .strict();
+export type CheckpointRollbackInput = z.infer<typeof CheckpointRollback>;
 export type CheckpointListItem = {
   id: string;
   kind: z.infer<typeof CheckpointKind>;

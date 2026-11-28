@@ -53,7 +53,7 @@ try {
   checks++;
   const user = await db.user.findUniqueOrThrow({ where: { email: credentials.email } });
   await db.user.update({ where: { id: user.id }, data: { emailVerified: true } });
-  const actor = await requireMembership(db, user.id);
+  const actor = await requireMembership(db, user);
   assert.equal(actor.isDeploymentOwner, true);
   checks++;
   const member = await db.member.findFirstOrThrow({ where: { userId: actor.userId } });
@@ -150,8 +150,10 @@ try {
       },
     });
   }
-  const ordinary = await requireMembership(db, ids[0]!);
-  const manager = await requireMembership(db, ids[1]!);
+  const ordinaryUser = await db.user.findUniqueOrThrow({ where: { id: ids[0]! } });
+  const managerUser = await db.user.findUniqueOrThrow({ where: { id: ids[1]! } });
+  const ordinary = await requireMembership(db, ordinaryUser);
+  const manager = await requireMembership(db, managerUser);
   await assert.rejects(service.view(ordinary));
   checks++;
   assert.equal((await service.view(manager)).registration, null);
@@ -198,10 +200,10 @@ try {
   );
   checks++;
   await apply({ kind: "member_state", userId: ids[0], state: "suspended" });
-  await assert.rejects(requireMembership(db, ids[0]!));
+  await assert.rejects(requireMembership(db, ordinaryUser));
   checks++;
   await apply({ kind: "member_state", userId: ids[0], state: "active" });
-  assert.equal((await requireMembership(db, ids[0]!)).userId, ids[0]);
+  assert.equal((await requireMembership(db, ordinaryUser)).userId, ids[0]);
   checks++;
   const invite = await apply({ kind: "invite", email: "invited@example.test", role: "member" });
   assert.ok("enrollmentToken" in invite && typeof invite.enrollmentToken === "string");

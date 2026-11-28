@@ -17,20 +17,23 @@ export function AgentStatusPanel({ value, live }: { value: AgentStatusFields; li
     <details
       key={String(live)}
       open={live}
-      className="w-full max-w-xl rounded-md border border-border px-3 py-2 text-sm"
+      className="w-full max-w-xl rounded-md border border-border px-3 py-2 text-body"
       data-testid="agent-status"
     >
       <summary className="cursor-pointer select-none text-muted-foreground">
-        Agent status{value.plan?.length ? ` · ${completed}/${value.plan.length} steps` : ""}
-        {value.usage?.totalTokens != null ? ` · ${number(value.usage.totalTokens)} tokens` : ""}
+        Agent status
+        {value.plan?.length ? <span className="ml-2 text-label">{completed}/{value.plan.length} steps</span> : null}
+        {value.usage?.totalTokens != null ? <span className="ml-2 text-label">{number(value.usage.totalTokens)} tokens</span> : null}
       </summary>
       <div className="mt-2 space-y-3">
         {value.configuration && (
           <p
-            className="break-words text-xs text-muted-foreground"
+            className="break-words text-label text-muted-foreground"
             aria-label="Active turn configuration"
           >
-            {value.configuration.model} · {value.configuration.effort} effort · This turn
+            {value.configuration.model}
+            <span className="ml-2">{value.configuration.effort} effort</span>
+            <span className="ml-2">This turn</span>
           </p>
         )}
         {value.plan?.length ? (
@@ -50,7 +53,7 @@ export function AgentStatusPanel({ value, live }: { value: AgentStatusFields; li
                   />
                   <span className="min-w-0 break-words">
                     {step.step}{" "}
-                    <span className="text-xs text-muted-foreground">
+                    <span className="text-label text-muted-foreground">
                       (
                       {step.status === "inProgress"
                         ? live
@@ -72,22 +75,22 @@ export function AgentStatusPanel({ value, live }: { value: AgentStatusFields; li
           <p className="text-muted-foreground" role="status">
             Last {activityNames[value.activity.kind]}: {value.activity.status}
             {value.activity.durationMs != null
-              ? ` · ${(value.activity.durationMs / 1000).toFixed(1)}s`
-              : ""}
+              ? <span className="ml-2 text-label">{(value.activity.durationMs / 1000).toFixed(1)}s</span>
+              : null}
             {value.activity.filesChanged != null
-              ? ` · ${number(value.activity.filesChanged)} files`
-              : ""}
+              ? <span className="ml-2 text-label">{number(value.activity.filesChanged)} files</span>
+              : null}
           </p>
         ) : null}
         {value.usage ? (
           <>
-            <p className="text-xs text-muted-foreground" aria-label="Token counter scope">
+            <p className="text-label text-muted-foreground" aria-label="Token counter scope">
               {value.usage.scope === "turn" ? "This turn" : "Session total (legacy record)"}
             </p>
             {value.usage.contextUsedTokens != null &&
             value.usage.contextWindow != null &&
             value.usage.contextWindow > 0 ? (
-              <div className="space-y-1 text-xs text-muted-foreground">
+              <div className="space-y-1 text-label text-muted-foreground">
                 <p>
                   Last model request: {number(value.usage.contextUsedTokens)} /{" "}
                   {number(value.usage.contextWindow)} tokens
@@ -101,7 +104,7 @@ export function AgentStatusPanel({ value, live }: { value: AgentStatusFields; li
               </div>
             ) : null}
             <dl
-              className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-3"
+              className="grid grid-cols-2 gap-x-4 gap-y-1 text-label sm:grid-cols-3"
               aria-label="Model-reported token usage"
             >
               {[

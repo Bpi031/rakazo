@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 import { act } from "react";
-import { createRoot } from "react-dom/client";
+import { createQueryRoot } from "../lib/query/query-root.test-support";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { AccountAdminPanel } from "./AccountAdminPanel";
 import { accountAdminApi } from "./account-admin-api";
 vi.mock("./account-admin-api", () => ({ accountAdminApi: vi.fn() }));
-vi.mock("@rakazo/ui-web", () => ({
+vi.mock("@rakazo/ui-web", async (load) => ({
+  ...(await load<typeof import("@rakazo/ui-web")>()),
   Button: ({ children, variant, ...props }: any) => <button {...props}>{children}</button>,
   Input: (props: any) => <input {...props} />,
   Label: (props: any) => <label {...props} />,
@@ -22,6 +23,7 @@ vi.mock("@rakazo/ui-web", () => ({
   DialogContent: ({ children }: any) => <div>{children}</div>,
   DialogTitle: ({ children }: any) => <h2>{children}</h2>,
 }));
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const view = {
   userId: "self",
   organizationId: "org",
@@ -52,12 +54,12 @@ const view = {
   reviews: [],
 };
 let host: HTMLDivElement;
-let root: ReturnType<typeof createRoot>;
+let root: ReturnType<typeof createQueryRoot>;
 beforeEach(() => {
   vi.clearAllMocks();
   host = document.createElement("div");
   document.body.append(host);
-  root = createRoot(host);
+  root = createQueryRoot(host);
   vi.mocked(accountAdminApi).mockImplementation(async (operation) =>
     operation === "view"
       ? structuredClone(view)
@@ -88,6 +90,14 @@ async function value(selector: string, next: string) {
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
 }
+async function openOptions(label: string) {
+  await act(async () => host.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!.click());
+  return Array.from(document.querySelectorAll<HTMLElement>('[role="option"]'));
+}
+async function choose(label: string, text: string) {
+  const option = (await openOptions(label)).find((row) => row.textContent === text)!;
+  await act(async () => option.click());
+}
 it("a registration toggle is a draft until exact review and password confirmation", async () => {
   await render();
   await act(async () => host.querySelector<HTMLInputElement>('[role="switch"]')!.click());
@@ -106,23 +116,21 @@ it("a registration toggle is a draft until exact review and password confirmatio
       phrase: "APPLY REGISTRATION",
       password: "current-password",
     }),
+    undefined, null,
   );
   expect(host.querySelector('input[type="password"]')).toBeNull();
 });
 it("owner/self accounts stay locked and role changes create a review only", async () => {
   await render();
-  expect(host.textContent).toContain("Owner · Protected");
+  expect(host.textContent).toContain("Owner");
+  expect(host.textContent).toContain("Protected");
   expect(
-    host.querySelector<HTMLSelectElement>('[aria-label="Account state for Owner"]')!.disabled,
+    host.querySelector<HTMLButtonElement>('[aria-label="Account state for Owner"]')!.disabled,
   ).toBe(true);
-  const select = host.querySelector<HTMLSelectElement>('[aria-label="Role for Member"]')!;
-  await act(async () => {
-    select.value = "admin";
-    select.dispatchEvent(new Event("change", { bubbles: true }));
-  });
+  await choose("Role for Member", "Manager");
   expect(accountAdminApi).toHaveBeenCalledWith("propose", {
     action: { kind: "member_role", userId: "member", role: "admin" },
-  });
+  }, undefined, null);
   expect(vi.mocked(accountAdminApi).mock.calls.some(([op]) => op === "confirm")).toBe(false);
 });
 it("organization managers do not see deployment registration or role escalation controls", async () => {
@@ -133,10 +141,10 @@ it("organization managers do not see deployment registration or role escalation 
   });
   await render();
   expect(host.querySelector('[role="switch"]')).toBeNull();
-  expect(host.querySelector<HTMLSelectElement>('[aria-label="Role for Member"]')!.disabled).toBe(
+  expect(host.querySelector<HTMLButtonElement>('[aria-label="Role for Member"]')!.disabled).toBe(
     true,
   );
-  expect(host.querySelector('[aria-label="Invitation role"] option[value="admin"]')).toBeNull();
+  expect((await openOptions("Invitation role")).map((row) => row.textContent)).toEqual(["Member"]);
 });
 it.each(["member", "admin"] as const)("confirms a %s invitation with the intended safeguards", async (role) => {
   const action = { kind: "invite", email: "new@example.test", role };
@@ -148,21 +156,17 @@ it.each(["member", "admin"] as const)("confirms a %s invitation with the intende
   });
   await render();
   await value('[aria-label="Member email"]', action.email);
-  const select = host.querySelector<HTMLSelectElement>('[aria-label="Invitation role"]')!;
-  await act(async () => {
-    select.value = role;
-    select.dispatchEvent(new Event("change", { bubbles: true }));
-  });
+  await choose("Invitation role", role === "member" ? "Member" : "Manager");
   const form = host.querySelector('[aria-label="Member invitations"] form')!;
   await act(async () => form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
-  expect(accountAdminApi).toHaveBeenCalledWith("propose", { action });
+  expect(accountAdminApi).toHaveBeenCalledWith("propose", { action }, undefined, null);
   const member = role === "member";
   expect(host.querySelector('[role="dialog"]')?.textContent).toContain(
     `Invite ${action.email} as ${member ? "Member" : "Manager"}?`,
   );
   const confirm = button(member ? "Confirm invite" : "Apply changes");
   expect(confirm.disabled).toBe(true);
-  expect(accountAdminApi).not.toHaveBeenCalledWith("confirm", expect.anything());
+  expect(vi.mocked(accountAdminApi).mock.calls.some(([op]) => op === "confirm")).toBe(false);
   await value('[aria-label="Admin account password"]', "current-password");
   const confirmationField = '[aria-label="Account confirmation phrase"]';
   if (member) {
@@ -175,7 +179,7 @@ it.each(["member", "admin"] as const)("confirms a %s invitation with the intende
   await act(async () => confirm.click());
   expect(accountAdminApi).toHaveBeenCalledWith("confirm", {
     id: "review", digest, phrase: "APPLY review", password: "current-password",
-  });
+  }, undefined, null);
   expect(host.querySelector<HTMLTextAreaElement>("#private-invite-token")?.value).toBe("invite-token");
 });
 it("failed saves do not claim success or erase the review; password is cleared", async () => {

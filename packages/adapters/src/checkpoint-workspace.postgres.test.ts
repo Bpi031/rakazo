@@ -1,3 +1,4 @@
+import { deferred } from "@rakazo/core/test-async";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -30,10 +31,10 @@ import {
   withCheckpointWorkspaceWrite,
 } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { CheckpointFiles } from "./checkpoint-files.js";
-import { CheckpointService } from "./checkpoint-service.js";
-import { destroyBot } from "./child-bots.js";
-import { LocalAgentHomeStore } from "./home.js";
+import { CheckpointFiles } from "./checkpoints/checkpoint-files.js";
+import { CheckpointService } from "./checkpoints/checkpoint-service.js";
+import { destroyBot } from "./bots/child-bots.js";
+import { LocalAgentHomeStore } from "./storage/home.js";
 
 const connection = process.env.CHECKPOINT_TEST_DATABASE_URL;
 const enabled =
@@ -42,13 +43,7 @@ const enabled =
   /^rakazo_checkpoint_[a-z0-9_]+$/.test(new URL(connection).pathname.slice(1));
 const execute = promisify(execFile);
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
-const gate = () => {
-  let resolve!: () => void;
-  const promise = new Promise<void>((done) => {
-    resolve = done;
-  });
-  return { promise, resolve };
-};
+const gate = deferred<void>;
 
 async function usage(directory: string) {
   let logical = 0,
@@ -75,7 +70,7 @@ async function usage(directory: string) {
   return { logical, physical, files, uniqueFiles: inodes.size };
 }
 
-describe.skipIf(!enabled).sequential.each(["dedicated", "team"] as const)(
+describe.skipIf(!enabled).each(["dedicated", "team"] as const)(
   "%s workspace checkpoints on Linux",
   (mode) => {
     const scope = `workspace-${randomUUID()}`;
@@ -210,14 +205,15 @@ describe.skipIf(!enabled).sequential.each(["dedicated", "team"] as const)(
           await prisma.thread.findUniqueOrThrow({ where: { id: threadId(botId) } })
         ).checkpointGeneration,
       });
-    const restore = async (botId: string, checkpointId: string) =>
-      service.rollback(actor, {
+    const restore = async (botId: string, checkpointId: string) => {
+      const status = await service.status(actor, botId);
+      return service.rollback(actor, {
         botId,
         checkpointId,
-        expectedGeneration: (
-          await prisma.thread.findUniqueOrThrow({ where: { id: threadId(botId) } })
-        ).checkpointGeneration,
+        expectedGeneration: status.generation,
+        expectedRevision: status.revision,
       });
+    };
     const blob = (botId: string, digest: string) =>
       path.join(root, "checkpoint-blobs", actor.userId, botId, digest);
     const visible = async (botId: string) =>

@@ -1,13 +1,13 @@
 // @vitest-environment jsdom
 import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
+import { createQueryRoot } from "../lib/query/query-root.test-support";
 import { afterEach, expect, it, vi } from "vitest";
 vi.mock("../lib/rpc", () => ({
   withSpaceHeaders: (extra: any) => ({ ...extra, "x-rakazo-space-id": "s" }),
 }));
 import { TeamWorkflowsPanel } from "./TeamWorkflowsPanel";
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-let root: Root | undefined;
+let root: ReturnType<typeof createQueryRoot> | undefined;
 let host: HTMLDivElement;
 afterEach(async () => {
   if (root) await act(async () => root!.unmount());
@@ -47,7 +47,7 @@ async function render(value: any[] = [item]) {
   vi.stubGlobal("fetch", fetcher);
   host = document.createElement("div");
   document.body.append(host);
-  root = createRoot(host);
+  root = createQueryRoot(host);
   await act(async () => root!.render(<TeamWorkflowsPanel botId="lead" onClose={() => {}} />));
   return fetcher;
 }
@@ -138,7 +138,7 @@ it("shows two-party leadership review without exposing private-data transfer con
   vi.stubGlobal("fetch", fetcher);
   host = document.createElement("div");
   document.body.append(host);
-  root = createRoot(host);
+  root = createQueryRoot(host);
   await act(async () => root!.render(<TeamWorkflowsPanel botId="lead" onClose={() => {}} />));
   expect(host.textContent).toContain("Private bot histories, files and licenses stay separate");
   await act(async () =>

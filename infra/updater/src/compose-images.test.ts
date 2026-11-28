@@ -5,6 +5,8 @@ import { parse } from "yaml";
 
 interface ComposeService {
   image?: string;
+  profiles?: string[];
+  pull_policy?: string;
   build?: unknown;
   command?: unknown;
   env_file?: unknown;
@@ -21,7 +23,7 @@ interface ComposeService {
 const repoRoot = path.resolve(import.meta.dirname, "../../..");
 const composeFile = path.resolve(repoRoot, "infra/compose/docker-compose.images.yml");
 const publishWorkflowFile = path.resolve(repoRoot, ".github/workflows/publish-server-image.yml");
-const compose = parse(readFileSync(composeFile, "utf8")) as {
+const compose = parse(readFileSync(composeFile, "utf8"), { merge: true }) as {
   services: Record<string, ComposeService>;
 };
 const publishWorkflow = parse(readFileSync(publishWorkflowFile, "utf8")) as {
@@ -36,7 +38,9 @@ const publishWorkflow = parse(readFileSync(publishWorkflowFile, "utf8")) as {
   };
 };
 
-const appServices = ["api", "worker", "web", "supervisor"] as const;
+const interpolated = (name: string, fallback = "") => `\${${name}:-${fallback}}`;
+
+const appServices = ["api", "worker", "web", "supervisor", "migrate"] as const;
 const FIRST_PARTY_IMAGE = /ghcr\.io\/elie222\/rakazo\/([a-z0-9][a-z0-9._-]*)/g;
 
 function firstPartyImageNames(value: unknown): string[] {
@@ -55,8 +59,11 @@ describe("the images compose file", () => {
       "api",
       "computer",
       "data-init",
+      "migrate",
       "postgres",
       "supervisor",
+      "tailscale-ingress",
+      "updater",
       "web",
       "worker",
     ]);
@@ -65,6 +72,7 @@ describe("the images compose file", () => {
       expect(compose.services[service]?.image).toContain("RAKAZO_IMAGE_TAG");
     }
     expect(compose.services.computer?.image).toContain("ghcr.io/elie222/rakazo/computer");
+    expect(compose.services.computer?.pull_policy).toBe("missing");
     expect(compose.services.computer?.image).toContain("RAKAZO_COMPUTER_IMAGE_TAG");
     expect(compose.services.postgres?.image).toMatch(
       /^\$\{POSTGRES_IMAGE:-postgres:16@sha256:[0-9a-f]{64}\}$/,
@@ -77,6 +85,42 @@ describe("the images compose file", () => {
     expect(firstPartyImageNames(true)).toEqual([]);
     expect(firstPartyImageNames(7091)).toEqual([]);
     expect(firstPartyImageNames("ghcr.io/elie222/rakazo/computer:edge")).toEqual(["computer"]);
+  });
+
+  it("defaults application and computer images to stable releases", () => {
+    for (const name of appServices) {
+      expect(compose.services[name]?.image).toContain("RAKAZO_IMAGE_TAG:-latest");
+    }
+    expect(compose.services.computer?.image).toContain("RAKAZO_COMPUTER_IMAGE_TAG:-latest");
+    const template = readFileSync(path.join(repoRoot, "infra/compose/.env.images.example"), "utf8");
+    expect(template).toContain("RAKAZO_IMAGE_TAG=latest\n");
+    expect(template).toContain("RAKAZO_COMPUTER_IMAGE_TAG=latest\n");
+  });
+
+  it("keeps the optional scheduled updater private and disabled by default", () => {
+    const updater = compose.services.updater;
+    expect(updater?.profiles).toEqual(["updater"]);
+    expect(updater?.environment?.RAKAZO_COMPUTER_IMAGE).toBe(
+      interpolated("RAKAZO_COMPUTER_IMAGE", "ghcr.io/elie222/rakazo/computer"),
+    );
+    expect(updater?.ports).toBeUndefined();
+    expect(updater?.env_file).toBeUndefined();
+    expect(updater?.build).toBeUndefined();
+    expect(updater?.networks).toEqual(["control"]);
+    expect(updater?.environment?.RAKAZO_AUTO_UPDATE_INTERVAL_HOURS).toBe(
+      interpolated("RAKAZO_AUTO_UPDATE_INTERVAL_HOURS", "0"),
+    );
+    expect(updater?.environment?.RAKAZO_COMPOSE_FILE).toBe(
+      interpolated("RAKAZO_COMPOSE_FILE", "docker-compose.images.yml"),
+    );
+    expect(updater?.environment?.RAKAZO_UPDATE_SERVICES).toBe(
+      interpolated("RAKAZO_UPDATE_SERVICES", "supervisor,computer"),
+    );
+    expect(updater?.volumes).toContain(
+      `${interpolated("RAKAZO_DEPLOY_DIR", "/srv/rakazo")}:${interpolated("RAKAZO_DEPLOY_DIR", "/srv/rakazo")}`,
+    );
+    expect(compose.services.api?.environment?.RAKAZO_UPDATER_TOKEN).toBeUndefined();
+    expect(compose.services.worker?.environment?.RAKAZO_UPDATER_TOKEN).toBeUndefined();
   });
 
   it("only references first-party images that the publish matrix publishes", () => {
@@ -126,6 +170,8 @@ describe("the images compose file", () => {
     for (const name of ["postgres", ...appServices]) {
       expect(compose.services[name]?.networks?.length).toBeGreaterThan(0);
     }
+    // Migrations only reach the database, never the internet.
+    expect(compose.services.migrate?.networks).toEqual(["data"]);
   });
 
   it("never builds from a checkout", () => {
@@ -134,9 +180,13 @@ describe("the images compose file", () => {
     }
   });
 
-  it("loads secrets from a colocated .env", () => {
-    expect(compose.services.api?.env_file).toEqual([".env"]);
-    expect(compose.services.worker?.env_file).toEqual([".env"]);
+  it("passes secrets from the --env-file by name instead of loading the whole file", () => {
+    for (const service of ["api", "worker"]) {
+      expect(compose.services[service]?.env_file).toBeUndefined();
+      // A key with no value is filled from the --env-file when set and left unset otherwise.
+      expect(compose.services[service]?.environment).toHaveProperty("ENCRYPTION_KEY", null);
+      expect(compose.services[service]?.environment).toHaveProperty("OPENROUTER_API_KEY", null);
+    }
   });
 
   it("defaults API and worker to Docker computers via the supervisor", () => {
@@ -150,7 +200,7 @@ describe("the images compose file", () => {
     );
   });
 
-  it("keeps the Docker socket on the unpublished supervisor only", () => {
+  it("keeps Docker access on the supervisor and opt-in updater only", () => {
     for (const [name, service] of Object.entries(compose.services)) {
       const hasSocket = (service.volumes ?? []).some((volume) => volume.includes("docker.sock"));
       if (name === "supervisor") {
@@ -158,14 +208,20 @@ describe("the images compose file", () => {
         expect(service.ports).toBeUndefined();
         expect(service.user).toBe("root");
         expect(String(service.command)).toContain("sandbox-supervisor");
+      } else if (name === "updater") {
+        expect(hasSocket).toBe(true);
+        expect(service.profiles).toEqual(["updater"]);
+        expect(service.ports).toBeUndefined();
       } else {
         expect(hasSocket).toBe(false);
       }
     }
   });
 
-  it("publishes the web UI on loopback only", () => {
-    expect(compose.services.web?.ports).toEqual(["127.0.0.1:${RAKAZO_WEB_PORT:-5173}:5173"]);
+  it("defaults the configurable web bind to loopback and keeps the API private", () => {
+    expect(compose.services.web?.ports).toEqual([
+      "${RAKAZO_WEB_BIND:-127.0.0.1}:${RAKAZO_WEB_PORT:-5173}:5173",
+    ]);
     expect(compose.services.api?.ports).toEqual(["127.0.0.1:${RAKAZO_API_PORT:-3100}:3100"]);
     for (const key of ["BETTER_AUTH_URL", "WEB_ORIGIN", "API_URL"]) {
       expect(compose.services.api?.environment?.[key]).toBe(`\${${key}:-http://127.0.0.1:5173}`);
@@ -179,7 +235,10 @@ describe("the images compose file", () => {
     expect(compose.services.supervisor?.environment?.AXIOM_TOKEN).toBe("${AXIOM_TOKEN:-}");
     // biome-ignore lint/suspicious/noTemplateCurlyInString: this is the literal Compose expression
     expect(compose.services.supervisor?.environment?.AXIOM_DATASET).toBe("${AXIOM_DATASET:-}");
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: this is the literal Compose expression
+    expect(compose.services.supervisor?.environment?.SENTRY_DSN).toBe("${SENTRY_DSN:-}");
     expect(compose.services.computer?.environment?.AXIOM_TOKEN).toBeUndefined();
+    expect(compose.services.computer?.environment?.SENTRY_DSN).toBeUndefined();
     expect(compose.services.computer?.environment?.LOG_LEVEL).toBeUndefined();
   });
 });

@@ -1,12 +1,13 @@
 import type { CheckpointView } from "@rakazo/contracts";
-import { checkpointCopy, checkpointError } from "./checkpoint-i18n";
-import { withSpaceHeaders } from "./rpc";
+import { checkpointCopy, checkpointHttpError } from "./checkpoint-i18n";
+import { withSpaceHeaders } from "./query/rpc";
 
 export async function checkpointApi<T>(
   route: string,
   botId: string,
   body?: Record<string, unknown>,
   signal?: AbortSignal,
+  spaceId?: string | null,
 ): Promise<T> {
   const response = await fetch(
     `/api/checkpoints${route}${body === undefined ? `?botId=${encodeURIComponent(botId)}` : ""}`,
@@ -14,7 +15,7 @@ export async function checkpointApi<T>(
       method: body === undefined ? "GET" : "POST",
       credentials: "include",
       cache: "no-store",
-      headers: withSpaceHeaders(body === undefined ? {} : { "content-type": "application/json" }),
+      headers: withSpaceHeaders(body === undefined ? {} : { "content-type": "application/json" }, spaceId),
       signal: AbortSignal.any([
         ...(signal ? [signal] : []),
         AbortSignal.timeout(body === undefined ? 15000 : 310000),
@@ -25,12 +26,7 @@ export async function checkpointApi<T>(
   if (!response.headers.get("content-type")?.includes("application/json"))
     throw new Error(checkpointCopy().operationError);
   const value = await response.json();
-  if (!response.ok)
-    throw new Error(
-      typeof value.error === "string"
-        ? checkpointError(value.error)
-        : checkpointCopy().operationError,
-    );
+  if (!response.ok) throw new Error(checkpointHttpError(value?.code, value?.error));
   return value as T;
 }
 

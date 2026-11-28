@@ -1,16 +1,19 @@
 // @vitest-environment jsdom
 import { act } from "react";
-import { createRoot } from "react-dom/client";
+import { createQueryRoot } from "../lib/query/query-root.test-support";
 import { expect, it, vi } from "vitest";
 import { i18n } from "@lingui/core";
 i18n.load("en", {}); i18n.activate("en");
 const mocks=vi.hoisted(() => ({list:vi.fn(),update:vi.fn()}));
-vi.mock("../lib/rpc",() => ({rpc:{models:{list:mocks.list},bots:{update:mocks.update}}}));
+vi.mock("../lib/query/rpc", () => {
+  const client = { models: { list: mocks.list }, bots: { update: mocks.update } };
+  return { rpc: client, selectedSpaceId: () => null, createSpaceRpc: () => client };
+});
 import { ManagedModelPicker } from "./ManagedModelPicker";
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT=true;
 it("offers only approved models, updates this bot and never starts a run",async () => {
   mocks.list.mockResolvedValue([{id:"approved",label:"Approved model"}]); mocks.update.mockResolvedValue({id:"b",modelId:"approved"});
-  const el=document.createElement("div");document.body.append(el);const root=createRoot(el);const onChange=vi.fn();
+  const el=document.createElement("div");document.body.append(el);const root=createQueryRoot(el);const onChange=vi.fn();
   try {
     await act(async () => root.render(<ManagedModelPicker bot={{id:"b",modelId:null} as any} onChange={onChange}/>));
     await act(async () => el.querySelector<HTMLButtonElement>('[aria-label="Choose model"]')!.click());
@@ -24,12 +27,12 @@ it("offers only approved models, updates this bot and never starts a run",async 
 it("shows only the current model's configured efforts and saves them for the next turn", async () => {
   mocks.list.mockResolvedValue([{ id: "flash", label: "Flash", thinkingLevels: ["low", "high", "max"], defaultThinkingLevel: "high" }]);
   mocks.update.mockResolvedValue({ id: "b", modelId: "flash", thinkingLevel: "max" });
-  const el = document.createElement("div"); document.body.append(el); const root = createRoot(el);
+  const el = document.createElement("div"); document.body.append(el); const root = createQueryRoot(el);
   try {
     await act(async () => root.render(<ManagedModelPicker bot={{ id: "b", modelId: "flash", thinkingLevel: null } as any} onChange={vi.fn()} />));
     await act(async () => el.querySelector<HTMLButtonElement>('[aria-label="Choose model"]')!.click());
     const group = el.querySelector('[aria-label="Reasoning effort"]')!;
-    expect([...group.querySelectorAll('[role="radio"]')].map((e) => e.textContent)).toEqual(["Default · High", "Low", "High", "Max"]);
+    expect([...group.querySelectorAll('[role="radio"]')].map((e) => e.textContent)).toEqual(["DefaultHigh", "Low", "High", "Max"]);
     await act(async () => [...group.querySelectorAll<HTMLButtonElement>('button')].find((e) => e.textContent === "Max")!.click());
     expect(mocks.update).toHaveBeenLastCalledWith({ botId: "b", modelProvider: "codex-foundry", modelId: "flash", thinkingLevel: "max" });
     expect(el.querySelector('[role="dialog"]')).not.toBeNull();
@@ -41,12 +44,12 @@ it("uses route-specific GPT efforts without borrowing DeepSeek Max or inventing 
     { id: "flash", label: "Flash", thinkingLevels: ["low", "high", "max"], defaultThinkingLevel: "low" },
   ]);
   mocks.update.mockResolvedValue({ id: "b", modelId: "sol", thinkingLevel: "xhigh" });
-  const el = document.createElement("div"); document.body.append(el); const root = createRoot(el);
+  const el = document.createElement("div"); document.body.append(el); const root = createQueryRoot(el);
   try {
     await act(async () => root.render(<ManagedModelPicker bot={{ id: "b", modelId: "sol", thinkingLevel: "low" } as any} onChange={vi.fn()} />));
     await act(async () => el.querySelector<HTMLButtonElement>('[aria-label="Choose model"]')!.click());
     const group = el.querySelector('[aria-label="Reasoning effort"]')!;
-    expect([...group.querySelectorAll('[role="radio"]')].map((e) => e.textContent)).toEqual(["Default · Low", "Low", "Medium", "High", "Extra high"]);
+    expect([...group.querySelectorAll('[role="radio"]')].map((e) => e.textContent)).toEqual(["DefaultLow", "Low", "Medium", "High", "Extra high"]);
     expect(group.textContent).not.toContain("Max"); expect(group.textContent).not.toContain("Ultra");
     await act(async () => [...group.querySelectorAll<HTMLButtonElement>('button')].find((e) => e.textContent === "Extra high")!.click());
     expect(mocks.update).toHaveBeenLastCalledWith({ botId: "b", modelProvider: "codex-foundry", modelId: "sol", thinkingLevel: "xhigh" });

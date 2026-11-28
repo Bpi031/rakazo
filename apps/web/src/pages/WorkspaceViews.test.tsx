@@ -19,8 +19,10 @@ it("members see self only, unknown cost and real token breakdown", async () => {
   const {el}=await render("usage"); expect(el.querySelector('[aria-label="Team member"]')).toBeNull(); expect(el.textContent).toContain("Unknown"); expect(el.textContent).toContain("12"); expect(el.querySelectorAll('details table tr')).toHaveLength(7);
 });
 it("manager selection requests exact member and clears prior data", async () => {
-  const {el,fetcher}=await render("usage",true); const select=el.querySelector<HTMLSelectElement>('[aria-label="Team member"]')!;
-  await act(async () => { select.value="other";select.dispatchEvent(new Event("change",{bubbles:true})); });
+  const {el,fetcher}=await render("usage",true); const select=el.querySelector<HTMLButtonElement>('[aria-label="Team member"]')!;
+  await act(async () => select.click());
+  const options = Array.from(document.querySelectorAll<HTMLElement>('[role="option"]'));
+  await act(async () => options.find((row) => row.textContent?.includes("Other"))!.click());
   expect(fetcher.mock.calls.at(-1)?.[0]).toContain("userId=other");
 });
 it("storage never presents unavailable homes as complete or quota enforced", async () => {

@@ -1,9 +1,11 @@
 import { expect, it } from 'vitest';
-import { runtimeInstructionContext } from './executor.js';
+import { runtimeInstructions } from './runs/turn/run-model-turn.js';
 const parts = { botInstructions:'Stable owner restrictions',groupContext:undefined,messagingContext:undefined,
   redactedMemoryContext:'memory one',redactedScratchpadContext:'step one',hasHistoricalContext:false,
   computerInstruction:'Private home only',pageBrowserAllowed:false,workspaceInstruction:'Workspace',
   agentEnvironmentInstruction:undefined,botDirectory:'bot A',pluginLine:undefined,agentSkillsLine:undefined,taughtSkillsLine:undefined,replyGuidance:'Brief' };
+const runtimeInstructionContext = (input: Parameters<typeof runtimeInstructions>[1]) =>
+  runtimeInstructions(true, input);
 it('keeps live memory in each turn while excluding it from resume compatibility',()=>{
   const one=runtimeInstructionContext(parts),two=runtimeInstructionContext({...parts,redactedMemoryContext:'memory two',redactedScratchpadContext:'step two',botDirectory:'bot B',hasHistoricalContext:true});
   expect(one.sessionInstructions).toBe(two.sessionInstructions);expect(one.instructions).not.toBe(two.instructions);

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { PolicyWorkflow, policyWorkflowInput, policyWorkflowInstruction } from './policy-workflow.js';
-import { teamDigest } from './team-policy.js';
+import { PolicyWorkflow, policyWorkflowInput, policyWorkflowInstruction } from './policy/policy-workflow.js';
+import { teamDigest } from './teams/team-policy.js';
 const actor = { userId:'u', spaceId:'s', email:'manager@example.invalid', isDeploymentOwner:false };
 const input = { operation:'review', baseline:'workspace/case/old.rost', baselineWorkingDirectory:'workspace/case',
   policy:'workspace/case/new.rost', workingDirectory:'workspace/case', reason:'Review the new policy.', purpose:'new_policy' };
@@ -124,7 +124,7 @@ it('pins a review and records independent manager identity without changing poli
   const review=await proposed();expect(review.status).toBe('pending');
   const receipt=await service.decide(actor,review.id,review.digest,'approve');
   expect(receipt).toMatchObject({status:'approved',policyApprovalGranted:true,contractApprovalGranted:false,relaxationAuthorityGranted:false,computeAllowanceGranted:false,solveStarted:false});
-  expect(receipt.receipt.subject).toBe('u');expect(receipt.receipt.author).toBe('agent:b:run');
+  expect(receipt.receipt).toMatchObject({ subject: 'u', author: 'agent:b:run' });
   expect(db.teamAudit.create).toHaveBeenCalledTimes(1);
   await service.decide(actor,review.id,review.digest,'approve');expect(db.teamAudit.create).toHaveBeenCalledTimes(1);
 });

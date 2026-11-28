@@ -1,17 +1,29 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readManagedRuntimeAsset } from "./storage/managed-runtime-assets.js";
 import type { SandboxProvider } from "@rakazo/adapter-kit";
 import type { Actor } from "@rakazo/contracts";
-import { CompletionReceipt, NativeDecision } from "@rakazo/contracts";
+import { CompletionReceipt, NativeDecision, NativePreferences } from "@rakazo/contracts";
 import type { Prisma, PrismaClient } from "@rakazo/db";
-import { assertCheckpointGeneration } from "@rakazo/db";
-import { toComputerRef } from "./computer-support.js";
-import { teamDigest } from "./team-policy.js";
-import { memberScope } from "./team-storage.js";
+import { assertCheckpointGeneration, readJsonColumn } from "@rakazo/db";
+import { z } from "zod";
+import { toComputerRef } from "./computers/screens/computer-support.js";
+import { teamDigest } from "./teams/team-policy.js";
+import { memberScope } from "./teams/team-storage.js";
 import { assertManagedTeamComputer, managedWorkspace, workspaceRelativeRoots } from "./managed-workspace.js";
 
-const files = readFileSync(new URL('./native-files.py', import.meta.url), 'utf8');
 const json = (v: unknown) => JSON.parse(JSON.stringify(v)) as Prisma.InputJsonValue;
+const preferencesPayload = NativePreferences.extend({ revision: z.number().int().nonnegative() });
+const sessionPayload = z.looseObject({
+  fingerprint: z.string(),
+  action: NativePreferences.shape.action.optional(),
+  paused: z.boolean().optional(),
+  leaseFence: z.number().int().nonnegative().optional(),
+  threadId: z.string().nullable().optional(),
+  turnId: z.string().nullable().optional(),
+});
+function readNative<T extends z.ZodType>(schema: T, row: { id: string; payload: unknown }) {
+  return readJsonColumn(schema, row.payload, { table: 'agent_workbench_records', column: 'payload', id: row.id }, 'reject');
+}
 export const nativeEnabled = () => process.env.ROST_AGENT_NATIVE === '1';
 export class NativeSessionBusyError extends Error {
   constructor() {
@@ -34,7 +46,7 @@ export class NativeControl {
     const records = await this.db.agentWorkbenchRecord.findMany({ where: { ...this.where(actor, botId), kind: { startsWith: 'native_' } }, orderBy: { updatedAt: 'desc' }, take: 80 });
     const preferences = await this.db.agentWorkbenchRecord.findUnique({ where: { id: this.key(actor, botId, 'native_preferences') } });
     await this.owned(actor, botId);
-    return { enabled: nativeEnabled(), preferences: preferences?.payload ?? { mode: 'execute', persistence: true, action: 'none', revision: 0 }, records: records.filter(r => r.kind !== 'native_preferences').map(r => ({ id: r.id, kind: r.kind, status: r.status, payload: r.payload, updatedAt: r.updatedAt.toISOString() })), policyApprovalGranted: false, solveStarted: false };
+    return { enabled: nativeEnabled(), preferences: preferences ? readNative(preferencesPayload, preferences) : preferencesPayload.parse({ mode: 'execute', persistence: true, action: 'none', revision: 0 }), records: records.filter(r => r.kind !== 'native_preferences').map(r => ({ id: r.id, kind: r.kind, status: r.status, payload: r.payload, updatedAt: r.updatedAt.toISOString() })), policyApprovalGranted: false, solveStarted: false };
   }
   async decide(actor: Actor, raw: unknown) {
     const input = NativeDecision.parse(raw); await this.owned(actor, input.botId);
@@ -43,7 +55,7 @@ export class NativeControl {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${this.key(actor, input.botId, 'native_preferences')}, 0))`;
       const id = this.key(actor, input.botId, 'native_preferences');
       const old = await tx.agentWorkbenchRecord.findUnique({ where: { id } });
-      if (((old?.payload as any)?.revision ?? 0) !== input.revision) throw new Error('Preferences changed; refresh');
+      if ((old ? readNative(preferencesPayload, old).revision : 0) !== input.revision) throw new Error('Preferences changed; refresh');
       const payload = { ...input.preferences, ...(input.preferences.action === 'fork' || input.preferences.action === 'review' ? { mode: 'plan' } : {}), revision: input.revision + 1 };
       return tx.agentWorkbenchRecord.upsert({ where: { id }, create: { id, ...this.where(actor,input.botId), kind: 'native_preferences', status: 'selected', payload: json(payload), digest: teamDigest(payload) }, update: { payload: json(payload), digest: teamDigest(payload) } });
     });
@@ -67,7 +79,7 @@ export class NativeControl {
     const {actor,run,bot}=await this.actor(runId);
     const workspace = managedWorkspace(bot.computer?.scope ?? "dedicated", run.botId);
     const view = await this.view(actor, run.botId);
-    const p = view.preferences as any;
+    const p = view.preferences;
     const id=this.key(actor,run.botId,'native_session');
     return this.db.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${id}, 0))`;
@@ -96,15 +108,16 @@ export class NativeControl {
         workspace,
       });
       const row = await tx.agentWorkbenchRecord.findUnique({ where: { id } });
+      const saved = row ? readNative(sessionPayload, row) : null;
       const priorRun=row?.runId?await tx.run.findUniqueOrThrow({where:{id:row.runId}}):null;
-      const answeredPause=row?.runId===runId&&row.status==='needs_review'&&(row.payload as any)?.paused===true&&run.leaseFence>((row.payload as any)?.leaseFence??Number.MAX_SAFE_INTEGER);
+      const answeredPause=row?.runId===runId&&row.status==='needs_review'&&saved?.paused===true&&run.leaseFence>(saved.leaseFence??Number.MAX_SAFE_INTEGER);
       if (priorRun&&['queued','leased','running','waiting_input','waiting_takeover'].includes(priorRun.status)&&!answeredPause) {
         // A different queued turn may wait. A duplicate attempt of this run must
         // not release/requeue the live owner's lease or replay its tool effects.
         if (row!.runId !== runId) throw new NativeSessionBusyError();
         throw new Error('Native session already owned');
       }
-      const previous = row?.status === 'completed' && priorRun?.status==='completed' && (row.payload as any)?.fingerprint === ownedFingerprint ? (row.payload as any) : null;
+      const previous = row?.status === 'completed' && priorRun?.status==='completed' && saved?.fingerprint === ownedFingerprint ? saved : null;
       // Restored history always starts from the reconstructed branch. An old
       // workbench compact/fork preference must not borrow the abandoned session.
       const action =
@@ -126,13 +139,15 @@ export class NativeControl {
     const id=this.key(actor,run.botId,'native_session');
     const row=await this.db.agentWorkbenchRecord.findUniqueOrThrow({where:{id}});
     if(row.runId!==runId||row.status!=='running') throw new Error('Native completion ownership changed');
-    const conversationOnly=(row.payload as any).action==='fork';
+    const saved=readNative(sessionPayload, row);
+    const conversationOnly=saved.action==='fork';
     const completed=value.completed===true&&!conversationOnly&&run.status==='running'&&typeof value.threadId==='string'&&typeof value.turnId==='string';
-    const payload={fingerprint:(row.payload as any).fingerprint,threadId:value.threadId??null,turnId:value.turnId??null,usage:value.usage??null,completed,conversationOnly,paused:value.paused===true,leaseFence:(row.payload as any).leaseFence};
+    const payload={fingerprint:saved.fingerprint,threadId:value.threadId??null,turnId:value.turnId??null,usage:value.usage??null,completed,conversationOnly,paused:value.paused===true,leaseFence:saved.leaseFence};
     const changed=await this.db.agentWorkbenchRecord.updateMany({where:{id,runId,status:'running'},data:{status:completed?'completed':'needs_review',payload:json(payload),digest:teamDigest(payload)}});
     if(changed.count!==1)throw new Error('Native completion ownership changed');
   }
   async files(actor: Actor, botId: string, input: Record<string,unknown>) {
+    const files = readManagedRuntimeAsset("native-files.py");
     const bot=await this.owned(actor,botId);
     if(!this.sandbox||!bot.computer?.providerRef||bot.computer.state!=='running')throw new Error('Existing owned running computer required');
     let stdout='',code:number|undefined;

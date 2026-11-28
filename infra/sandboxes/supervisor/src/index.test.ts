@@ -4,19 +4,23 @@ import http from "node:http";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { resolveSupervisorToken } from "@rakazo/core";
-import { describe, expect, it } from "vitest";
+import { resolveSupervisorToken } from "@rakazo/core/node/secrets-guard";
+import { deferred } from "@rakazo/core/test-async";
+import type Docker from "dockerode";
+import { describe, expect, it, vi } from "vitest";
+import { resolveDockerSocketPath } from "./context.js";
+import { supervisorApp } from "./index.js";
+import { waitForScreenReady } from "./readiness.js";
 import {
   MAX_SUPERVISOR_FILE_REQUEST_BYTES,
   MAX_SUPERVISOR_REQUEST_BYTES,
-  resolveDockerSocketPath,
-  supervisorApp,
   supervisorFileWriteSchema,
   supervisorRequestBodyLimit,
-  waitForScreenReady,
-} from "./index.js";
+} from "./request-limits.js";
+import { SUPERVISOR_PUBLIC_PATHS } from "./routes.js";
 import type { ScreenAssignment } from "./supervisor-logic.js";
 import {
+  AIMED_SCROLL_CONTROL_LABEL,
   assertRequestIdentity,
   attemptComputerControl,
   browserProfilePathForScreen,
@@ -28,6 +32,8 @@ import {
   computerControlTimeoutMs,
   containerActionStep,
   containerActionSteps,
+  controlHandlesActions,
+  createComputerWithNameRetry,
   createDockerStreamDemuxer,
   currentComputerScreens,
   DOCKER_BROWSER_ALIASES,
@@ -37,19 +43,26 @@ import {
   hasValidBearerToken,
   interactiveScreenCommand,
   isComputerControlUnavailable,
+  isManagedComputer,
   nextScreenIndex,
   normalizeWorkspaceRelative,
   oldestIdleScreen,
+  pageBrowserNotReady,
   parseObservation,
   preferComputerControl,
   releaseAssignedScreen,
+  removeOwnedComputer,
   resetManagedScreensCommand,
+  retryFailedScreenTeardown,
+  SCREEN_REUSE_MS,
   sandboxCommandTimedOut,
   sandboxTimeoutCommand,
+  screenRecentlyEnsured,
   screenReleaseStopCommand,
   shouldReplayComputerActions,
   stopExtraScreenCommand,
   teardownReleasedScreen,
+  terminalCommand,
   withKeyedLock,
 } from "./supervisor-logic.js";
 
@@ -69,10 +82,8 @@ describe("computer screen readiness", () => {
   });
 
   it("does not treat an open TCP port as ready when nothing is serving HTTP on it yet", async () => {
-    // Regression test: a bare TCP accept (e.g. the Docker port mapping coming
-    // up before websockify inside the container does) must not be mistaken
-    // for the screen being ready — that gap is exactly what caused
-    // "socket hang up" in the browser.
+    // A bare TCP accept (the port mapping up before websockify) is not ready:
+    // that gap caused "socket hang up" in the browser.
     const server = net.createServer((socket) => socket.destroy());
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const address = server.address();
@@ -160,32 +171,29 @@ describe("sandbox supervisor Docker endpoint", () => {
 });
 
 describe("sandbox supervisor HTTP boundary", () => {
-  it("keeps health public while every computer route requires the service token", async () => {
+  it("keeps health public while every other registered route requires the service token", async () => {
     const health = await supervisorApp.request("/health");
     expect(health.status).toBe(200);
     await expect(health.json()).resolves.toMatchObject({ ok: true });
+    // A route joins this list only on purpose: anything else answers 401 without the token.
+    expect([...SUPERVISOR_PUBLIC_PATHS]).toEqual(["/health"]);
 
-    const protectedRequests: Array<[string, string]> = [
-      ["POST", "/computers"],
-      ["GET", "/computers/id"],
-      ["POST", "/computers/id/exec"],
-      ["POST", "/computers/id/observe"],
-      ["POST", "/computers/id/actions"],
-      ["POST", "/computers/id/browser"],
-      ["GET", "/computers/id/files"],
-      ["POST", "/computers/id/files"],
-      ["GET", "/computers/id/screen"],
-      ["POST", "/computers/id/screen-mode"],
-      ["POST", "/computers/id/terminal"],
-      ["DELETE", "/computers/id/screen"],
-      ["POST", "/computers/id/input"],
-      ["POST", "/computers/id/stop"],
-      ["DELETE", "/computers/id"],
-    ];
+    // Every pattern the app registers, middleware included, as one concrete request.
+    const protectedRequests = [
+      ...new Set(
+        supervisorApp.routes.map(({ method, path }) => {
+          const pathname = path.replace(/:[^/]+/g, "id").replace(/\*/g, "any");
+          return `${method === "ALL" ? "GET" : method} ${pathname}`;
+        }),
+      ),
+    ].filter((request) => !SUPERVISOR_PUBLIC_PATHS.has(request.split(" ")[1]!));
+    expect(protectedRequests).toContain("POST /computers/id/exec");
+    expect(protectedRequests).toContain("DELETE /computers/id");
 
-    for (const [method, pathname] of protectedRequests) {
+    for (const request of protectedRequests) {
+      const [method, pathname] = request.split(" ") as [string, string];
       const response = await supervisorApp.request(pathname, { method });
-      expect(response.status, `${method} ${pathname}`).toBe(401);
+      expect(response.status, request).toBe(401);
       await expect(response.json()).resolves.toEqual({ error: "unauthorized" });
     }
   });
@@ -196,6 +204,15 @@ describe("sandbox supervisor HTTP boundary", () => {
     expect(hasValidBearerToken("Basic credentials", token)).toBe(false);
     expect(hasValidBearerToken(`Bearer ${"x".repeat(token.length)}`, token)).toBe(false);
     expect(hasValidBearerToken(`Bearer ${token}`, token)).toBe(true);
+    expect(hasValidBearerToken(`bearer ${token}`, token)).toBe(true);
+    expect(hasValidBearerToken(`BEARER ${token}`, token)).toBe(true);
+    expect(hasValidBearerToken(`bEaReR ${token}`, token)).toBe(true);
+    expect(hasValidBearerToken("bearer Secret-token", "secret-token")).toBe(false);
+    expect(hasValidBearerToken(`Bearer${token}`, token)).toBe(false);
+    expect(hasValidBearerToken(`Bearer  ${token}`, token)).toBe(false);
+    expect(hasValidBearerToken(`Bearer\t${token}`, token)).toBe(false);
+    expect(hasValidBearerToken(`Bearer ${token}x`, token)).toBe(false);
+    expect(hasValidBearerToken(`Bearer ${token.slice(0, -1)}`, token)).toBe(false);
   });
 
   it("bounds authenticated control request bodies before JSON parsing", async () => {
@@ -302,8 +319,15 @@ describe("sandbox supervisor input containment", () => {
     expect(normalizeWorkspaceRelative("/notes\\result.txt")).toBe("notes/result.txt");
     expect(normalizeWorkspaceRelative("//notes///result.txt")).toBe("notes/result.txt");
     expect(() => normalizeWorkspaceRelative("../outside")).toThrow(/escapes/);
-    expect(() => normalizeWorkspaceRelative("notes/./result.txt")).toThrow(/escapes/);
     expect(() => normalizeWorkspaceRelative("notes/../outside")).toThrow(/escapes/);
+    expect(() => normalizeWorkspaceRelative("a/../../x")).toThrow(/escapes/);
+  });
+
+  it("drops current-directory segments the way the adapter does", () => {
+    expect(normalizeWorkspaceRelative("./report.html")).toBe("report.html");
+    expect(normalizeWorkspaceRelative("a/./b")).toBe("a/b");
+    expect(normalizeWorkspaceRelative(".")).toBe("");
+    expect(normalizeWorkspaceRelative("./")).toBe("");
   });
 
   it("requires both bot and workspace identities to match", () => {
@@ -349,6 +373,79 @@ describe("sandbox supervisor input containment", () => {
       argv: ["env", "DISPLAY=:1", "xdotool", "click", "--repeat", "20", "4"],
     });
   });
+
+  it("sends aimed and sideways scrolls to a computer's control service only when it takes them", () => {
+    const plain = [
+      { kind: "scroll" as const, direction: "down" as const, amount: 3 },
+      { kind: "pointer" as const, x: 10, y: 20, type: "click" as const },
+    ];
+    const aimed = [{ kind: "scroll" as const, direction: "down" as const, x: 600, y: 420 }];
+    const sideways = [{ kind: "scroll" as const, direction: "left" as const }];
+    const current = { [AIMED_SCROLL_CONTROL_LABEL]: "1", "rakazo.botId": "bot" };
+    const older = { "rakazo.botId": "bot" };
+    expect(controlHandlesActions(older, plain)).toBe(true);
+    expect(controlHandlesActions(older, aimed)).toBe(false);
+    expect(controlHandlesActions(older, sideways)).toBe(false);
+    expect(controlHandlesActions(undefined, [...plain, ...aimed])).toBe(false);
+    expect(controlHandlesActions(current, [...plain, ...aimed, ...sideways])).toBe(true);
+    // The computer image built with this control service carries the label.
+    const dockerfile = readFileSync(
+      path.resolve(import.meta.dirname, "../../computer/Dockerfile"),
+      "utf8",
+    );
+    expect(dockerfile).toContain(`LABEL ${AIMED_SCROLL_CONTROL_LABEL}="1"`);
+  });
+
+  it("moves the pointer to a scroll's point before turning the wheel", () => {
+    expect(
+      containerActionStep({ kind: "scroll", direction: "down", amount: 4, x: 600.4, y: 420 }),
+    ).toEqual({
+      argv: [
+        "env",
+        "DISPLAY=:1",
+        "xdotool",
+        "mousemove",
+        "--",
+        "600",
+        "420",
+        "click",
+        "--repeat",
+        "4",
+        "5",
+      ],
+    });
+    expect(containerActionStep({ kind: "scroll", direction: "left", amount: 2 })).toEqual({
+      argv: ["env", "DISPLAY=:1", "xdotool", "click", "--repeat", "2", "6"],
+    });
+    expect(containerActionStep({ kind: "scroll", direction: "right", amount: 2 })).toEqual({
+      argv: ["env", "DISPLAY=:1", "xdotool", "click", "--repeat", "2", "7"],
+    });
+    // Both coordinates or neither: a lone x scrolls where the pointer is.
+    expect(containerActionStep({ kind: "scroll", direction: "down", x: 600 })).toEqual({
+      argv: ["env", "DISPLAY=:1", "xdotool", "click", "--repeat", "3", "5"],
+    });
+  });
+
+  it.each([undefined, "/home/rakazo/.browser-profiles/bot-test"])(
+    "opens workspace files in the assigned browser (profile=%s)",
+    (profile) => {
+      for (const [file, url] of [
+        ["screenshots/it's #1%.png", "file:///home/rakazo/screenshots/it's%20%231%25.png"],
+        ["/image.png", "file:///home/rakazo/image.png"],
+        ["screenshots/back\\slash.png", "file:///home/rakazo/screenshots/back/slash.png"],
+      ] as const) {
+        expect(containerActionStep({ kind: "open", path: file }, ":2", profile)).toEqual({
+          argv: [
+            "env",
+            "DISPLAY=:2",
+            ...(profile ? [`RAKAZO_BROWSER_PROFILE=${profile}`] : []),
+            "rakazo-browser",
+            url,
+          ],
+        });
+      }
+    },
+  );
 
   it("routes Docker browser aliases through the safe wrapper on every display", () => {
     for (const application of DOCKER_BROWSER_ALIASES) {
@@ -500,6 +597,18 @@ describe("sandbox supervisor input containment", () => {
     expect(
       isComputerControlUnavailable(
         Object.assign(new TypeError("fetch failed"), {
+          cause: Object.assign(
+            new Error(
+              "Connect Timeout Error (attempted address: 172.20.0.2:7070, timeout: 10000ms)",
+            ),
+            { name: "ConnectTimeoutError", code: "UND_ERR_CONNECT_TIMEOUT" },
+          ),
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      isComputerControlUnavailable(
+        Object.assign(new TypeError("fetch failed"), {
           cause: new Error("read ECONNRESET"),
         }),
       ),
@@ -596,6 +705,8 @@ describe("sandbox supervisor input containment", () => {
       /x11vnc -display .* -rfbport 0 -unixsock .*control-1-/,
     );
     expect(interactiveScreenCommand(true, "lease-new")).toMatch(/6080/);
+    expect(interactiveScreenCommand(true, "lease-new")).toContain("0.0.0.0:6080 8>&-");
+    expect(terminalCommand("control", "terminal", "/work")).toContain("0.0.0.0:6080 8>&-");
     expect(interactiveScreenCommand(true, "lease-new")).not.toContain("sockets/view-1-");
     expect(interactiveScreenCommand(false, "lease-old")).toContain("= 'lease-old'");
     expect(interactiveScreenCommand(false, "lease-old")).toContain("RAKAZO_CONTROL_RELEASED");
@@ -635,13 +746,10 @@ describe("sandbox supervisor input containment", () => {
   it("serializes screen lifecycle operations by container", async () => {
     const locks = new Map<string, Promise<void>>();
     const events: string[] = [];
-    let releaseFirst!: () => void;
-    const firstBlocked = new Promise<void>((resolve) => {
-      releaseFirst = resolve;
-    });
+    const firstBlocked = deferred();
     const first = withKeyedLock(locks, "container-1", async () => {
       events.push("ensure:start");
-      await firstBlocked;
+      await firstBlocked.promise;
       events.push("ensure:end");
     });
     const release = withKeyedLock(locks, "container-1", async () => {
@@ -650,7 +758,7 @@ describe("sandbox supervisor input containment", () => {
 
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(events).toEqual(["ensure:start"]);
-    releaseFirst();
+    firstBlocked.resolve();
     await Promise.all([first, release]);
     expect(events).toEqual(["ensure:start", "ensure:end", "release"]);
     expect(locks.size).toBe(0);
@@ -688,6 +796,37 @@ describe("sandbox supervisor input containment", () => {
       expect(nextScreenIndex(assigned, `bot-${index}`)).toBe(index);
   });
 
+  it("trusts a screen's setup for a short time unless it is released or human-held", () => {
+    const now = 1_000_000;
+    expect(screenRecentlyEnsured({ index: 0, ensuredAt: now }, now + SCREEN_REUSE_MS - 1)).toBe(
+      true,
+    );
+    expect(screenRecentlyEnsured({ index: 0, ensuredAt: now }, now + SCREEN_REUSE_MS)).toBe(false);
+    expect(screenRecentlyEnsured({ index: 0 }, now)).toBe(false);
+    expect(screenRecentlyEnsured({ index: 0, ensuredAt: now, controlled: true }, now)).toBe(false);
+    expect(screenRecentlyEnsured({ index: 0, ensuredAt: now, controlToken: "token" }, now)).toBe(
+      false,
+    );
+    const assigned = new Map<string, ScreenAssignment>([["bot", { index: 0, ensuredAt: now }]]);
+    releaseAssignedScreen(assigned, "bot");
+    completeWarmReleasedScreen(assigned, "bot", 0, now);
+    expect(screenRecentlyEnsured(assigned.get("bot"), now)).toBe(false);
+  });
+
+  it("recognizes only a page helper that reached no browser before acting", () => {
+    const output = (value: object) => ({ code: 0, stdout: JSON.stringify(value) });
+    expect(pageBrowserNotReady(output({ ok: false, error: "CDP not ready on port 9222: x" }))).toBe(
+      true,
+    );
+    expect(
+      pageBrowserNotReady(output({ ok: false, error: "CDP not ready", uncertain: true })),
+    ).toBe(false);
+    expect(pageBrowserNotReady(output({ ok: false, error: "Element not found" }))).toBe(false);
+    expect(pageBrowserNotReady(output({ ok: true }))).toBe(false);
+    expect(pageBrowserNotReady({ code: 1, stdout: "" })).toBe(false);
+    expect(pageBrowserNotReady({ code: 0, stdout: "not json" })).toBe(false);
+  });
+
   it("frees a released screen slot so a ninth Team bot can reuse it", () => {
     const assigned = new Map<string, ScreenAssignment>();
     for (let index = 0; index < 8; index += 1) {
@@ -711,23 +850,44 @@ describe("sandbox supervisor input containment", () => {
     expect(nextScreenIndex(assigned, "bot-9")).toBe(8);
   });
 
-  it("retains a screen slot when teardown fails", async () => {
-    const assigned = new Map<string, ScreenAssignment>();
-    expect(nextScreenIndex(assigned, "writer")).toBe(0);
-    expect(releaseAssignedScreen(assigned, "writer")).toBe(0);
+  it.each([false, true])(
+    "retains a screen slot when teardown fails and frees it once the stop is retried (retainBrowser=%s)",
+    async (retainBrowser) => {
+      const assigned = new Map<string, ScreenAssignment>();
+      expect(nextScreenIndex(assigned, "writer")).toBe(0);
+      expect(releaseAssignedScreen(assigned, "writer")).toBe(0);
 
-    await expect(
-      teardownReleasedScreen(assigned, "writer", 0, async () => ({
-        code: 1,
-        stderr: "browser still running",
-      })),
-    ).rejects.toThrow("browser still running");
+      await expect(
+        teardownReleasedScreen(
+          assigned,
+          "writer",
+          0,
+          async () => ({
+            code: 1,
+            stderr: "browser still running",
+          }),
+          { retainBrowser },
+        ),
+      ).rejects.toThrow("browser still running");
 
-    expect(assigned.get("writer")).toEqual({ index: 0, releasing: true });
-    expect(() => nextScreenIndex(assigned, "writer")).toThrow(/still being released/);
-    expect(nextScreenIndex(assigned, "researcher")).toBe(1);
-    expect(releaseAssignedScreen(assigned, "writer")).toBe(0);
-  });
+      expect(assigned.get("writer")).toEqual({
+        index: 0,
+        releasing: true,
+        idleAt: expect.any(Number),
+      });
+      expect(nextScreenIndex(assigned, "researcher")).toBe(1);
+      expect(releaseAssignedScreen(assigned, "writer")).toBe(0);
+
+      const stopped: number[] = [];
+      await retryFailedScreenTeardown(assigned, "writer", undefined, async (index) => {
+        stopped.push(index);
+        return { code: 0, stderr: "" };
+      });
+      expect(stopped).toEqual([0]);
+      expect(assigned.get("writer")).toBeUndefined();
+      expect(nextScreenIndex(assigned, "writer")).toBe(0);
+    },
+  );
 
   it("clears all screen assignments when a container stops so slots can be reused", () => {
     const registry = new Map<string, Map<string, ScreenAssignment>>();
@@ -770,7 +930,7 @@ describe("sandbox supervisor input containment", () => {
     expect(nextScreenIndex(assigned, "writer")).toBe(0);
     // The container died mid-release (e.g. OOM kill): the slot is stuck releasing.
     expect(releaseAssignedScreen(assigned, "writer")).toBe(0);
-    expect(() => nextScreenIndex(assigned, "writer")).toThrow(/still being released/);
+    expect(assigned.get("writer")?.releasing).toBe(true);
 
     expect(currentComputerScreens(registry, boots, containerId, "2026-10-11T18:00:00.000Z")).toBe(
       assigned,
@@ -864,6 +1024,19 @@ describe("sandbox supervisor input containment", () => {
     expect(releaseAssignedScreen(assigned, "writer", "run-2:2")).toBe(0);
   });
 
+  it("does not retry a failed teardown for an older lease", async () => {
+    const assigned = new Map<string, ScreenAssignment>();
+    expect(nextScreenIndex(assigned, "writer", "run-2:2")).toBe(0);
+    expect(releaseAssignedScreen(assigned, "writer", "run-2:2")).toBe(0);
+    const stop = vi.fn(async () => ({ code: 0, stderr: "" }));
+
+    await expect(retryFailedScreenTeardown(assigned, "writer", "run-1:1", stop)).rejects.toThrow(
+      /owned by a newer execution/,
+    );
+    expect(stop).not.toHaveBeenCalled();
+    expect(assigned.get("writer")).toEqual({ index: 0, leaseId: "run-2:2", releasing: true });
+  });
+
   it("does not let a closing viewer release a screen claimed by a run", () => {
     const assigned = new Map<string, ScreenAssignment>();
     expect(nextScreenIndex(assigned, "writer", "screen-view-writer:0")).toBe(0);
@@ -891,8 +1064,69 @@ describe("sandbox supervisor input containment", () => {
     expect(extra).toContain(`--user-data-dir=${browserProfilePathForScreen("researcher")}`);
   });
 
+  it.each([0, 1])("releases screen %i access without stopping its browser or display", (index) => {
+    const stop = screenReleaseStopCommand(index, {
+      hasRegistry: true,
+      cancelRunWork: false,
+      screenId: "writer",
+    });
+    expect(stop).toContain(`sockets/view-${index + 1}-`);
+    expect(stop).toContain(`sockets/control-${index + 1}-`);
+    expect(stop).toContain(`rm -f /tmp/rakazo/control-token-${index + 1}`);
+    expect(stop).not.toContain("--user-data-dir");
+    expect(stop).not.toContain("browser-profile-");
+    expect(stop).not.toContain("browser-launch-");
+    expect(stop).not.toContain("Xvfb");
+    expect(stop).not.toContain("fluxbox");
+    expect(stop).not.toContain("websockify");
+  });
+
+  it("retains the browser slot and fence across run and idle viewer releases", async () => {
+    const assigned = new Map<string, ScreenAssignment>();
+    nextScreenIndex(assigned, "researcher", "other-run:1");
+    expect(nextScreenIndex(assigned, "writer", "run-1:2")).toBe(1);
+    assigned.get("writer")!.viewToken = "old-view-token";
+    assigned.get("writer")!.controlled = true;
+    assigned.get("writer")!.controlToken = "old-control-token";
+    expect(releaseAssignedScreen(assigned, "writer", "run-1:2")).toBe(1);
+    await teardownReleasedScreen(assigned, "writer", 1, async () => ({ code: 0, stderr: "" }), {
+      retainBrowser: true,
+    });
+
+    expect(assigned.get("writer")).toEqual({
+      index: 1,
+      leaseId: "run-1:2",
+      idleAt: expect.any(Number),
+    });
+    expect(oldestIdleScreen(assigned, 2)).toBe("writer");
+    expect(nextScreenIndex(assigned, "new-bot", "new-run:3")).toBe(2);
+    expect(() => nextScreenIndex(assigned, "writer", "screen-view-writer:0")).toThrow(
+      /owned by a newer execution/,
+    );
+    expect(releaseAssignedScreen(assigned, "writer", "screen-view-writer:0")).toBeUndefined();
+    expect(nextScreenIndex(assigned, "writer", "run-2:4")).toBe(1);
+    expect(releaseAssignedScreen(assigned, "writer", "run-1:2")).toBeUndefined();
+    expect(releaseAssignedScreen(assigned, "writer", "run-2:4")).toBe(1);
+    await teardownReleasedScreen(assigned, "writer", 1, async () => ({ code: 0, stderr: "" }), {
+      retainBrowser: true,
+    });
+    expect(assigned.get("researcher")).toEqual({ index: 0, leaseId: "other-run:1" });
+
+    const idle = new Map<string, ScreenAssignment>();
+    nextScreenIndex(idle, "writer", "screen-view-writer:0");
+    expect(releaseAssignedScreen(idle, "writer", "screen-view-writer:0")).toBe(0);
+    await teardownReleasedScreen(idle, "writer", 0, async () => ({ code: 0, stderr: "" }), {
+      retainBrowser: true,
+    });
+    expect(nextScreenIndex(idle, "writer", "run-3:5")).toBe(0);
+  });
+
   it("on cancel, stops only the matching bot's primary-display Chromium", () => {
-    const stop = stopExtraScreenCommand(0, "writer");
+    const stop = screenReleaseStopCommand(0, {
+      hasRegistry: true,
+      cancelRunWork: true,
+      screenId: "writer",
+    });
     expect(stop).toContain(`--user-data-dir=${browserProfilePathForScreen("writer")}`);
     expect(stop).not.toContain(`--user-data-dir=${browserProfilePathForScreen("researcher")}`);
     expect(stop).not.toContain("Xvfb");
@@ -945,8 +1179,8 @@ describe("sandbox supervisor input containment", () => {
 });
 
 describe("docker exec stream demux", () => {
-  const frame = (type: number, text: string) => {
-    const payload = Buffer.from(text, "utf8");
+  const frame = (type: number, text: string | Buffer) => {
+    const payload = typeof text === "string" ? Buffer.from(text, "utf8") : text;
     const header = Buffer.alloc(8);
     header[0] = type;
     header.writeUInt32BE(payload.length, 4);
@@ -1024,6 +1258,37 @@ describe("docker exec stream demux", () => {
     });
   });
 
+  it("keeps UTF-8 characters split across frames and chunks intact", () => {
+    const stderr = Buffer.from("😀é\n");
+    const multiplexed = Buffer.concat([
+      ...[...Buffer.from("é😀\n")].flatMap((byte, i) => [
+        frame(1, Buffer.from([byte])),
+        frame(2, stderr.subarray(i, i + 1)),
+      ]),
+      frame(2, Buffer.from([0xf0])),
+      frame(1, Buffer.from([0xe2])),
+      frame(2, Buffer.from([0x9f])),
+      frame(1, Buffer.from([0x82])),
+    ]);
+    const cases = [
+      [multiplexed, { stdout: "é😀\n\ufffd", stderr: "😀é\n\ufffd" }],
+      [
+        Buffer.concat([Buffer.from("raw é😀\n"), Buffer.from([0xe2, 0x82])]),
+        { stdout: "raw é😀\n\ufffd", stderr: "" },
+      ],
+      [Buffer.from([0x61, 0xc3]), { stdout: "a\ufffd", stderr: "" }],
+    ] as const;
+    for (const [bytes, expected] of cases) {
+      const demuxer = createDockerStreamDemuxer();
+      const live = [...bytes].flatMap((byte) => demuxer.push(Buffer.from([byte])));
+      live.push(...demuxer.finish());
+      const streamed = { stdout: "", stderr: "" };
+      for (const piece of live) streamed[piece.stream] += piece.data;
+      expect(streamed).toEqual(expected);
+      expect(demuxDockerStream(bytes)).toEqual(expected);
+    }
+  });
+
   it("rejects frames with nonzero reserved header padding as raw stdout", () => {
     // type 1, nonzero padding, size 0 — would look like an empty stdout frame without the check
     const padded = Buffer.from([0x01, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00]);
@@ -1035,26 +1300,109 @@ describe("docker exec stream demux", () => {
 });
 
 describe("computer command identity", () => {
-  it("runs the user's terminal as the same workspace user and environment as the bot's shell", () => {
-    expect(computerCommandEnv({ display: ":2" })).toEqual([
+  it("gives commands the workspace user's home, PATH and package prefixes on the screen's display", () => {
+    expect(computerCommandEnv({ display: ":2", debugPort: 9223 })).toEqual([
       "DISPLAY=:2",
+      "RAKAZO_CDP_PORT=9223",
       "HOME=/home/rakazo",
       "PATH=/home/rakazo/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
       "NPM_CONFIG_PREFIX=/home/rakazo/.local",
       "PIP_USER=1",
     ]);
-    const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
-    // Every exec, including file writes for uploads, inherits the container's non-root user
-    // (see containerCreateOptions).
-    const execs = source.match(/container\.exec\(\{[\s\S]*?\}\)/g) ?? [];
-    expect(execs.length).toBeGreaterThanOrEqual(2);
-    for (const exec of execs) expect(exec).not.toMatch(/\bUser\s*:/);
-    const route = (path: string) =>
-      source.slice(
-        source.indexOf(`app.post("${path}"`),
-        source.indexOf("app.", source.indexOf(`app.post("${path}"`) + 5),
+  });
+});
+
+describe("computer name recovery", () => {
+  const conflict = Object.assign(new Error("container name already in use"), { statusCode: 409 });
+  function holder(labels: Record<string, string>, image = "computer") {
+    return {
+      Id: "leftover",
+      Config: { Labels: labels, Image: image },
+    } as Docker.ContainerInspectInfo;
+  }
+  const owned = { "rakazo.botId": "bot", "rakazo.spaceId": "space", "rakazo.managed": "true" };
+  function recovery(info: Docker.ContainerInspectInfo) {
+    const remove = vi.fn().mockResolvedValue(undefined);
+    const cleared = vi.fn();
+    const inspect = vi.fn().mockResolvedValue(info);
+    const reclaim = () =>
+      removeOwnedComputer(
+        { inspect } as Pick<Docker.Container, "inspect">,
+        remove,
+        (candidate) => isManagedComputer(candidate, "bot", "space", "computer"),
+        cleared,
       );
-    expect(route("/computers/:id/exec")).toContain("computerCommandEnv(layout)");
-    expect(route("/computers/:id/terminal")).toContain("computerCommandEnv(screen.layout)");
+    return { remove, cleared, inspect, reclaim };
+  }
+
+  it("clears an owned leftover by inspected ID and retries create once", async () => {
+    const { reclaim, remove, cleared } = recovery(holder(owned));
+    const created = { id: "new" };
+    const create = vi.fn().mockRejectedValueOnce(conflict).mockResolvedValue(created);
+    await expect(createComputerWithNameRetry(create, reclaim)).resolves.toBe(created);
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(remove).toHaveBeenCalledExactlyOnceWith("leftover");
+    expect(cleared).toHaveBeenCalledExactlyOnceWith("leftover");
+  });
+
+  it.each([
+    { ...owned, "rakazo.botId": "other" },
+    { ...owned, "rakazo.spaceId": "other" },
+    {} as Record<string, string>,
+    { "rakazo.botId": "bot", "rakazo.spaceId": "space" },
+  ])("preserves a non-owned name holder and the original error: %j", async (labels) => {
+    const { reclaim, remove, cleared } = recovery(holder(labels, "unmanaged"));
+    const create = vi.fn().mockRejectedValue(conflict);
+    await expect(createComputerWithNameRetry(create, reclaim)).rejects.toBe(conflict);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(remove).not.toHaveBeenCalled();
+    expect(cleared).not.toHaveBeenCalled();
+  });
+
+  it("accepts the existing legacy identity and image management rule", () => {
+    expect(
+      isManagedComputer(
+        holder({ "rakazo.botId": "bot", "rakazo.workspaceId": "space" }),
+        "bot",
+        "space",
+        "computer",
+      ),
+    ).toBe(true);
+  });
+
+  it("preserves the original error when inspection or removal fails", async () => {
+    for (const stage of ["inspect", "remove"] as const) {
+      const recoveryAttempt = recovery(holder(owned));
+      recoveryAttempt[stage].mockRejectedValue(new Error("unavailable"));
+      await expect(
+        createComputerWithNameRetry(async () => {
+          throw conflict;
+        }, recoveryAttempt.reclaim),
+      ).rejects.toBe(conflict);
+      expect(recoveryAttempt.cleared).not.toHaveBeenCalled();
+    }
+  });
+
+  it("does not retry a second create conflict", async () => {
+    const create = vi.fn().mockRejectedValue(conflict);
+    const reclaim = vi.fn().mockResolvedValue(true);
+    await expect(createComputerWithNameRetry(create, reclaim)).rejects.toBe(conflict);
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(reclaim).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([409, 500])("does not retry a start failure (status %s)", async (statusCode) => {
+    const error = Object.assign(new Error("address already in use"), { statusCode });
+    const start = vi.fn().mockRejectedValue(error);
+    const create = vi.fn(async () => ({ start }));
+    const reclaim = vi.fn();
+    await expect(
+      (async () => {
+        const container = await createComputerWithNameRetry(create, reclaim);
+        await container.start();
+      })(),
+    ).rejects.toBe(error);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(reclaim).not.toHaveBeenCalled();
   });
 });

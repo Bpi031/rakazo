@@ -1,8 +1,8 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { workflowDefinitionSchema, workflowToolInput } from "@rakazo/contracts";
 const mocks = vi.hoisted(() => ({ scope: vi.fn() }));
-vi.mock("./team-storage.js", () => ({ memberScope: mocks.scope }));
-import { TeamWorkflowService } from "./team-workflows.js";
+vi.mock("./teams/team-storage.js", () => ({ memberScope: mocks.scope }));
+import { TeamWorkflowService } from "./teams/team-workflows.js";
 const actor = { userId: "manager", spaceId: "space", email: "", isDeploymentOwner: false };
 export const definition = {
   name: "Department brief",

@@ -1,9 +1,19 @@
+import { deferred } from "@rakazo/core/test-async";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("./rpc", () => ({ rpc: { bootstrap: vi.fn() } }));
-vi.mock("./performance", () => ({ markOnce: vi.fn() }));
+vi.mock("./query/rpc", () => {
+  // Query keys walk the client's procedure paths; these tests never call through it.
+  const client = (): unknown => new Proxy(() => undefined, { get: () => client() });
+  return {
+    rpc: { bootstrap: vi.fn() },
+    selectedSpaceId: vi.fn(),
+    createSpaceRpc: client,
+    rpcForSpace: client,
+  };
+});
+vi.mock("./platform/performance", () => ({ markOnce: vi.fn() }));
 
-import { rpc } from "./rpc";
+import { rpc, selectedSpaceId } from "./query/rpc";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -16,11 +26,230 @@ describe("bootstrap upload configuration", () => {
     async (maxUploadSizeBytes) => {
       vi.stubGlobal("window", { location: { pathname: "/sign-in" } });
       vi.mocked(rpc.bootstrap).mockResolvedValue({
-        me: { ticketBoardEnabled: false, maxUploadSizeBytes },
+        me: { maxUploadSizeBytes },
       } as Awaited<ReturnType<typeof rpc.bootstrap>>);
       const { takeInitialBootstrap, getMaxUploadSizeBytes } = await import("./bootstrap");
       await takeInitialBootstrap();
       expect(getMaxUploadSizeBytes()).toBe(maxUploadSizeBytes ?? 10 * 1024 * 1024);
     },
   );
+});
+
+describe("the first load of a group link", () => {
+  it("asks which Space holds the group, and asks again for another group", async () => {
+    vi.stubGlobal("window", { location: { pathname: "/app/g/group-1" } });
+    const first = { me: {}, groupSpaceId: "space-b" } as Awaited<ReturnType<typeof rpc.bootstrap>>;
+    vi.mocked(rpc.bootstrap).mockReset().mockResolvedValue(first);
+    const { takeInitialBootstrap } = await import("./bootstrap");
+    expect(rpc.bootstrap).toHaveBeenCalledWith({ groupId: "group-1" });
+    await expect(takeInitialBootstrap(undefined, "group-1")).resolves.toEqual(first);
+    expect(rpc.bootstrap).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not answer for a group it did not ask about", async () => {
+    vi.stubGlobal("window", { location: { pathname: "/app/g/group-1" } });
+    vi.mocked(rpc.bootstrap)
+      .mockReset()
+      .mockResolvedValue({ me: {} } as Awaited<ReturnType<typeof rpc.bootstrap>>);
+    const { takeInitialBootstrap } = await import("./bootstrap");
+    await takeInitialBootstrap(undefined, "group-2");
+    expect(rpc.bootstrap).toHaveBeenLastCalledWith({ groupId: "group-2" });
+    expect(rpc.bootstrap).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("switching spaces in place", () => {
+  it("loads the other space under its own header and leaves it for the shell", async () => {
+    vi.stubGlobal("window", { location: { pathname: "/sign-in" } });
+    const other = { me: {} } as Awaited<ReturnType<typeof rpc.bootstrap>>;
+    vi.mocked(rpc.bootstrap).mockReset().mockResolvedValue(other);
+    const { primeSpaceBootstrap, takeInitialBootstrap } = await import("./bootstrap");
+    await primeSpaceBootstrap("space-b", "bot-b");
+    vi.mocked(selectedSpaceId).mockReturnValue("space-b");
+    expect(rpc.bootstrap).toHaveBeenCalledWith(
+      { botId: "bot-b" },
+      { context: { spaceId: "space-b" } },
+    );
+    await expect(takeInitialBootstrap("bot-b")).resolves.toBe(other);
+    expect(rpc.bootstrap).toHaveBeenCalledTimes(1);
+  });
+
+  it("never hands a discarded switch's bootstrap to a later shell", async () => {
+    vi.stubGlobal("window", { location: { pathname: "/sign-in" } });
+    vi.mocked(rpc.bootstrap)
+      .mockReset()
+      .mockResolvedValue({ me: {} } as Awaited<ReturnType<typeof rpc.bootstrap>>);
+    const { discardPrimedBootstrap, primeSpaceBootstrap, takeInitialBootstrap } = await import(
+      "./bootstrap"
+    );
+    const primed = primeSpaceBootstrap("space-b", "bot-b");
+    discardPrimedBootstrap(primed);
+    await takeInitialBootstrap("bot-b");
+    expect(rpc.bootstrap).toHaveBeenLastCalledWith({ botId: "bot-b" });
+    expect(rpc.bootstrap).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("revisiting a space", () => {
+  it("opens with the cached bootstrap and still refreshes it", async () => {
+    vi.stubGlobal("window", { location: { pathname: "/sign-in" } });
+    const cached = { me: { labs: ["board"], maxUploadSizeBytes: 4321 } } as Awaited<
+      ReturnType<typeof rpc.bootstrap>
+    >;
+    const fresh = { me: {} } as Awaited<ReturnType<typeof rpc.bootstrap>>;
+    vi.mocked(rpc.bootstrap).mockReset().mockResolvedValue(fresh);
+    const { getMaxUploadSizeBytes, peekBootstrapSeed, primeSpaceBootstrap, takeInitialBootstrap } =
+      await import("./bootstrap");
+    void primeSpaceBootstrap("space-b", "bot-b", cached);
+    vi.mocked(selectedSpaceId).mockReturnValue("space-b");
+    expect(peekBootstrapSeed("bot-b")).toBe(cached);
+    expect(peekBootstrapSeed("bot-c")).toBeUndefined();
+    const taken = takeInitialBootstrap("bot-b");
+    expect(getMaxUploadSizeBytes()).toBe(4321);
+    await expect(taken).resolves.toBe(fresh);
+    expect(rpc.bootstrap).toHaveBeenCalledWith(
+      { botId: "bot-b" },
+      { context: { spaceId: "space-b" } },
+    );
+    expect(peekBootstrapSeed("bot-b")).toBeUndefined();
+  });
+
+  it("opens a visited space through any of its chats, not only the one it was left on", async () => {
+    vi.stubGlobal("window", { location: { pathname: "/sign-in" } });
+    vi.mocked(rpc.bootstrap)
+      .mockReset()
+      .mockResolvedValue({ me: {} } as Awaited<ReturnType<typeof rpc.bootstrap>>);
+    const { queryClient, spaceSeedKey } = await import("./query/query");
+    const { peekBootstrapSeed, primeSpaceBootstrap } = await import("./bootstrap");
+    // Left while showing bot-b1; the switch back targets bot-b2.
+    const left = { me: { spaceId: "space-b" }, thread: { botId: "bot-b1" } } as Awaited<
+      ReturnType<typeof rpc.bootstrap>
+    >;
+    queryClient.setQueryData(spaceSeedKey("user-a", "space-b"), left);
+    const seed = queryClient.getQueryData(spaceSeedKey("user-a", "space-b"));
+    void primeSpaceBootstrap("space-b", "bot-b2", seed);
+    vi.mocked(selectedSpaceId).mockReturnValue("space-b");
+    expect(peekBootstrapSeed("bot-b2")).toBe(left);
+    expect(queryClient.getQueryData(spaceSeedKey("user-b", "space-b"))).toBeUndefined();
+    queryClient.clear();
+  });
+
+  it("never seeds a shell for another space", async () => {
+    vi.stubGlobal("window", { location: { pathname: "/sign-in" } });
+    vi.mocked(rpc.bootstrap)
+      .mockReset()
+      .mockResolvedValue({ me: {} } as Awaited<ReturnType<typeof rpc.bootstrap>>);
+    const { peekBootstrapSeed, primeSpaceBootstrap } = await import("./bootstrap");
+    void primeSpaceBootstrap("space-b", "bot-b", {} as Awaited<ReturnType<typeof rpc.bootstrap>>);
+    vi.mocked(selectedSpaceId).mockReturnValue("space-c");
+    expect(peekBootstrapSeed("bot-b")).toBeUndefined();
+  });
+});
+
+describe("primed space isolation", () => {
+  it("applies capabilities only when the selected shell takes the bootstrap", async () => {
+    vi.stubGlobal("window", { location: { pathname: "/sign-in" } });
+    const other = { me: { labs: ["board"], maxUploadSizeBytes: 1234 } } as Awaited<
+      ReturnType<typeof rpc.bootstrap>
+    >;
+    vi.mocked(rpc.bootstrap).mockReset().mockResolvedValue(other);
+    vi.mocked(selectedSpaceId).mockReturnValue("space-b");
+    const {
+      primeSpaceBootstrap,
+      discardPrimedBootstrap,
+      takeInitialBootstrap,
+      getMaxUploadSizeBytes,
+      getLabs,
+      subscribeLabs,
+    } = await import("./bootstrap");
+    const initialLimit = getMaxUploadSizeBytes();
+    const listener = vi.fn();
+    subscribeLabs(listener);
+    const discarded = primeSpaceBootstrap("space-b");
+    discardPrimedBootstrap(discarded);
+    await discarded;
+    expect(getMaxUploadSizeBytes()).toBe(initialLimit);
+    expect(getLabs()).toEqual([]);
+    expect(listener).not.toHaveBeenCalled();
+    await primeSpaceBootstrap("space-b");
+    expect(getMaxUploadSizeBytes()).toBe(initialLimit);
+    await takeInitialBootstrap();
+    expect(getMaxUploadSizeBytes()).toBe(1234);
+    expect(getLabs()).toEqual(["board"]);
+    expect(listener).toHaveBeenCalledOnce();
+  });
+
+  it("does not let a superseded response overwrite the selected space's capabilities", async () => {
+    vi.stubGlobal("window", { location: { pathname: "/sign-in" } });
+    type Bootstrap = Awaited<ReturnType<typeof rpc.bootstrap>>;
+    const old = deferred<Bootstrap>();
+    const current = { me: { labs: ["board"], maxUploadSizeBytes: 4321 } } as Bootstrap;
+    vi.mocked(rpc.bootstrap)
+      .mockReset()
+      .mockReturnValueOnce(old.promise)
+      .mockResolvedValue(current);
+    vi.mocked(selectedSpaceId).mockReturnValue("space-c");
+    const {
+      primeSpaceBootstrap,
+      discardPrimedBootstrap,
+      takeInitialBootstrap,
+      getMaxUploadSizeBytes,
+      getLabs,
+    } = await import("./bootstrap");
+    const superseded = primeSpaceBootstrap("space-b");
+    await primeSpaceBootstrap("space-c");
+    discardPrimedBootstrap(superseded);
+    await expect(takeInitialBootstrap()).resolves.toBe(current);
+    old.resolve({ me: { maxUploadSizeBytes: 1234 } } as Bootstrap);
+    await superseded;
+    expect(getMaxUploadSizeBytes()).toBe(4321);
+    expect(getLabs()).toEqual(["board"]);
+  });
+
+  it("drops another space's group bootstrap and requests the selected space", async () => {
+    vi.stubGlobal("window", { location: { pathname: "/sign-in" } });
+    vi.mocked(selectedSpaceId).mockReturnValue("space-a");
+    const other = { me: { labs: ["board"], maxUploadSizeBytes: 1234 } } as Awaited<
+      ReturnType<typeof rpc.bootstrap>
+    >;
+    const current = { me: {} } as Awaited<ReturnType<typeof rpc.bootstrap>>;
+    vi.mocked(rpc.bootstrap).mockReset().mockResolvedValueOnce(other).mockResolvedValue(current);
+    const { primeSpaceBootstrap, takeInitialBootstrap, getLabs } = await import("./bootstrap");
+    await primeSpaceBootstrap("space-b");
+    await expect(takeInitialBootstrap()).resolves.toBe(current);
+    expect(rpc.bootstrap).toHaveBeenLastCalledWith({});
+    expect(rpc.bootstrap).toHaveBeenCalledTimes(2);
+    expect(getLabs()).toEqual([]);
+  });
+
+  it("does not expose a switch bootstrap to the subscription gate", async () => {
+    vi.stubGlobal("window", { location: { pathname: "/sign-in" } });
+    vi.mocked(rpc.bootstrap).mockResolvedValue({ me: {} } as Awaited<
+      ReturnType<typeof rpc.bootstrap>
+    >);
+    const { primeSpaceBootstrap, peekInitialBootstrap } = await import("./bootstrap");
+    await primeSpaceBootstrap("space-b");
+    expect(peekInitialBootstrap()).toBeUndefined();
+  });
+
+  it("keeps the first-load speculative bootstrap available without an explicit space", async () => {
+    vi.stubGlobal("window", { location: { pathname: "/app" } });
+    const initial = { me: { labs: ["board"] } } as Awaited<ReturnType<typeof rpc.bootstrap>>;
+    vi.mocked(rpc.bootstrap).mockReset().mockResolvedValue(initial);
+    const { peekInitialBootstrap, takeInitialBootstrap, getLabs } = await import("./bootstrap");
+    await expect(peekInitialBootstrap()).resolves.toBe(initial);
+    expect(getLabs()).toEqual(["board"]);
+    await expect(takeInitialBootstrap()).resolves.toBe(initial);
+    expect(rpc.bootstrap).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies a saved Labs list to subscribers at once", async () => {
+    vi.stubGlobal("window", { location: { pathname: "/sign-in" } });
+    const { getLabs, setLabs, subscribeLabs } = await import("./bootstrap");
+    const listener = vi.fn();
+    subscribeLabs(listener);
+    setLabs(["board"]);
+    expect(getLabs()).toEqual(["board"]);
+    expect(listener).toHaveBeenCalledOnce();
+  });
 });

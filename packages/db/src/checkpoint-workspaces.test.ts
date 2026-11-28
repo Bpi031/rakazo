@@ -1,10 +1,11 @@
+import { deferred } from "@rakazo/core/test-async";
 import { expect, it, vi } from "vitest";
 import {
   claimCheckpointWorkspace,
   releaseCheckpointWorkspace,
   withCheckpointWorkspaceWrite,
 } from "./checkpoint-workspaces.js";
-import type { PrismaClient } from "./client.js";
+import type { PrismaClient } from "./database/client.js";
 
 const input = {
   computerId: "computer",
@@ -39,7 +40,11 @@ function fixture() {
     bot: { findFirst: vi.fn(async () => ({ id: "bot" })), count: vi.fn(async () => 0) },
     run: { count: vi.fn(async () => 0) },
     routine: { count: vi.fn(async () => 0) },
-    thread: { findFirst: vi.fn<() => Promise<{ id: string } | null>>().mockResolvedValue(null) },
+    thread: {
+      findFirst: vi
+        .fn<() => Promise<{ id: string; checkpointBlocked: boolean } | null>>()
+        .mockResolvedValue(null),
+    },
     rollbackAuditLog: {
       findFirst: vi
         .fn<() => Promise<{ details: Record<string, unknown> } | null>>()
@@ -174,19 +179,16 @@ it("releases only its own maintenance fence", async () => {
 
 it("holds the shared row lock until the entire file operation completes", async () => {
   const f = fixture();
-  let release!: () => void;
-  const held = new Promise<void>((resolve) => {
-    release = resolve;
-  });
+  const held = deferred<void>();
   const operation = vi.fn(async () => {
-    await held;
+    await held.promise;
     return "saved";
   });
   const write = withCheckpointWorkspaceWrite(f.prisma, "computer", operation);
   await vi.waitFor(() => expect(operation).toHaveBeenCalledOnce());
   expect(f.committed).toBe(false);
   expect(f.tx.$queryRaw.mock.calls[0]![0].join("")).toContain("FOR SHARE");
-  release();
+  held.resolve();
   expect(await write).toBe("saved");
   expect(f.committed).toBe(true);
 });
@@ -219,7 +221,7 @@ const retry = {
 it("transfers failed recovery ownership only after matching the blocked generation and failed audit", async () => {
   const f = fixture();
   f.computer.maintenanceId = input.owner;
-  f.tx.thread.findFirst.mockResolvedValue({ id: "thread" });
+  f.tx.thread.findFirst.mockResolvedValue({ id: "thread", checkpointBlocked: true });
   f.tx.rollbackAuditLog.findFirst.mockResolvedValue({
     details: {
       workspaceMaintenanceOwner: input.owner,
@@ -234,10 +236,9 @@ it("transfers failed recovery ownership only after matching the blocked generati
       botId: "bot",
       userId: "user",
       spaceId: "space",
-      checkpointBlocked: true,
       checkpointGeneration: 7,
     },
-    select: { id: true },
+    select: { id: true, checkpointBlocked: true },
   });
   expect(f.tx.rollbackAuditLog.findFirst).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -260,7 +261,7 @@ it.each([
 ])("never steals an active or unrelated failed maintenance owner: %j", async (proof) => {
   const f = fixture();
   f.computer.maintenanceId = input.owner;
-  f.tx.thread.findFirst.mockResolvedValue({ id: "thread" });
+  f.tx.thread.findFirst.mockResolvedValue({ id: "thread", checkpointBlocked: true });
   f.tx.rollbackAuditLog.findFirst.mockResolvedValue(proof);
   await expect(claimCheckpointWorkspace(f.prisma, retry)).rejects.toThrow(
     "not completed or failed",

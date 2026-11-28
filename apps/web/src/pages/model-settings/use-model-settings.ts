@@ -1,0 +1,517 @@
+import { useLingui } from "@lingui/react/macro";
+import type { Me, SettingsScope, ThinkingLevel } from "@rakazo/contracts";
+import {
+  modelConnectionNames,
+  modelRoutingDirty,
+  providerDisplayName,
+  savedCompatibleEndpointMatches,
+} from "@rakazo/contracts";
+import {
+  clampCatalogThinkingLevel,
+  compatibleConnectionReady,
+  compatibleModelRows,
+  connectionFormFields,
+  connectionFormModelId,
+  dataRetentionDirty,
+  modelConnectRequest,
+  popularModelProvidersFirst,
+  savedCompatibleModelIds,
+} from "@rakazo/core";
+import { fetchFresh } from "@rakazo/core/query";
+import { modelDisconnectWarning } from "@rakazo/i18n/model-disconnect";
+import { localizeModelEntry } from "@rakazo/i18n/model-provider";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCopyText } from "../../lib/copy-text";
+import type { ModelCatalogEntry } from "../../lib/models/model-auth";
+import { useModelOAuthSignIn } from "../../lib/models/use-model-oauth-signin";
+import { analyticsSurface } from "../../lib/platform/desktop";
+import { useSpaceQueries } from "../../lib/query/query";
+import { useSpaceRpc } from "../../lib/query/space-rpc";
+import { errorText } from "../../lib/query/user-error";
+import { useModelConnectionForm } from "./use-model-connection-form";
+
+const NO_CATALOG: ModelCatalogEntry[] = [];
+const NO_CREDENTIALS: never[] = [];
+
+export type ModelConnectIntent = {
+  /** False keeps the current main model; the connection is for a fallback or another role. */
+  makeDefault: boolean;
+  onConnected?: (choice: {
+    provider: string;
+    modelId: string;
+    credentialId?: string;
+  }) => void | Promise<void>;
+};
+
+/** `scope` is where a connection made for an empty main model becomes that model. */
+export function useModelSettings(onClose: () => void, scope: SettingsScope) {
+  const rpc = useSpaceRpc();
+  const intentRef = useRef<ModelConnectIntent | null>(null);
+  // Sign-in finishes later; it keeps the slot it was started for even if the dialog closes.
+  const oauthChoiceRef = useRef<{
+    choice: { provider: string; modelId: string };
+    intent: ModelConnectIntent | null;
+  } | null>(null);
+  const { t } = useLingui();
+  // What the space has is cached, so a revisit paints at once and refreshes behind it.
+  const queries = useSpaceQueries();
+  const queryClient = useQueryClient();
+  const catalogQuery = {
+    queryKey: queries.models.list.queryKey(),
+    queryFn: () => rpc.models.list(),
+  };
+  const credentialsQuery = {
+    queryKey: queries.models.credentials.queryKey(),
+    queryFn: () => rpc.models.credentials(),
+  };
+  const meQuery = { queryKey: queries.me.queryKey(), queryFn: () => rpc.me() };
+  const catalog = useQuery(catalogQuery).data ?? NO_CATALOG;
+  const credentials = useQuery(credentialsQuery).data ?? NO_CREDENTIALS;
+  const me: Me | null = useQuery(meQuery).data ?? null;
+  // The connection the dialog edits; null connects a new one.
+  const [credentialId, setCredentialIdState] = useState<string | null>(null);
+  const credentialIdRef = useRef(credentialId);
+  const setCredentialId = (next: string | null) => {
+    credentialIdRef.current = next;
+    setCredentialIdState(next);
+  };
+  const credential = credentialId
+    ? credentials.find((entry) => entry.id === credentialId)
+    : undefined;
+  const form = useModelConnectionForm({ rpc, catalog, credential });
+  const {
+    accountId,
+    apiKey,
+    apiProtocol,
+    applyFields,
+    baseUrl,
+    connectionErrorText,
+    enabledModelIds,
+    compatibleKeyRequired,
+    endpointPreset,
+    gatewayId,
+    projectId,
+    region,
+    headerRows,
+    needsRouting,
+    isOpenAiCompatible,
+    modelId,
+    modelProbe,
+    modelsForProvider,
+    openConnection,
+    probeModels,
+    provider,
+    resetOpenAiCompatibleProbe,
+    selected,
+    setApiKey,
+    setError,
+    setHeaderRows,
+    setModelId,
+    setNotice,
+    setProvider,
+    setThinkingLevel,
+    thinkingLevel,
+    zeroDataRetention,
+  } = form;
+  const [codeCopied, copyText] = useCopyText();
+  const [loading, setLoading] = useState(
+    () =>
+      queryClient.getQueryData(catalogQuery.queryKey) === undefined ||
+      queryClient.getQueryData(credentialsQuery.queryKey) === undefined ||
+      queryClient.getQueryData(meQuery.queryKey) === undefined,
+  );
+  const [pending, setPending] = useState<"connect" | "settings" | "disconnect" | null>(null);
+  const [confirmDisconnect, setConfirmDisconnect] = useState(false);
+  const refreshRevisionRef = useRef(0);
+  const selectionRevisionRef = useRef(0);
+  const formRevisionRef = useRef(0);
+  const selectedLabelRef = useRef<string | undefined>(undefined);
+
+  const {
+    oauth,
+    pasteCode,
+    setPasteCode,
+    oauthPending,
+    cancelOAuthAttempt,
+    reportSignInStep,
+    startSubscriptionSignIn,
+    submitOAuthCode,
+  } = useModelOAuthSignIn({
+    onClearError: () => setError(null),
+    onError: setError,
+    onFinished: async (_controller, saved) => {
+      // A new account's later saves update it rather than adding another.
+      setCredentialId(saved.id);
+      // A new subscription can save a stronger model than the one the form showed.
+      await refresh({ modelId: saved.modelId });
+      const started = oauthChoiceRef.current;
+      oauthChoiceRef.current = null;
+      if (started)
+        await started.intent?.onConnected?.({
+          ...started.choice,
+          modelId: saved.modelId ?? started.choice.modelId,
+          credentialId: saved.id,
+        });
+    },
+  });
+  const copyOAuthCode = (code: string) => {
+    const loginId = oauth?.loginId;
+    void copyText(code).then((copied) => {
+      if (copied) reportSignInStep("code_copied", loginId);
+    });
+  };
+
+  /**
+   * `keepForm` reloads the lists without resetting the open connection's fields. Every refresh but
+   * the one on open follows a change, so by default it never reuses a read sent before that change.
+   */
+  async function refresh({
+    keepForm = false,
+    reuse = false,
+    modelId: savedModelId,
+  }: {
+    keepForm?: boolean;
+    reuse?: boolean;
+    modelId?: string;
+  } = {}) {
+    const refreshRevision = ++refreshRevisionRef.current;
+    const selectionRevision = keepForm ? -1 : selectionRevisionRef.current;
+    const [nextCatalog, nextCredentials, nextMe] = await Promise.all([
+      fetchFresh(queryClient, catalogQuery, { reuse }),
+      fetchFresh(queryClient, credentialsQuery, { reuse }),
+      fetchFresh(queryClient, meQuery, { reuse }),
+    ]);
+    if (refreshRevision !== refreshRevisionRef.current) return undefined;
+    applyLoaded(nextCatalog, nextCredentials, nextMe, selectionRevision, savedModelId);
+    return nextCredentials;
+  }
+
+  /** Points the form at the saved choice, unless the user picked something since the load began. */
+  function applyLoaded(
+    nextCatalog: ModelCatalogEntry[],
+    nextCredentials: typeof credentials,
+    nextMe: Me,
+    selectionRevision: number,
+    savedModelId?: string,
+  ) {
+    const nextProvider =
+      provider && nextCatalog.some((entry) => entry.provider === provider)
+        ? provider
+        : (nextMe.defaultProvider ?? nextCatalog[0]?.provider ?? "");
+    const nextCredential = credentialIdRef.current
+      ? nextCredentials.find((entry) => entry.id === credentialIdRef.current)
+      : undefined;
+    // A connection removed elsewhere leaves the dialog connecting a new one.
+    if (credentialIdRef.current && !nextCredential) setCredentialId(null);
+    const nextModel = connectionFormModelId({
+      catalog: nextCatalog,
+      provider: nextProvider,
+      credential: nextCredential,
+      defaults: nextMe,
+      current: savedModelId ?? modelId,
+    });
+    if (selectionRevision === selectionRevisionRef.current) {
+      resetOpenAiCompatibleProbe();
+      setProvider(nextProvider);
+      setModelId(nextModel);
+      setHeaderRows(null);
+      applyFields(
+        connectionFormFields({
+          catalog: nextCatalog,
+          provider: nextProvider,
+          modelId: nextModel,
+          credential: nextCredential,
+        }),
+      );
+    }
+  }
+
+  useLayoutEffect(() => {
+    const cachedCatalog = queryClient.getQueryData(catalogQuery.queryKey);
+    const cachedCredentials = queryClient.getQueryData(credentialsQuery.queryKey);
+    const cachedMe = queryClient.getQueryData(meQuery.queryKey);
+    // Before paint, so a revisit opens on the saved choice rather than an empty form.
+    if (cachedCatalog && cachedCredentials && cachedMe) {
+      applyLoaded(cachedCatalog, cachedCredentials, cachedMe, selectionRevisionRef.current);
+    }
+    void refresh({ reuse: true })
+      .catch((err: unknown) => setError(errorText(err, t`Could not load model settings`)))
+      .finally(() => setLoading(false));
+    return () => {
+      refreshRevisionRef.current += 1;
+      modelProbe.invalidate();
+    };
+  }, []);
+
+  const groups = (() => {
+    const grouped = new Map<string, ModelCatalogEntry[]>();
+    for (const entry of catalog) {
+      const entries = grouped.get(entry.provider) ?? [];
+      entries.push(entry);
+      grouped.set(entry.provider, entries);
+    }
+    return popularModelProvidersFirst(
+      [...grouped].map(([id, entries]) => ({
+        id,
+        name: providerDisplayName(localizeModelEntry(entries[0] ?? { provider: id })),
+        entries,
+      })),
+      (group) => group.id,
+      (group) => group.name,
+    );
+  })();
+  const credentialByProvider = useMemo(
+    () => new Map(credentials.map((entry) => [entry.provider, entry])),
+    [credentials],
+  );
+  selectedLabelRef.current = selected?.label;
+  const selectedEntry = localizeModelEntry(modelsForProvider[0] ?? { provider });
+  const selectedProviderName =
+    endpointPreset?.name ?? providerDisplayName(selectedEntry, credential?.authKind);
+  const selectedConnectionName = credential
+    ? modelConnectionNames(selectedEntry, credential).connectionName
+    : selectedProviderName;
+  const disconnectName = selectedConnectionName;
+  // Read when the question opens. A failed read must not keep Disconnect disabled.
+  const disconnectPreview = useQuery({
+    ...queries.models.disconnectPreview.queryOptions({
+      input: { provider: credential?.provider ?? "", credentialId: credential?.id ?? "" },
+    }),
+    enabled: confirmDisconnect && Boolean(credential),
+    retry: false,
+    staleTime: 0,
+    gcTime: 0,
+  });
+  const disconnectPreviewLoading = confirmDisconnect && disconnectPreview.isFetching;
+  // A read that failed leaves the plain question, never a warning kept from an earlier one.
+  const disconnectWarning = modelDisconnectWarning(
+    disconnectPreview.isError ? null : (disconnectPreview.data ?? null),
+  );
+  const hostCredentialSource = me?.hostCredentialSource ?? "";
+  const currentEntry = catalog.find(
+    (entry) => entry.provider === me?.defaultProvider && entry.id === me?.defaultModel,
+  );
+  // Space still bills the host while this provider matches; model id alone is not credentials.
+  const usingServerCredentials = provider === me?.hostCredentialProvider;
+  const acceptsKey = selected?.auth !== "oauth";
+  const subscriptionSignIn = selected?.signIn !== undefined;
+  // Effort levels for the staged catalog model — "off" stays out, matching the
+  // per-bot Thinking picker.
+  const catalogThinkingLevels =
+    !isOpenAiCompatible && selected
+      ? (selected.thinkingLevels ?? []).filter((level) => level !== "off")
+      : [];
+  const busy = pending !== null || oauthPending;
+  const savedHeaderEndpointMatches = savedCompatibleEndpointMatches(baseUrl, credential?.baseUrl);
+  const openAiCompatibleReady = compatibleConnectionReady({
+    apiKey,
+    baseUrl,
+    modelId,
+    headerRows,
+    credential,
+    keyRequired: compatibleKeyRequired,
+  });
+  const compatibleRows = compatibleModelRows(
+    savedCompatibleModelIds(credential, baseUrl),
+    enabledModelIds,
+    probeModels,
+  );
+  // Saved-connection settings edited without a new key (gateway ids, data retention).
+  const settingsDirty =
+    !isOpenAiCompatible &&
+    Boolean(credential) &&
+    ((needsRouting && modelRoutingDirty({ accountId, gatewayId, projectId, region }, credential)) ||
+      (selected !== undefined && dataRetentionDirty(selected, zeroDataRetention, credential)));
+
+  /** Opens a connection (by id) or a new one (null) for the provider. */
+  function chooseProvider(
+    nextProvider: string,
+    presetBaseUrl?: string,
+    targetCredentialId: string | null = null,
+  ) {
+    cancelOAuthAttempt("replaced");
+    formRevisionRef.current += 1;
+    selectionRevisionRef.current += 1;
+    const nextCredential = targetCredentialId
+      ? credentials.find((entry) => entry.id === targetCredentialId)
+      : undefined;
+    setCredentialId(nextCredential?.id ?? null);
+    const nextModelId = connectionFormModelId({
+      catalog,
+      provider: nextProvider,
+      credential: nextCredential,
+      defaults: me,
+    });
+    openConnection(
+      nextProvider,
+      nextModelId,
+      connectionFormFields({
+        catalog,
+        provider: nextProvider,
+        modelId: nextModelId,
+        credential: nextCredential,
+        presetBaseUrl,
+      }),
+      presetBaseUrl,
+    );
+  }
+
+  // settingsOnly saves a connected catalog provider's gateway ids without touching
+  // the key field; key replacement stays on its own button.
+  async function connectKey({ settingsOnly = false }: { settingsOnly?: boolean } = {}) {
+    if (!selected) return;
+    // Closing the dialog mid-save must not drop the slot this connection is for.
+    const intent = intentRef.current;
+    const request = modelConnectRequest({
+      form: {
+        apiKey,
+        modelId,
+        enabledModelIds,
+        baseUrl,
+        apiProtocol,
+        headerRows,
+        thinkingLevel,
+        accountId,
+        gatewayId,
+        projectId,
+        region,
+        zeroDataRetention,
+      },
+      selected,
+      credential,
+      credentialId: credential?.id ?? null,
+      settingsOnly,
+      // Always explicit: a save from a provider page has no intent and must not move the main model.
+      makeDefault: { makeDefault: intent?.makeDefault ?? false, scope },
+    });
+    if (request.status === "incomplete") return;
+    const { input, savingWithoutKey, activeModelId } = request;
+    setError(null);
+    setNotice(null);
+    setPending(settingsOnly ? "settings" : "connect");
+    // Opening another connection while this saves leaves that form alone; field edits
+    // in this form still adopt the connection the save creates.
+    const form = formRevisionRef.current;
+    const stillSelected = () => form === formRevisionRef.current;
+    try {
+      const saved = await rpc.models.connect({ ...input, surface: analyticsSurface() });
+      if (!stillSelected()) {
+        await refresh({ keepForm: true });
+        return;
+      }
+      // Saving again edits the connection just made instead of adding another.
+      if (saved?.id) setCredentialId(saved.id);
+      if (!settingsOnly) setApiKey("");
+      await refresh();
+      if (!stillSelected()) return;
+      if (!settingsOnly)
+        await intent?.onConnected?.({
+          provider: selected.provider,
+          modelId: activeModelId,
+          credentialId: saved?.id,
+        });
+      // A fresh connection speaks for itself through the Active model row.
+      if (isOpenAiCompatible || savingWithoutKey) setNotice(t`Saved.`);
+    } catch (err) {
+      if (stillSelected()) setError(connectionErrorText(err, t`Could not connect this provider`));
+    } finally {
+      setPending(null);
+    }
+  }
+
+  async function disconnectCredential() {
+    if (!selected || !credential) return;
+    cancelOAuthAttempt();
+    setError(null);
+    setNotice(null);
+    setPending("disconnect");
+    try {
+      await rpc.models.disconnect({ provider: selected.provider, credentialId: credential.id });
+      setCredentialId(null);
+      setApiKey("");
+      setThinkingLevel(null);
+      await refresh();
+      setNotice(t`Disconnected ${disconnectName}.`);
+    } catch (err) {
+      setError(errorText(err, t`Could not disconnect this provider`));
+    } finally {
+      setPending(null);
+    }
+  }
+
+  function handleClose() {
+    cancelOAuthAttempt("left", false);
+    onClose();
+  }
+
+  function beginSelectedSubscriptionSignIn() {
+    if (!selected) return;
+    setNotice(null);
+    const intent = intentRef.current;
+    oauthChoiceRef.current = {
+      choice: { provider: selected.provider, modelId: selected.id },
+      intent,
+    };
+    void startSubscriptionSignIn({
+      provider: selected.provider,
+      credentialId: credential?.id ?? null,
+      modelId: selected.id,
+      makeDefault: intent?.makeDefault ?? false,
+      scope,
+      thinkingLevel: clampCatalogThinkingLevel(
+        thinkingLevel,
+        selected.thinkingLevels,
+      ) as ThinkingLevel | null,
+      label: selected.providerName ?? selected.provider,
+    });
+  }
+
+  return {
+    ...form,
+    intentRef,
+    refresh,
+    savedHeaderEndpointMatches,
+    acceptsKey,
+    beginSelectedSubscriptionSignIn,
+    busy,
+    cancelOAuthAttempt,
+    catalog,
+    catalogThinkingLevels,
+    chooseProvider,
+    codeCopied,
+    compatibleRows,
+    confirmDisconnect,
+    connectKey,
+    copyOAuthCode,
+    reportSignInStep,
+    credential,
+    credentialByProvider,
+    credentials,
+    currentEntry,
+    disconnectCredential,
+    disconnectName,
+    disconnectPreviewLoading,
+    disconnectWarning,
+    groups,
+    handleClose,
+    hostCredentialSource,
+    loading,
+    me,
+    oauth,
+    oauthPending,
+    openAiCompatibleReady,
+    pasteCode,
+    pending,
+    selectedConnectionName,
+    selectedProviderName,
+    selectionRevisionRef,
+    setConfirmDisconnect,
+    setPasteCode,
+    settingsDirty,
+    submitOAuthCode,
+    subscriptionSignIn,
+    usingServerCredentials,
+  };
+}
+export type ModelSettingsState = ReturnType<typeof useModelSettings>;

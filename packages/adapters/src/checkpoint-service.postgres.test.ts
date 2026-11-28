@@ -1,3 +1,4 @@
+import { deferred } from "@rakazo/core/test-async";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -10,24 +11,26 @@ import {
   assertRunCanWriteHistory,
   checkpointMessageWhere,
   checkpointRunFields,
+  claimCheckpointWorkspace,
   computerScopeKey,
   createDb,
   createThreadMessage,
   loadRunHistoryMessages,
   searchHistory,
+  withCheckpointRestoreLock,
 } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { LocalArtifactStore } from "./artifacts.js";
-import type { CheckpointFileManifest } from "./checkpoint-files.js";
-import { CheckpointService } from "./checkpoint-service.js";
-import { destroyBot } from "./child-bots.js";
-import { LocalAgentHomeStore } from "./home.js";
+import { LocalArtifactStore } from "./storage/artifacts.js";
+import type { CheckpointFileManifest } from "./checkpoints/checkpoint-files.js";
+import { CheckpointService } from "./checkpoints/checkpoint-service.js";
+import { destroyBot } from "./bots/child-bots.js";
+import { LocalAgentHomeStore } from "./storage/home.js";
 
 // Opt in with a dedicated, fully migrated disposable database. Never use DATABASE_URL.
 const connection = process.env.CHECKPOINT_TEST_DATABASE_URL;
 const enabled =
   connection && /^rakazo_checkpoint_[a-z0-9_]+$/.test(new URL(connection).pathname.slice(1));
-const postgres = enabled ? describe.sequential : describe.skip;
+const postgres = describe.skipIf(!enabled);
 
 postgres("checkpoint recovery with migrated PostgreSQL", () => {
   const scope = randomUUID();
@@ -103,8 +106,12 @@ postgres("checkpoint recovery with migrated PostgreSQL", () => {
       data: { id: threadId, spaceId: actor.spaceId, userId: actor.userId, botId },
     });
     const sandbox = {
-      execute: async function* () {
-        yield { type: "stdout", data: "checkpoint-writers-stopped checkpoint-writers-idle" };
+      execute: async function* (_computer: unknown, request: { argv: string[] }) {
+        const stopping = request.argv.at(-1)?.includes("checkpoint-writers-stopped");
+        yield {
+          type: "stdout",
+          data: stopping ? "checkpoint-writers-stopped\n" : "checkpoint-writers-idle\n",
+        };
         yield { type: "exit", code: 0 };
       },
     } as unknown as SandboxProvider;
@@ -170,6 +177,63 @@ postgres("checkpoint recovery with migrated PostgreSQL", () => {
         storageKey: id,
       },
     });
+
+  it("rejects confirmation from before another save in the same generation", async () => {
+    const initial = await service.status(actor, botId);
+    files = { "roster.xlsx": "older draft" };
+    const target = await service.create(actor, { botId, expectedGeneration: initial.generation });
+    const confirmed = await service.status(actor, botId);
+    files = { "roster.xlsx": "newer draft" };
+    const later = await service.create(actor, { botId, expectedGeneration: confirmed.generation });
+    const current = await service.status(actor, botId);
+    const audits = await prisma.rollbackAuditLog.count({ where: { threadId } });
+    try {
+      expect(current.generation).toBe(confirmed.generation);
+      expect(current.revision).not.toBe(confirmed.revision);
+      const request = {
+        botId,
+        checkpointId: target.id,
+        expectedGeneration: confirmed.generation,
+        expectedRevision: confirmed.revision,
+      };
+      await expect(service.rollback(actor, request)).rejects.toMatchObject({
+        reason: "stale",
+      });
+      expect(await service.status(actor, botId)).toEqual(current);
+      expect(files).toEqual({ "roster.xlsx": "newer draft" });
+      expect(await prisma.rollbackAuditLog.count({ where: { threadId } })).toBe(audits);
+    } finally {
+      // These stand-alone fixture snapshots must not appear in the following cases.
+      await prisma.rollbackAuditLog.deleteMany({
+        where: { threadId, toCheckpointId: target.id },
+      });
+      await prisma.checkpoint.deleteMany({ where: { id: { in: [target.id, later.id] } } });
+      files = {};
+    }
+  });
+
+  it("refuses a missing archived attachment without changing the workspace generation", async () => {
+    const archived = await artifact("missing-from-storage-records");
+    const before = await service.status(actor, botId);
+    const target = await service.create(actor, { botId, expectedGeneration: before.generation });
+    try {
+      await prisma.artifact.delete({ where: { id: archived.id } });
+      await expect(
+        service.rollback(actor, {
+          botId,
+          checkpointId: target.id,
+          expectedGeneration: before.generation,
+          expectedRevision: (await service.status(actor, botId)).revision,
+        }),
+      ).rejects.toMatchObject({ name: "CheckpointConflictError", reason: "incomplete" });
+      expect(await service.status(actor, botId)).toMatchObject({
+        generation: before.generation,
+        blocked: false,
+      });
+    } finally {
+      await prisma.checkpoint.delete({ where: { id: target.id } });
+    }
+  });
 
   it("restores files, rules and artifacts; branches repeatedly; rescue recovery keeps tasks stopped; exports audit", async () => {
     await prisma.bot.update({
@@ -250,8 +314,22 @@ postgres("checkpoint recovery with migrated PostgreSQL", () => {
       botId,
       checkpointId: a.id,
       expectedGeneration: 0,
+      expectedRevision: (await service.status(actor, botId)).revision,
     });
-    expect(restoredA.ok).toBe(true);
+    expect(
+      restoredA.ok,
+      restoredA.ok
+        ? undefined
+        : JSON.stringify(
+            (
+              await prisma.rollbackAuditLog.findFirst({
+                where: { threadId, status: "failed" },
+                orderBy: { createdAt: "desc" },
+                select: { details: true },
+              })
+            )?.details,
+          ),
+    ).toBe(true);
     expect(files).toEqual({
       "input.xlsx": "original workbook",
       "policy.rost": "clean policy",
@@ -280,9 +358,13 @@ postgres("checkpoint recovery with migrated PostgreSQL", () => {
       "Run cannot write",
     );
     expect(
-      (await loadRunHistoryMessages(prisma, { id: run.id, threadId }, 30)).map(
-        (message) => message.blocks,
-      ),
+      (
+        await loadRunHistoryMessages(
+          prisma,
+          { id: run.id, threadId, botId, userId: actor.userId },
+          30,
+        )
+      ).map((message) => message.blocks),
     ).toEqual([[{ kind: "text", text: "CLEAN_A" }]]);
     expect(
       (await searchHistory(prisma, { ...actor, botId, threadId }, { query: "FAILURE_UNIQUE_B" }))
@@ -297,6 +379,7 @@ postgres("checkpoint recovery with migrated PostgreSQL", () => {
       botId,
       checkpointId: b.id,
       expectedGeneration: 1,
+      expectedRevision: (await service.status(actor, botId)).revision,
     });
     expect(restoredB.ok).toBe(true);
     expect(await visible()).toEqual(["CLEAN_A", "FAILURE_UNIQUE_B"]);
@@ -308,6 +391,7 @@ postgres("checkpoint recovery with migrated PostgreSQL", () => {
           botId,
           checkpointId: restoredB.rescueCheckpointId,
           expectedGeneration: 2,
+          expectedRevision: (await service.status(actor, botId)).revision,
         })
       ).ok,
     ).toBe(true);
@@ -354,8 +438,14 @@ postgres("checkpoint recovery with migrated PostgreSQL", () => {
       data: { blocks: [{ kind: "text", text: "MUTATED_BOT" }] },
     });
     expect(
-      (await service.rollback(actor, { botId, checkpointId: checkpoint.id, expectedGeneration: 3 }))
-        .ok,
+      (
+        await service.rollback(actor, {
+          botId,
+          checkpointId: checkpoint.id,
+          expectedGeneration: 3,
+          expectedRevision: (await service.status(actor, botId)).revision,
+        })
+      ).ok,
     ).toBe(true);
     const rows = await prisma.message.findMany({
       where: await checkpointMessageWhere(prisma, threadId),
@@ -380,6 +470,7 @@ postgres("checkpoint recovery with migrated PostgreSQL", () => {
       botId,
       checkpointId: target.id,
       expectedGeneration: thread.checkpointGeneration,
+      expectedRevision: (await service.status(actor, botId)).revision,
     });
     expect(result.ok).toBe(true);
     expect(await prisma.checkpoint.count({ where: { threadId } })).toBe(before);
@@ -435,41 +526,32 @@ postgres("checkpoint recovery with migrated PostgreSQL", () => {
 
   it("waits for a concurrent recovery fence before binding a new run", async () => {
     const thread = await prisma.thread.findUniqueOrThrow({ where: { id: threadId } });
-    let releaseFence!: () => void;
-    let fenceReady!: () => void;
-    let waiterReady!: (pid: number) => void;
-    const released = new Promise<void>((resolve) => {
-      releaseFence = resolve;
-    });
-    const ready = new Promise<void>((resolve) => {
-      fenceReady = resolve;
-    });
-    const waiterPid = new Promise<number>((resolve) => {
-      waiterReady = resolve;
-    });
+    const released = deferred<void>();
+    const ready = deferred<void>();
+    const waiterPid = deferred<number>();
     const fence = prisma.$transaction(async (tx) => {
       await tx.thread.update({
         where: { id: threadId },
         data: { checkpointGeneration: { increment: 1 } },
       });
-      fenceReady();
-      await released;
+      ready.resolve();
+      await released.promise;
     });
-    await ready;
+    await ready.promise;
     let waiterFinished = false;
     const waiter = prisma
       .$transaction(async (tx) => {
         const [connection] = await tx.$queryRaw<
           Array<{ pid: number }>
         >`SELECT pg_backend_pid() AS pid`;
-        waiterReady(connection!.pid);
+        waiterPid.resolve(connection!.pid);
         return checkpointRunFields(tx, threadId);
       })
       .finally(() => {
         waiterFinished = true;
       });
     try {
-      const pid = await waiterPid;
+      const pid = await waiterPid.promise;
       let blocked = false;
       for (let attempt = 0; attempt < 100 && !waiterFinished; attempt++) {
         const [result] = await prisma.$queryRaw<Array<{ blocked: boolean }>>`
@@ -482,7 +564,7 @@ postgres("checkpoint recovery with migrated PostgreSQL", () => {
         await delay(10);
       }
       expect(blocked).toBe(true);
-      releaseFence();
+      released.resolve();
       const fields = await waiter;
       await fence;
       expect(fields).toEqual({
@@ -490,8 +572,73 @@ postgres("checkpoint recovery with migrated PostgreSQL", () => {
         checkpointGeneration: thread.checkpointGeneration + 1,
       });
     } finally {
-      releaseFence();
+      released.resolve();
       await Promise.allSettled([fence, waiter]);
+    }
+  });
+
+  it("retries a journaled interruption without taking over an active restore", async () => {
+    const before = await prisma.thread.findUniqueOrThrow({ where: { id: threadId } });
+    const bot = await prisma.bot.findUniqueOrThrow({ where: { id: botId } });
+    const target = await prisma.checkpoint.findFirstOrThrow({
+      where: { threadId, kind: "manual" },
+      orderBy: { createdAt: "asc" },
+    });
+    const computerId = bot.computerId!;
+    const other = createDb(connection!);
+    const owner = "checkpoint-restore:" + randomUUID();
+    const attempt = { threadId, expectedGeneration: before.checkpointGeneration };
+    try {
+      await withCheckpointRestoreLock(prisma, computerId, async () => {
+        await claimCheckpointWorkspace(prisma, {
+          ...actor,
+          botId,
+          computerId,
+          owner,
+          restore: true,
+          retry: attempt,
+          restoreJournal: { checkpointId: target.id, branchId: target.branchId },
+        });
+        await prisma.thread.update({
+          where: { id: threadId },
+          data: { checkpointBlocked: true, checkpointGeneration: { increment: 1 } },
+        });
+        const competing = vi.fn(async () => undefined);
+        await expect(
+          withCheckpointRestoreLock(other.prisma, computerId, competing),
+        ).rejects.toThrow("Another restore is still running");
+        expect(competing).not.toHaveBeenCalled();
+        // Leave the durable owner and no failure audit, as after API termination.
+      });
+      const retained = await prisma.computer.findUniqueOrThrow({ where: { id: computerId } });
+      expect(retained.maintenanceId).toBe(owner);
+      expect(
+        await prisma.rollbackAuditLog.count({
+          where: {
+            threadId,
+            status: "claimed",
+            details: {
+              path: ["workspaceMaintenanceOwner"],
+              equals: owner,
+            },
+          },
+        }),
+      ).toBe(1);
+      await expect(
+        service.rollback(actor, {
+          botId,
+          checkpointId: target.id,
+          expectedGeneration: before.checkpointGeneration + 1,
+          expectedRevision: (await service.status(actor, botId)).revision,
+        }),
+      ).resolves.toMatchObject({ ok: true });
+      expect(await service.status(actor, botId)).toMatchObject({ blocked: false });
+      expect(
+        (await prisma.computer.findUniqueOrThrow({ where: { id: computerId } })).maintenanceId,
+      ).toBeNull();
+    } finally {
+      await other.prisma.$disconnect();
+      await other.pool.end();
     }
   });
 
@@ -583,7 +730,12 @@ postgres("checkpoint recovery with migrated PostgreSQL", () => {
       await prisma.computer.update({
         where: { id: bot.computerId! },
         data: {
-          scopeKey: computerScopeKey("dedicated", actor.spaceId, botId),
+          scopeKey: computerScopeKey({
+            mode: "dedicated",
+            spaceId: actor.spaceId,
+            botId,
+            userId: actor.userId,
+          }),
         },
       });
       const enqueue = vi.fn();
@@ -639,6 +791,7 @@ postgres("checkpoint recovery with migrated PostgreSQL", () => {
           botId,
           checkpointId: archive.checkpoints[0]!.id,
           expectedGeneration: 0,
+          expectedRevision: "unused-after-deletion",
         }),
       ).rejects.toThrow("Resource not found");
       expect(enqueue).not.toHaveBeenCalled();

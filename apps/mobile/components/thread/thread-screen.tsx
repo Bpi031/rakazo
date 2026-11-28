@@ -1,0 +1,751 @@
+import { ph } from "@lingui/core/macro";
+import { useLingui } from "@lingui/react/macro";
+import type { AgentSkillCatalogEntry } from "@rakazo/contracts";
+import {
+  buildComposerMentionOptions,
+  channelMessageSender,
+  chatUserBubbleColors,
+  isRunWaitingOnUser,
+  isRunWorking,
+  liveActivityLine,
+  liveMessageComposing,
+  newClientId,
+  newestPageCards,
+  otherAuthor,
+  displayName as safeDisplayName,
+  workingRoutineName,
+} from "@rakazo/core";
+import { cronLabels } from "@rakazo/i18n/cron";
+import { useFocusEffect, useIsFocused, useLocalSearchParams, useRouter } from "expo-router";
+import { useHeaderHeight } from "expo-router/react-navigation";
+import { useCallback, useContext, useMemo, useRef, useState } from "react";
+import { I18nManager, Platform, View } from "react-native";
+import { KeyboardAvoidingView, useKeyboardContext } from "react-native-keyboard-controller";
+import Animated, { useAnimatedStyle } from "react-native-reanimated";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useLiveStream } from "../../lib/api/roster-signals";
+import { mobileTokens } from "../../lib/appearance/appearance";
+import type { MobileArtifactTarget } from "../../lib/artifacts/artifact-open";
+import { CallKeyboardContext } from "../../lib/calls/call-keyboard-context";
+import { useCallSession } from "../../lib/calls/call-session";
+import { composerDraftScope } from "../../lib/composer/composer-draft";
+import { useComposerModel } from "../../lib/composer/composer-model";
+import { useUiLocale } from "../../lib/i18n/i18n";
+import { readableGutters } from "../../lib/layout/adaptive-layout";
+import { useContentBottomInset } from "../../lib/layout/content-bottom-inset";
+import { useSplitView } from "../../lib/layout/split-view";
+import { useThemedStyles } from "../../lib/native/native";
+import { NewestPageCards } from "../../lib/pages/page-card";
+import { useChatOnScreen } from "../../lib/pages/page-card-detail";
+import { useDeviceCalendar } from "../../lib/personal-calendar/use-device-calendar";
+import { useAppForeground } from "../../lib/platform/app-foreground";
+import { rpcQuery } from "../../lib/query/query";
+import { useScreenQuery } from "../../lib/query/screen-query";
+import { useInboxBot } from "../../lib/search/search-inbox";
+import {
+  THREAD_HEADER_PILL_BOTTOM_INSET,
+  threadColumnPadding,
+  threadHeaderClearance,
+  threadHeaderFloats,
+} from "../../lib/thread/scroll/thread-edges";
+import { useThreadKeyboard } from "../../lib/thread/scroll/thread-keyboard";
+import { threadKeyboardVerticalOffset } from "../../lib/thread/scroll/thread-keyboard-offset";
+import { useThreadListScroll } from "../../lib/thread/scroll/thread-list-scroll";
+import {
+  isOwnThreadMessage,
+  latestArrivalMessage,
+  latestThreadRowKey,
+} from "../../lib/thread/scroll/thread-scroll";
+import {
+  useIncomingShareImport,
+  useThreadAttachments,
+} from "../../lib/thread/send/thread-attachments";
+import { useThreadFeedback } from "../../lib/thread/send/thread-feedback";
+import { useThreadSend } from "../../lib/thread/send/thread-send";
+import { useThreadBots } from "../../lib/thread/thread-bots";
+import { useThreadFocus } from "../../lib/thread/thread-focus";
+import { useThreadSnapshot } from "../../lib/thread/thread-history";
+import { useThreadMentionCatalog } from "../../lib/thread/thread-mention-catalog";
+import { botDisplayName } from "../../lib/thread/thread-message-text";
+import { useThreadPaging } from "../../lib/thread/thread-paging";
+import { useThreadRead } from "../../lib/thread/thread-read";
+import { useThreadSelection } from "../../lib/thread/thread-selection";
+import { threadGroupMembers } from "../../lib/thread/thread-snapshot";
+import { useThreadSync } from "../../lib/thread/thread-sync";
+import { useThreadTranscript } from "../../lib/thread/thread-transcript";
+import {
+  useAutoSpeakReply,
+  useSpeakMessages,
+  useThreadVoiceCall,
+} from "../../lib/thread/thread-voice";
+import { liveEndRunError } from "../../lib/thread/thread-window";
+import { RunErrorSheet } from "../cards/run-error-sheet";
+import { ThreadComposer } from "../composer/thread-composer";
+import { SelectTextSheet } from "../messages/select-text-sheet";
+import { FailedSendBubble } from "./failed-send-bubble";
+import { createThreadHeaderStyles } from "./header/thread-header-styles";
+import { QuoteSheet } from "./quote-sheet";
+import { SelectionBar } from "./selection-bar";
+import { ThreadComposerDock } from "./thread-composer-dock";
+import { ThreadEdgeFade } from "./thread-edge-fade";
+import { ThreadErrorNotice, ThreadFetchErrorNotice } from "./thread-error-notice";
+import { useThreadHeader } from "./thread-header";
+import { LoadEarlierButton, ThreadWorkingFooter } from "./thread-list-controls";
+import { ThreadMessageList } from "./thread-message-list";
+import { useLatestRowActions, useThreadRows } from "./thread-rows";
+import { useThreadRunError } from "./thread-run-error";
+
+function isActiveStatus(status: string | undefined): boolean {
+  return isRunWorking(status) || isRunWaitingOnUser(status);
+}
+
+const noAgentSkills: AgentSkillCatalogEntry[] = [];
+
+/**
+ * The chat screen. Hook order is effect order: the snapshot, scroll, sync and send hooks run their
+ * effects at the positions the screen ran them before they were split out.
+ */
+export function Thread({ sessionEpoch, userId }: { sessionEpoch: number; userId: string }) {
+  useChatOnScreen();
+  const tokens = mobileTokens();
+  const styles = useThemedStyles(createThreadHeaderStyles);
+  const { t } = useLingui();
+  const locale = useUiLocale();
+  const focused = useIsFocused();
+  const foreground = useAppForeground();
+  const router = useRouter();
+  // Beside the chat list on a wide window, the chat has only the width the list leaves.
+  const { inboxShown, contentWidth: windowWidth } = useSplitView();
+  const nativeHeaderHeight = useHeaderHeight();
+  const headerHeight = threadHeaderFloats() ? nativeHeaderHeight : 0;
+  const headerClearance = threadHeaderClearance(headerHeight);
+  const insets = useSafeAreaInsets();
+  // An unfolded or tablet window keeps messages and the composer in a centred reading column.
+  const columnInsets = readableGutters(windowWidth, {
+    left: inboxShown ? 0 : insets.left,
+    right: insets.right,
+  });
+  const columnWidth = windowWidth - columnInsets.left - columnInsets.right;
+  const columnPadding = useMemo(
+    () => threadColumnPadding(columnInsets, I18nManager.isRTL),
+    [columnInsets.left, columnInsets.right],
+  );
+  const {
+    botId,
+    groupId,
+    name,
+    messageId,
+    threadId,
+    readOnly: readOnlyParam,
+  } = useLocalSearchParams<{
+    botId?: string;
+    groupId?: string;
+    name?: string;
+    messageId?: string;
+    threadId?: string;
+    readOnly?: string;
+  }>();
+  const readOnly = readOnlyParam === "1";
+  const requestedThreadId = typeof threadId === "string" && threadId ? threadId : undefined;
+  const inGroup = Boolean(groupId);
+  useLiveStream(focused);
+  const call = useCallSession();
+  const rootAvoidsKeyboard = useContext(CallKeyboardContext);
+  const contentBottomInset = useContentBottomInset();
+  const onCall = Boolean(botId) && call?.botId === botId;
+  useDeviceCalendar(botId, focused && !readOnly && !inGroup && !onCall);
+  // The composer floats over the list, which scrolls underneath; this keeps the newest message
+  // clear of it. A read-only chat has no composer.
+  const [dockHeight, setDockHeight] = useState(0);
+  const keyboard = useThreadKeyboard();
+  const avoidKeyboard = !rootAvoidsKeyboard && keyboard.avoiding;
+  const isAndroid = Platform.OS === "android";
+  const {
+    reanimated: { height: keyboardHeight },
+  } = useKeyboardContext();
+  // The Android thread runs to the edge of the window in both layouts. Use the IME
+  // inset directly so a stale measurement of the header can't put the dock under it.
+  const androidKeyboardPadding = useAnimatedStyle(() => ({
+    paddingBottom: isAndroid && avoidKeyboard ? -keyboardHeight.value : 0,
+  }));
+  const bottomInset = Math.max(dockHeight, readOnly ? contentBottomInset : 0);
+  const activeBotId = useRef(botId);
+  activeBotId.current = botId;
+  const activeGroupId = useRef(groupId);
+  activeGroupId.current = groupId;
+  const {
+    threadKey,
+    activeThreadId,
+    readVisit,
+    readVisibleTarget,
+    readBoundary,
+    setReadBoundary,
+    markedUnreadMessageId,
+    markUnreadFrom,
+    markReadIfVisible,
+  } = useThreadRead({ botId, groupId, focused, readOnly });
+  const markCaughtUp = () => setReadBoundary({ visit: readVisit.current.visit, seq: null });
+  const artifactTarget: MobileArtifactTarget | undefined = groupId
+    ? { groupId }
+    : botId
+      ? { botId }
+      : undefined;
+  // Refresh chat preferences and model availability on focus and when the app returns.
+  const uploadConfig = useScreenQuery(rpcQuery("me")).data;
+  const history = useThreadSnapshot(uploadConfig?.chatPreferences?.streamReplies);
+  const { snap, composingBots, showingSaved } = history;
+  const needsModel = uploadConfig?.needsModel;
+
+  const {
+    mentionBots,
+    mentionBotsRef,
+    mentionGroups,
+    rosterLoaded,
+    refreshMentionBots,
+    refreshMentionRoster,
+  } = useThreadBots({
+    botId,
+    groupId,
+    name,
+    activeBotId,
+  });
+  const {
+    routines: mentionRoutines,
+    connectors: mentionConnectors,
+    onMentionRequested,
+  } = useThreadMentionCatalog(
+    JSON.stringify([userId, sessionEpoch, botId, groupId, requestedThreadId]),
+    mentionBots,
+  );
+  const draftScope = useMemo(
+    () => composerDraftScope(userId, botId, groupId),
+    [userId, botId, groupId],
+  );
+  const attachments = useThreadAttachments({ botId, groupId, readOnly, uploadConfig, draftScope });
+  const echoed = useMemo(
+    () =>
+      snap && (snap.groupId ?? snap.botId) === threadKey
+        ? new Set(
+            snap.messages.flatMap((message) =>
+              message.role === "user" && message.seq !== undefined ? [message.seq] : [],
+            ),
+          )
+        : undefined,
+    [snap, threadKey],
+  );
+  const feedback = useThreadFeedback(threadKey, newClientId, echoed);
+  const { error, setError } = feedback;
+  const [selectableText, setSelectableText] = useState<string | null>(null);
+  const transcript = useThreadTranscript(snap?.messages, inGroup);
+  const { reactionView, peerTranscript, setExpandedPeerMarkers } = transcript;
+  const visibleMessages = transcript.visibleMessages;
+  const selection = useThreadSelection({ threadKey, focused, messages: visibleMessages });
+  const newestPages = useMemo(() => newestPageCards(visibleMessages), [visibleMessages]);
+  const latestMessage = latestArrivalMessage(reactionView.visibleMessages, peerTranscript.markerOf);
+  // The group's members in its order, once the chat or its group list has loaded them; the
+  // title seats the inbox's copy until then.
+  const groupMembers = threadGroupMembers(groupId, snap, mentionGroups);
+  const composerMentionTargets = useMemo(
+    () =>
+      buildComposerMentionOptions({
+        query: "",
+        includeEveryone: inGroup,
+        currentGroupId: groupId,
+        groupMemberNames: groupMembers?.map((member) => member.name),
+        bots: mentionBots.map((bot) => ({
+          id: bot.id,
+          name: bot.name,
+          color: bot.color,
+          avatarSet: bot.avatarSet,
+        })),
+        groups: mentionGroups.map((group) => ({ id: group.id, name: group.name })),
+        routines: mentionRoutines.map((routine) => ({
+          id: routine.id,
+          name: routine.name,
+          crons: routine.crons,
+          botId: routine.botId,
+          botName: routine.botName,
+        })),
+        connectors: mentionConnectors,
+        cronLabels: cronLabels(locale),
+      }),
+    [
+      groupId,
+      groupMembers,
+      inGroup,
+      locale,
+      mentionBots,
+      mentionConnectors,
+      mentionGroups,
+      mentionRoutines,
+    ],
+  );
+  const currentBot =
+    botId && rosterLoaded ? mentionBots.find((bot) => bot.id === botId) : undefined;
+  // Until the chat's own roster arrives, the bot as the inbox last loaded it.
+  const inboxBot = useInboxBot(botId);
+  const composerModel = useComposerModel(inGroup ? undefined : botId, uploadConfig);
+  const titleBot = currentBot ?? inboxBot;
+  // Without a name yet (a notification can leave it out), the title shows a placeholder.
+  const titleName = currentBot?.name ?? name ?? inboxBot?.name;
+  const displayName = safeDisplayName(titleName, inGroup ? t`Group` : t`Bot`);
+  const composerPrompt = displayName ? t`Message ${ph({ name: displayName })}` : t`Message…`;
+  const notificationThreadId = snap?.threadId ?? requestedThreadId ?? currentBot?.threadId;
+  activeThreadId.current = notificationThreadId;
+  const currentBotStatus =
+    snap && (!showingSaved || error)
+      ? snap.run?.status
+      : (titleBot?.threadStatus ?? snap?.run?.status);
+  // Only reply text being written replaces the footer; earlier sentences above a tool call don't.
+  const hasLiveProgress = visibleMessages.some(
+    (message) => message.id.startsWith("progress:") && liveMessageComposing(message.blocks),
+  );
+  const activityLine = liveActivityLine(snap?.messages ?? []);
+  const workingRoutine = workingRoutineName(snap?.activeRuns ?? (snap?.run ? [snap.run] : []));
+  const userBubble = useMemo(
+    () => (!inGroup && titleBot ? chatUserBubbleColors(titleBot.color, titleBot.id) : undefined),
+    [inGroup, titleBot?.color, titleBot?.id],
+  );
+  const activeGroupBots = useMemo(() => {
+    if (!inGroup) return [];
+    const seen = new Set<string>();
+    const active = snap?.activeRuns ?? (snap?.run ? [snap.run] : []);
+    return active.flatMap((run) => {
+      if (!run.botId || seen.has(run.botId) || !isActiveStatus(run.status)) return [];
+      const member = snap?.members?.find((candidate) => candidate.botId === run.botId);
+      if (!member) return [];
+      seen.add(run.botId);
+      return [{ ...member, status: run.status }];
+    });
+  }, [inGroup, snap?.activeRuns, snap?.members, snap?.run]);
+  // A bot waiting on the user (an ask card, a computer takeover) can still be stopped, but its
+  // card is the state: no typing dots under it.
+  const workingGroupBots = activeGroupBots.filter((bot) => isRunWorking(bot.status));
+
+  const speakFinishedReplyRef = useAutoSpeakReply({
+    botId,
+    inGroup,
+    currentBot,
+    snap,
+    showingSaved,
+  });
+
+  const agentSkills: AgentSkillCatalogEntry[] =
+    useScreenQuery(rpcQuery("agentSkills/list"), { onForeground: false }).data ?? noAgentSkills;
+
+  const scroll = useThreadListScroll({
+    history,
+    threadKey,
+    botId,
+    groupId,
+    anchor: headerClearance.anchor,
+    visibleBottomInset: bottomInset,
+    latestRowKey: latestThreadRowKey(
+      latestMessage?.id ?? null,
+      feedback.unsentSends.map((attempt) => attempt.clientNonce),
+      isOwnThreadMessage(latestMessage, userId),
+    ),
+  });
+
+  useThreadHeader({
+    botId,
+    groupId,
+    inGroup,
+    readOnly,
+    displayName,
+    titleBot,
+    titleName,
+    groupMembers,
+    currentBotStatus,
+    composingBots,
+    onCleared: history.clear,
+  });
+
+  useThreadFocus({
+    botId,
+    readOnly,
+    notificationThreadId,
+    refreshMentionBots: refreshMentionRoster,
+    markReadIfVisible,
+    speakFinishedReplyRef,
+  });
+
+  const { isCurrentTarget, refresh, applyMessageJump, showLatest } = useThreadSync({
+    history,
+    scroll,
+    botId,
+    groupId,
+    messageId,
+    readOnly,
+    foreground,
+    focused,
+    sessionEpoch,
+    userId,
+    activeBotId,
+    activeGroupId,
+    readVisibleTarget,
+    setExpandedPeerMarkers,
+    setError,
+    onRefreshed: feedback.refreshed,
+    refreshMentionBots,
+    markReadIfVisible,
+  });
+
+  const paging = useThreadPaging({
+    history,
+    scroll,
+    botId,
+    groupId,
+    visibleMessages,
+    anchor: headerClearance.anchor,
+    setError,
+    showLatest,
+  });
+
+  const composer = useThreadSend({
+    botId,
+    groupId,
+    readOnly,
+    threadKey,
+    history,
+    scroll,
+    feedback,
+    attachments,
+    mentionBotsRef,
+    activeBotId,
+    activeGroupId,
+    isCurrentTarget,
+    refresh,
+    showLatest,
+    markCaughtUp,
+    // The voice hook below owns bot switching; a send only switches after this render.
+    openBotChat: (target, ring) => openBotChat(target, ring),
+  });
+  const { replyTarget, setReplyTarget, replyQuote, setReplyQuote, quoteTarget, setQuoteTarget } =
+    composer;
+  // A reply tapped on one of this chat's pages, full screen, lands in the composer unsent.
+  useFocusEffect(composer.receivePageReply);
+  useIncomingShareImport({
+    attachments,
+    composerRef: composer.composerRef,
+    focused,
+    readOnly,
+    threadKey,
+    uploadConfig,
+  });
+
+  const openBot = useCallback(
+    (id: string, botName: string) =>
+      router.push({ pathname: "/thread", params: { botId: id, name: botName } }),
+    [router],
+  );
+
+  const openComputer = useCallback(
+    (id: string, botName: string) =>
+      router.push({ pathname: "/computer", params: { botId: id, name: botName } }),
+    [router],
+  );
+
+  const speak = useSpeakMessages({
+    visibleMessages,
+    botId,
+    members: snap?.members,
+    displayName,
+    mentionBots,
+  });
+
+  const { startVoiceCall, openBotChat } = useThreadVoiceCall({
+    botId,
+    readOnly,
+    displayName,
+    mentionBots,
+    mentionBotsRef,
+    activeBotId,
+  });
+
+  const { runError, normalizedRunError, runErrorAction, retry, detailsOpen, setDetailsOpen } =
+    useThreadRunError(snap?.run, { botId, groupId, userId, isCurrentTarget });
+
+  // Event actions read the latest committed screen state without invalidating settled rows.
+  const rowActions = useLatestRowActions({
+    helperToggle: scroll.helperToggle,
+    reply: (message) => {
+      setReplyTarget(message);
+      setReplyQuote(null);
+    },
+    quote: setQuoteTarget,
+    select: setSelectableText,
+    startSelection: selection.start,
+    toggleSelection: selection.toggle,
+    speak,
+    react: composer.react,
+    markUnread: markUnreadFrom,
+    answer: composer.answer,
+    openBot,
+    openComputer,
+    // A chat attachment opens the version it was sent with, not the newest.
+    previewFile: (artifactId) =>
+      router.push({ pathname: "/artifact", params: { artifactId, exact: "1" } }),
+    previewImage: (target, gallery) =>
+      router.push({
+        pathname: "/image",
+        params: {
+          artifactId: target.artifactId,
+          name: target.name,
+          mimeType: target.mimeType,
+          ...(groupId ? { groupId } : { botId }),
+          ...(gallery
+            ? {
+                gallery: JSON.stringify(
+                  gallery.map(({ artifactId: id, name, mimeType }) => ({ id, name, mimeType })),
+                ),
+              }
+            : {}),
+        },
+      }),
+    jump: (messageId) => {
+      void applyMessageJump({
+        botId,
+        groupId,
+        messageId: reactionView.foldedInto.get(messageId) ?? messageId,
+      }).catch(() => undefined);
+    },
+    dismissChoice: transcript.dismissChoice,
+    openPeerChat: (peer) => {
+      if (!botId) return;
+      router.push({
+        pathname: "/peer-chat",
+        params: {
+          botId,
+          botName: displayName,
+          botColor: currentBot?.color,
+          peerBotColor: mentionBots.find((bot) => bot.id === peer.peerBotId)?.color,
+          ...peer,
+        },
+      });
+    },
+    layout: scroll.layoutJumpRow,
+  });
+
+  const { liveItems, renderMessageRow, renderItem } = useThreadRows({
+    snap,
+    userId,
+    transcript,
+    rowActions,
+    botId,
+    groupId,
+    inGroup,
+    readOnly,
+    onCall,
+    displayName,
+    mentionBots,
+    currentBot,
+    currentBotStatus,
+    userBubble,
+    columnWidth,
+    readSeq: readBoundary?.visit === readVisit.current.visit ? readBoundary.seq : null,
+    markedUnreadMessageId,
+    highlightedMessageId: scroll.highlightedMessageId,
+    selectedIds: selection.ids,
+  });
+
+  const workingBots =
+    !inGroup && titleBot && isRunWorking(currentBotStatus) && !hasLiveProgress
+      ? [
+          {
+            id: titleBot.id,
+            name: titleBot.name,
+            color: titleBot.color,
+            avatarSet: titleBot.avatarSet,
+            status: currentBotStatus,
+          },
+        ]
+      : inGroup
+        ? workingGroupBots.map((bot) => ({
+            id: bot.botId,
+            name: bot.name,
+            color: bot.color,
+            avatarSet: bot.avatarSet,
+            status: bot.status,
+          }))
+        : [];
+  const workingFooter = (
+    <ThreadWorkingFooter
+      bots={workingBots.map((bot) => ({
+        ...bot,
+        composing: composingBots.split(",").includes(bot.id),
+      }))}
+      atBottom={!scroll.state.detached}
+      label={
+        activityLine ??
+        (workingRoutine ? t`Running ${ph({ name: workingRoutine })}…` : t`Thinking…`)
+      }
+    />
+  );
+
+  const loadEarlierControl =
+    snap?.olderCursor != null ? (
+      <LoadEarlierButton
+        loading={paging.loadingOlder}
+        onPress={() => void paging.loadOlderMessages()}
+      />
+    ) : null;
+
+  const failedSendBubbles = feedback.unsentSends.map((attempt) => (
+    <FailedSendBubble
+      key={attempt.clientNonce}
+      attempt={attempt}
+      needsModel={needsModel}
+      onRetry={() => composer.retry(attempt)}
+      onDelete={() => feedback.discard(attempt)}
+      userBubble={userBubble}
+    />
+  ));
+
+  // Fetch failures stay visible at either paging edge; provider recovery belongs to the live end.
+  const visibleRunError = liveEndRunError(normalizedRunError, scroll.pinnedNewerCursor);
+  const errorNotice = (
+    <ThreadErrorNotice
+      error={null}
+      summary={visibleRunError?.summary ?? null}
+      resetAt={visibleRunError?.resetAt}
+      onDetails={() => setDetailsOpen(true)}
+      action={visibleRunError ? runErrorAction : null}
+      retry={visibleRunError && !readOnly ? retry : null}
+    />
+  );
+
+  return (
+    <Animated.View style={[{ flex: 1 }, androidKeyboardPadding]}>
+      <KeyboardAvoidingView
+        enabled={!isAndroid && avoidKeyboard}
+        // Padding always settles to zero. "height" stays shrunk when the keyboard hides without
+        // move frames, such as when a pushed screen closes with its own keyboard up.
+        behavior="padding"
+        keyboardVerticalOffset={threadKeyboardVerticalOffset({
+          os: Platform.OS,
+          floatingHeader: threadHeaderFloats(),
+          nativeHeaderHeight,
+        })}
+        style={{ flex: 1, backgroundColor: tokens.background }}
+      >
+        {/* The keyboard's padding shrinks this, so the floating composer rides above it. */}
+        <View style={{ flex: 1 }}>
+          <NewestPageCards.Provider value={newestPages}>
+            <ThreadMessageList
+              scroll={scroll}
+              pinnedListHandlers={paging.pinnedListHandlers}
+              threadKey={threadKey}
+              headerClearance={headerClearance}
+              bottomInset={bottomInset}
+              columnPadding={columnPadding}
+              visibleMessages={visibleMessages}
+              liveItems={liveItems}
+              renderItem={renderItem}
+              renderMessageRow={renderMessageRow}
+              loadEarlierControl={loadEarlierControl}
+              failedSendBubbles={failedSendBubbles}
+              errorNotice={errorNotice}
+              workingFooter={workingFooter}
+              loadingNewer={paging.loadingNewer}
+              showLatest={showLatest}
+            />
+          </NewestPageCards.Provider>
+          {headerHeight > 0 ? (
+            // Ends halfway down the floating header's 44pt pills.
+            <ThreadEdgeFade
+              edge="top"
+              style={{ height: headerHeight - THREAD_HEADER_PILL_BOTTOM_INSET - 22 }}
+            />
+          ) : null}
+          {/* Shrinks (the suggestion lists scroll) so the input and Send stay above the keyboard. */}
+          <ThreadComposerDock
+            hidden={readOnly}
+            keyboardProgress={keyboard.progress}
+            columnPadding={columnPadding}
+            notice={<ThreadFetchErrorNotice error={error} showingSaved={showingSaved} />}
+            onHeight={setDockHeight}
+            replyTarget={replyTarget}
+            replyAuthor={
+              replyTarget?.role === "user"
+                ? (otherAuthor(replyTarget.author, userId)?.name ??
+                  channelMessageSender(replyTarget.blocks) ??
+                  t`You`)
+                : (botDisplayName(snap?.members, mentionBots, replyTarget?.botId) ??
+                  displayName ??
+                  t`Bot`)
+            }
+            replyQuote={replyQuote}
+            threadTarget={artifactTarget}
+            onDismissReply={() => {
+              setReplyTarget(null);
+              setReplyQuote(null);
+            }}
+            attachmentNotice={attachments.attachmentNotice}
+            attachments={attachments.activePendingAttachments}
+            selectionBar={
+              selection.ids ? (
+                <SelectionBar
+                  count={selection.count}
+                  onCancel={selection.cancel}
+                  onCopy={() => void selection.copy()}
+                />
+              ) : undefined
+            }
+            onRemoveAttachment={(id) =>
+              attachments.setPendingAttachments((current) =>
+                current.filter((item) => item.id !== id),
+              )
+            }
+          >
+            <ThreadComposer
+              key={threadKey}
+              ref={composer.composerRef}
+              draftScope={draftScope}
+              agentSkills={agentSkills}
+              composerMentionTargets={composerMentionTargets}
+              onMentionRequested={onMentionRequested}
+              composerPrompt={composerPrompt}
+              replyTargetId={replyTarget?.id}
+              replyQuote={replyQuote}
+              attachmentIds={attachments.activePendingAttachments.map(
+                (attachment) => attachment.id,
+              )}
+              botId={botId}
+              onCall={onCall}
+              sending={attachments.shareImporting}
+              styles={styles}
+              attachActions={attachments.attachActions}
+              attachFrom={attachments.attachFrom}
+              send={composer.send}
+              startVoiceCall={startVoiceCall}
+              onSlashAction={composer.runSlashAction}
+              onEmptied={composer.composerEmptied}
+              model={composerModel}
+            />
+          </ThreadComposerDock>
+        </View>
+        {selectableText !== null ? (
+          <SelectTextSheet text={selectableText} onClose={() => setSelectableText(null)} />
+        ) : null}
+        <RunErrorSheet
+          details={detailsOpen ? runError : null}
+          summary={normalizedRunError?.summary}
+          onClose={() => setDetailsOpen(false)}
+          action={runErrorAction}
+        />
+        {quoteTarget ? (
+          <QuoteSheet
+            message={quoteTarget}
+            onCancel={() => setQuoteTarget(null)}
+            onQuote={(excerpt) => {
+              setReplyTarget(quoteTarget);
+              setReplyQuote(excerpt);
+              setQuoteTarget(null);
+            }}
+          />
+        ) : null}
+      </KeyboardAvoidingView>
+    </Animated.View>
+  );
+}

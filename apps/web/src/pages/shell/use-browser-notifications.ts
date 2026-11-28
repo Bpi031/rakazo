@@ -1,0 +1,263 @@
+import type { Bot, ChatAlert, ProductEvent } from "@rakazo/contracts";
+import { chatAlertNeedsAttention } from "@rakazo/contracts";
+import { chatSnoozed } from "@rakazo/core";
+import type { RefObject } from "react";
+import { useCallback, useEffect, useRef } from "react";
+import { computerUpdates } from "../../lib/computers/computer-updates";
+import {
+  browserNotificationTag,
+  deliverBrowserNotification as deliverNativeBrowserNotification,
+  shouldNotifyBrowser,
+} from "../../lib/platform/browser-notifications";
+import { desktopBridge } from "../../lib/platform/desktop";
+import { notificationIcon, prepareNotificationIcons } from "../../lib/platform/notification-icon";
+import { followStream } from "../../lib/query/follow-stream";
+import type { RpcClient } from "../../lib/query/rpc";
+import { isReadChangeKind, spaceChanged } from "../../lib/query/space-changes";
+import { organizationsChanged } from "../../lib/spaces/organizations";
+
+type PendingBrowserNotification = {
+  event: Pick<ProductEvent, "id" | "type" | "threadId" | "botId" | "payload">;
+  botId: string;
+  botName: string;
+  groupId: string | undefined;
+};
+
+type SnoozableChat = { id: string; snoozedUntil?: string | null };
+
+type ChatAlertOptions = {
+  rpc: Pick<RpcClient, "notifications">;
+  activeBotId: RefObject<string | undefined>;
+  activeGroupId: RefObject<string | undefined>;
+  openChat: (chat: Pick<ChatAlert, "botId" | "groupId">) => void;
+  /** The signed-in person, whose own messages never notify them. */
+  meId: string | undefined;
+  notificationSounds?: boolean;
+  /** Current groups, so a snooze that lands after a reply was queued is still honored. */
+  groupsRef?: RefObject<readonly SnoozableChat[]>;
+  /** The server's roster signals: one when the stream opens, then one per change. */
+  roster?: RosterSignals;
+};
+
+export type RosterSignals = { changed: () => void };
+
+/** A question still arrives while a chat is snoozed; an ordinary reply waits. */
+function messageAsks(event: { type: string; payload: { blocks?: unknown } }): boolean {
+  if (event.type !== "thread.message.created") return false;
+  const blocks = event.payload.blocks;
+  return (
+    Array.isArray(blocks) &&
+    blocks.some(
+      (block) => !!block && typeof block === "object" && "kind" in block && block.kind === "ask",
+    )
+  );
+}
+
+function snoozedOrdinaryReply(
+  event: { type: string; payload: { blocks?: unknown } },
+  chat: SnoozableChat | undefined,
+): boolean {
+  return (
+    event.type === "thread.message.created" &&
+    !messageAsks(event) &&
+    !!chat &&
+    chatSnoozed(chat, Date.now())
+  );
+}
+
+// A click must not reach a shell that has gone, so the shell closes what it showed.
+function openChatOnClick(
+  notification: Notification,
+  shown: Set<Notification>,
+  openChat: () => void,
+) {
+  shown.add(notification);
+  notification.onclose = () => shown.delete(notification);
+  notification.onclick = () => {
+    window.focus();
+    openChat();
+    notification.close();
+  };
+}
+
+/**
+ * Finished-run notifications for the open chat, held until the browser grants permission, and
+ * the server's alerts for every other chat.
+ */
+export function useBrowserNotifications(
+  bots: Bot[],
+  botsRef: RefObject<Bot[]>,
+  {
+    rpc,
+    activeBotId,
+    activeGroupId,
+    openChat,
+    meId,
+    groupsRef,
+    roster,
+    notificationSounds,
+  }: ChatAlertOptions,
+) {
+  const meIdRef = useRef(meId);
+  meIdRef.current = meId;
+  const soundEnabled = useRef(false);
+  soundEnabled.current = notificationSounds === true;
+  useEffect(() => prepareNotificationIcons(bots), [bots]);
+  const openChatRef = useRef(openChat);
+  openChatRef.current = openChat;
+  const rosterRef = useRef(roster);
+  rosterRef.current = roster;
+  const shown = useRef(new Set<Notification>());
+  useEffect(() => {
+    const show = (alert: ChatAlert) => {
+      if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+      const isOpen = alert.groupId
+        ? alert.groupId === activeGroupId.current
+        : !activeGroupId.current && alert.botId === activeBotId.current;
+      const desktop = Boolean(desktopBridge());
+      const playSound = desktop && soundEnabled.current && chatAlertNeedsAttention(alert.kind);
+      // Leave the open chat to its thread stream, except for takeovers and opted-in sounds
+      // while the window is in the background. Only the server alert can request a sound.
+      if (
+        isOpen &&
+        (!(alert.kind === "takeover" || playSound) ||
+          (document.visibilityState === "visible" && document.hasFocus()))
+      )
+        return;
+      // Reuse the thread stream's tag where both paths show this alert.
+      const tag =
+        isOpen && playSound && alert.kind === "failure"
+          ? alert.threadId
+          : `${alert.threadId}:${isOpen && playSound && alert.kind === "help" ? "ask" : alert.kind}`;
+      try {
+        const bot = botsRef.current.find((candidate) => candidate.id === alert.botId);
+        const icon = bot ? notificationIcon(bot) : undefined;
+        const notification = new Notification(alert.title, {
+          body: alert.body,
+          ...(icon ? { icon } : {}),
+          // Per chat and kind: a repeat replaces its copy, but a question after a reply still pops up.
+          tag,
+          ...(desktop ? { silent: !playSound } : {}),
+        });
+        openChatOnClick(notification, shown.current, () => openChatRef.current(alert));
+      } catch {
+        // Some browsers only allow notifications from a service worker.
+      }
+    };
+    const stop = followStream(
+      (signal) => rpc.notifications.subscribe(undefined, { signal }),
+      (frame) => {
+        if (frame.type === "roster") {
+          rosterRef.current?.changed();
+          void spaceChanged("capabilities");
+        } else if (frame.type === "organizations") void organizationsChanged();
+        else if (frame.type === "computerUpdates") computerUpdates.signalled();
+        else if (isReadChangeKind(frame.type)) void spaceChanged(frame.type);
+        else if (frame.alert) show(frame.alert);
+      },
+    );
+    return () => {
+      stop();
+      for (const notification of shown.current) notification.close();
+    };
+  }, [rpc]);
+  const notifiedBrowserEvents = useRef(new Set<string>());
+  const pendingBrowserNotifications = useRef(new Map<string, PendingBrowserNotification>());
+  // A permission answer can arrive after the shell has gone; its held notifications go with it.
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      pendingBrowserNotifications.current.clear();
+    };
+  }, []);
+  const chatFor = (pending: PendingBrowserNotification): SnoozableChat | undefined =>
+    pending.groupId
+      ? groupsRef?.current.find((group) => group.id === pending.groupId)
+      : botsRef.current.find((bot) => bot.id === pending.botId);
+  const deliverBrowserNotification = useCallback((pending: PendingBrowserNotification): boolean => {
+    const currentBot = botsRef.current.find((bot) => bot.id === pending.botId);
+    if (!currentBot || typeof Notification === "undefined") return true;
+    // A reply queued while permission was pending can be snoozed before it is shown.
+    if (snoozedOrdinaryReply(pending.event, chatFor(pending))) return true;
+    const result = deliverNativeBrowserNotification(
+      pending.event,
+      currentBot.name || pending.botName,
+      {
+        enabled: pending.groupId !== undefined || currentBot.notifyOnFinish,
+        pageVisible: document.visibilityState === "visible",
+        windowFocused: document.hasFocus(),
+        permission: Notification.permission,
+        notifiedEventIds: notifiedBrowserEvents.current,
+        show: (title, body, tag) => {
+          const icon = notificationIcon(currentBot);
+          const notification = new Notification(title, {
+            body,
+            tag,
+            ...(icon ? { icon } : {}),
+            ...(desktopBridge() ? { silent: true } : {}),
+          });
+          openChatOnClick(notification, shown.current, () =>
+            openChatRef.current({ botId: pending.botId, groupId: pending.groupId }),
+          );
+        },
+      },
+    );
+    return result !== "pending";
+  }, []);
+  const flushPendingBrowserNotifications = useCallback(() => {
+    if (!mounted.current) return;
+    for (const [threadId, pending] of pendingBrowserNotifications.current) {
+      if (deliverBrowserNotification(pending)) {
+        pendingBrowserNotifications.current.delete(threadId);
+      }
+    }
+  }, [deliverBrowserNotification]);
+  const notifyBrowserForEvent = useCallback(
+    (
+      event: Pick<ProductEvent, "id" | "type" | "threadId" | "seq" | "botId" | "payload">,
+      subscribedThreadId: string | undefined,
+      initialCursor: number,
+      streamReady: boolean,
+      botName: string,
+      enabled: boolean,
+      groupId: string | undefined,
+    ) => {
+      const botId = event.botId;
+      if (typeof botId !== "string") return;
+      const eligible = shouldNotifyBrowser(event, {
+        subscribedThreadId: subscribedThreadId ?? "",
+        initialCursor,
+        streamReady,
+        pageVisible: document.visibilityState === "visible",
+        windowFocused: document.hasFocus(),
+        permission: "granted",
+        notifiedEventIds: notifiedBrowserEvents.current,
+        meId: meIdRef.current,
+      });
+      if (!eligible || !enabled) return;
+      const pending = {
+        event,
+        botId,
+        botName,
+        groupId,
+      } satisfies PendingBrowserNotification;
+      // Ordinary replies wait out a snooze. A question still comes through, and a reply that was
+      // queued before the snooze is checked again when it is actually shown.
+      if (snoozedOrdinaryReply(event, chatFor(pending))) return;
+      if (typeof Notification === "undefined" || Notification.permission === "denied") return;
+      if (Notification.permission === "default") {
+        pendingBrowserNotifications.current.set(browserNotificationTag(event), pending);
+        return;
+      }
+      if (deliverBrowserNotification(pending)) {
+        pendingBrowserNotifications.current.delete(browserNotificationTag(event));
+      } else {
+        pendingBrowserNotifications.current.set(browserNotificationTag(event), pending);
+      }
+    },
+    [deliverBrowserNotification],
+  );
+  return { notifyBrowserForEvent, flushPendingBrowserNotifications };
+}

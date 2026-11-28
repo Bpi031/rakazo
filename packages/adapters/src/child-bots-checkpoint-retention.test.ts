@@ -7,7 +7,7 @@ import type {
 } from "@rakazo/adapter-kit";
 import type { PrismaClient } from "@rakazo/db";
 import { expect, it, vi } from "vitest";
-import { destroyBot } from "./child-bots.js";
+import { destroyBot } from "./bots/child-bots.js";
 
 it("retains checkpoint artifact families and bytes while deleting unrelated personal artifacts", async () => {
   const context: AdapterContext = {
@@ -41,7 +41,9 @@ it("retains checkpoint artifact families and bytes while deleting unrelated pers
     ["botId", "spaceId", "userId", "groupId"].every(
       (key) => !(key in where) || row[key as keyof typeof row] === where[key],
     );
-  const query = vi.fn().mockResolvedValue([]);
+  const query = vi.fn(async (sql: TemplateStringsArray) =>
+    sql[0]?.includes("FROM bots") ? [{ id: "bot", webhookSecretId: null }] : [],
+  );
   const findCheckpoints = vi.fn().mockResolvedValue(snapshots);
   const findArtifacts = vi.fn(async ({ where }) => rows.filter((row) => inScope(row, where)));
   const updateArtifacts = vi.fn(async ({ where, data }) => {
@@ -67,6 +69,9 @@ it("retains checkpoint artifact families and bytes while deleting unrelated pers
     computerExecutionLease: { deleteMany: vi.fn() },
     computer: { updateMany: vi.fn() },
     botDeletion: { create: vi.fn() },
+    page: { updateMany: vi.fn(), deleteMany: vi.fn() },
+    pageImage: { findMany: vi.fn(async () => []) },
+    secret: { findMany: vi.fn(async () => []), deleteMany: vi.fn() },
     bot: {
       delete: vi.fn(async () => {
         for (const row of rows) if (row.botId === "bot") row.botId = null;

@@ -1,0 +1,581 @@
+import { useLingui } from "@lingui/react/macro";
+import { markdownCodeBlocks } from "@rakazo/chat-ui/native";
+import type {
+  BotAvatarSet,
+  LoginFieldInput,
+  MessageBlock,
+  MessageReaction,
+} from "@rakazo/contracts";
+import { canReactToThreadMessage, MESSAGE_REACTIONS } from "@rakazo/contracts";
+import type { ChildBotBlock, PeerExchange } from "@rakazo/core";
+import {
+  canMarkMessageUnread,
+  copyableMessageText,
+  isFeedbackReceiptMessage,
+  isPeerReceiptBlocks,
+  liveMessageComposing,
+  selectableMessageText,
+  speechFromBlocks,
+} from "@rakazo/core";
+import * as Clipboard from "expo-clipboard";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { GestureResponderEvent, LayoutChangeEvent } from "react-native";
+import { Platform, Pressable, View } from "react-native";
+import Animated, { useReducedMotion, ZoomIn } from "react-native-reanimated";
+import type { MobileBot, MobileMessage, MobileSnapshot } from "../../lib/api/mobile-types";
+import { blockText } from "../../lib/api/mobile-types";
+import type { ImageArtifactPreviewTarget } from "../../lib/artifacts/artifact-gallery";
+import type { MobileArtifactTarget } from "../../lib/artifacts/artifact-open";
+import { useUiLocale } from "../../lib/i18n/i18n";
+import { canDoubleTapReact } from "../../lib/messages/double-tap";
+import { presentMessageActionSheet } from "../../lib/messages/message-action-sheet";
+import {
+  buildMessageContextMenu,
+  messageMenuReaction,
+} from "../../lib/messages/message-context-menu";
+import { hasQuotableText, messageHasInlineControls } from "../../lib/messages/message-presentation";
+import { messageRowLayout } from "../../lib/messages/message-row-layout";
+import { canSelectMessage } from "../../lib/messages/message-selection";
+import { selectableTextFromMarkdown } from "../../lib/messages/selectable-text";
+import type { UserBubble } from "../../lib/messages/user-bubble";
+import { useMobileTokens, useResolvedAppearance } from "../../lib/native/native";
+import { previewMessageText } from "../../lib/thread/thread-message-text";
+import { ThreadReadOnlyContext } from "../../lib/thread/thread-read-only";
+import { BotAvatar } from "../bots/bot-avatar";
+import { presentMessageMenu } from "../messages/message-action-menu";
+import { MessageContextMenu } from "../messages/message-context-menu";
+import { NativeSymbol } from "../native/native-symbol";
+import type { MessageActionProps } from "./message-bubble";
+import { MessageBubble } from "./message-bubble";
+import { ReplyLine } from "./reply-line";
+import { TimeSeparator } from "./time-separator";
+import { UnreadDivider } from "./unread-divider";
+
+export type MessageRowActions = {
+  helperToggle: (
+    measure: (done: (y: number, cardBottom: number) => void) => void,
+    toggle: () => void,
+    opening: boolean,
+  ) => void;
+  reply: (message: MobileMessage) => void;
+  quote: (message: MobileMessage) => void;
+  select: (text: string) => void;
+  startSelection: (message: MobileMessage) => void;
+  toggleSelection: (message: MobileMessage) => void;
+  speak: (message: MobileMessage) => void;
+  react: (message: MobileMessage, reaction: MessageReaction) => Promise<boolean>;
+  markUnread: (message: MobileMessage) => void;
+  answer: (
+    message: MobileMessage,
+    answer: string,
+    fields?: readonly LoginFieldInput[],
+    dismiss?: boolean,
+    remember?: false,
+  ) => Promise<void>;
+  openBot: (id: string, name: string) => void;
+  openComputer: (id: string, name: string) => void;
+  previewFile: (artifactId: string) => void;
+  previewImage: (
+    target: ImageArtifactPreviewTarget,
+    gallery?: readonly ImageArtifactPreviewTarget[],
+  ) => void;
+  jump: (messageId: string) => void;
+  dismissChoice: (messageId: string, question: string) => void;
+  openPeerChat: (peer: { peerBotId: string; peerBotName: string }) => void;
+  layout: (messageId: string, y: number, index: number) => void;
+};
+
+type MessageRowProps = {
+  message: MobileMessage;
+  actions: MessageRowActions;
+  botId?: string;
+  bubbleBotId: string;
+  groupId?: string;
+  botName?: string;
+  hideSenderLabel?: boolean;
+  showBotSenderName: boolean;
+  bots: MobileBot[];
+  members?: MobileSnapshot["members"];
+  readOnly: boolean;
+  onCall: boolean;
+  canAnswer: boolean;
+  separateAnswers?: ReadonlySet<MessageBlock>;
+  canDismiss: boolean;
+  highlighted: boolean;
+  separator: boolean;
+  headerAdjacent: boolean;
+  unreadDivider: boolean;
+  markedUnread: boolean;
+  /** Someone else in a shared space wrote this message. */
+  authorName?: string;
+  replyAuthor: string;
+  replyFallbackText?: string;
+  waitingForUser: boolean;
+  messageReactions?: ReadonlyMap<MessageReaction, number>;
+  mentions?: readonly ChildBotBlock[];
+  /** The adjacent receipts represented by this peer line. */
+  peerExchange?: PeerExchange;
+  activityBotId?: string;
+  activityColor?: string;
+  activityAvatarSet?: BotAvatarSet;
+  activityStatus?: MobileBot["status"];
+  userBubble?: UserBubble;
+  inGroup: boolean;
+  columnWidth: number;
+  enableJump: boolean;
+  index: number;
+  /** Messages are being chosen to copy together. */
+  selecting: boolean;
+  selected: boolean;
+};
+
+export const MessageRow = memo(function MessageRow({
+  message,
+  actions,
+  botId,
+  bubbleBotId,
+  groupId,
+  botName,
+  hideSenderLabel,
+  showBotSenderName,
+  bots,
+  members,
+  readOnly,
+  onCall,
+  canAnswer,
+  separateAnswers,
+  canDismiss,
+  highlighted,
+  separator,
+  headerAdjacent,
+  unreadDivider,
+  markedUnread,
+  authorName,
+  replyAuthor,
+  replyFallbackText,
+  messageReactions,
+  mentions,
+  waitingForUser,
+  peerExchange,
+  activityBotId,
+  activityColor,
+  activityAvatarSet,
+  activityStatus,
+  userBubble,
+  inGroup,
+  columnWidth,
+  enableJump,
+  index,
+  selecting,
+  selected,
+}: MessageRowProps) {
+  const tokens = useMobileTokens();
+  const colorScheme = useResolvedAppearance();
+  const { t } = useLingui();
+  const locale = useUiLocale();
+  const artifactTarget = useMemo<MobileArtifactTarget | undefined>(
+    () => (groupId ? { groupId } : botId ? { botId } : undefined),
+    [botId, groupId],
+  );
+  const onChoiceDismissed = useCallback(
+    (question: string) => actions.dismissChoice(message.id, question),
+    [actions, message.id],
+  );
+  const onLayout = useMemo(
+    () =>
+      enableJump
+        ? (event: LayoutChangeEvent) =>
+            actions.layout(message.id, event.nativeEvent.layout.y, index)
+        : undefined,
+    [actions, message.id, enableJump, index],
+  );
+  const [optimisticLike, setOptimisticLike] = useState(false);
+  const likeInFlight = useRef(false);
+  const reducedMotion = useReducedMotion();
+  const hasLike = messageReactions?.has("👍") ?? false;
+  useEffect(() => {
+    if (hasLike) setOptimisticLike(false);
+  }, [hasLike]);
+  const displayedReactions = new Map(messageReactions);
+  if (optimisticLike && !hasLike) displayedReactions.set("👍", 1);
+  const { actionProps, menu, onMenuAction, likeMessage } = useMemo<{
+    actionProps: MessageActionProps;
+    menu: ReturnType<typeof buildMessageContextMenu>;
+    onMenuAction: (id: string) => void;
+    likeMessage?: () => void;
+  }>(() => {
+    const messageText = selectableMessageText(message);
+    const includeQuote =
+      !readOnly &&
+      !message.id.startsWith("progress:") &&
+      hasQuotableText(message.role, message.blocks);
+    const includeReact = !readOnly && canReactToThreadMessage(message);
+    // The call already reads replies aloud; a second voice would talk over it.
+    const includeSpeak =
+      message.role === "bot" && !onCall && Boolean(speechFromBlocks(message.blocks));
+    const includeSelect = messageText.trim().length > 0;
+    const includeSelectMessages = canSelectMessage(message);
+    // Any sent message can be marked unread; the next open starts New at the first reply from it.
+    const includeUnread = !readOnly && !markedUnread && canMarkMessageUnread(message);
+    const reply = () => actions.reply(message);
+    const quote = () => actions.quote(message);
+    const speakMessage = () => actions.speak(message);
+    const select = () =>
+      actions.select(
+        message.role === "user" || isFeedbackReceiptMessage(message.blocks)
+          ? messageText
+          : selectableTextFromMarkdown(messageText),
+      );
+    const selectMessages = () => actions.startSelection(message);
+    const copy = () => {
+      const text = copyableMessageText(message);
+      if (text) void Clipboard.setStringAsync(text).catch(() => undefined);
+    };
+    const react = (reaction: MessageReaction) => actions.react(message, reaction);
+    const markUnread = () => actions.markUnread(message);
+    // VoiceOver reads the bubble as one element and can't reach a code block's copy button.
+    const codeBlocks = message.role === "user" ? [] : markdownCodeBlocks(blockText(message));
+    const copyCode = () => {
+      if (codeBlocks[0]) void Clipboard.setStringAsync(codeBlocks[0]).catch(() => undefined);
+    };
+    const menuActions = [
+      ...(!readOnly ? [{ name: "reply", text: t`Reply`, onPress: reply }] : []),
+      ...(includeUnread ? [{ name: "unread", text: t`Mark as unread`, onPress: markUnread }] : []),
+      ...(includeQuote ? [{ name: "quote", text: t`Quote`, onPress: quote }] : []),
+      ...(includeReact
+        ? [
+            {
+              name: "react",
+              text: t`React`,
+              onPress: () =>
+                presentMessageActionSheet({
+                  cancel: t`Cancel`,
+                  more: t`More`,
+                  colorScheme,
+                  actions: MESSAGE_REACTIONS.map((emoji) => ({
+                    text: emoji,
+                    onPress: () => react(emoji),
+                  })),
+                }),
+            },
+          ]
+        : []),
+      ...(includeSpeak ? [{ name: "speak", text: t`Speak message`, onPress: speakMessage }] : []),
+      ...(includeSelect ? [{ name: "select", text: t`Select text`, onPress: select }] : []),
+      { name: "copy", text: t`Copy`, onPress: copy },
+      ...(includeSelectMessages
+        ? [{ name: "selectMessages", text: t`Select messages`, onPress: selectMessages }]
+        : []),
+      ...(codeBlocks.length === 1
+        ? [{ name: "copyCode", text: t`Copy code`, onPress: copyCode }]
+        : []),
+    ];
+    const menu = buildMessageContextMenu({
+      labels: {
+        reply: t`Reply`,
+        copy: t`Copy`,
+        react: t`React`,
+        quote: t`Quote`,
+        speak: t`Speak message`,
+        select: t`Select text`,
+        selectMessages: t`Select messages`,
+        unread: t`Mark as unread`,
+      },
+      reactions: MESSAGE_REACTIONS,
+      include: {
+        reply: !readOnly,
+        quote: includeQuote,
+        react: includeReact,
+        speak: includeSpeak,
+        select: includeSelect,
+        selectMessages: includeSelectMessages,
+        unread: includeUnread,
+      },
+    });
+    const openSheet = (event: GestureResponderEvent) =>
+      presentMessageMenu({
+        anchor: { x: event.nativeEvent.pageX, y: event.nativeEvent.pageY },
+        reactions: includeReact
+          ? MESSAGE_REACTIONS.map((emoji) => ({ emoji, onPress: () => react(emoji) }))
+          : [],
+        groups: [
+          [
+            ...(!readOnly
+              ? [
+                  {
+                    name: "reply",
+                    text: t`Reply`,
+                    icon: "arrow-undo-outline" as const,
+                    onPress: reply,
+                  },
+                ]
+              : []),
+            ...(includeUnread
+              ? [
+                  {
+                    name: "unread",
+                    text: t`Mark as unread`,
+                    icon: "mail-unread-outline" as const,
+                    onPress: markUnread,
+                  },
+                ]
+              : []),
+            ...(includeQuote
+              ? [
+                  {
+                    name: "quote",
+                    text: t`Quote`,
+                    icon: "chatbox-ellipses-outline" as const,
+                    onPress: quote,
+                  },
+                ]
+              : []),
+          ],
+          [
+            { name: "copy", text: t`Copy`, icon: "copy-outline" as const, onPress: copy },
+            ...(includeSelectMessages
+              ? [
+                  {
+                    name: "selectMessages",
+                    text: t`Select messages`,
+                    icon: "checkmark-circle-outline" as const,
+                    onPress: selectMessages,
+                  },
+                ]
+              : []),
+            ...(includeSelect
+              ? [
+                  {
+                    name: "select",
+                    text: t`Select text`,
+                    icon: "text-outline" as const,
+                    onPress: select,
+                  },
+                ]
+              : []),
+            ...(includeSpeak
+              ? [
+                  {
+                    name: "speak",
+                    text: t`Speak message`,
+                    icon: "volume-high-outline" as const,
+                    onPress: speakMessage,
+                  },
+                ]
+              : []),
+          ],
+        ],
+      });
+    return {
+      menu,
+      likeMessage: canDoubleTapReact(includeReact, message.blocks, waitingForUser)
+        ? () => {
+            if (hasLike || optimisticLike || likeInFlight.current) return;
+            likeInFlight.current = true;
+            setOptimisticLike(true);
+            void react("👍")
+              .then((success) => {
+                if (!success) setOptimisticLike(false);
+              })
+              .finally(() => {
+                likeInFlight.current = false;
+              });
+          }
+        : undefined,
+      onMenuAction: (id) => {
+        const reaction = messageMenuReaction(id);
+        if (reaction && (MESSAGE_REACTIONS as readonly string[]).includes(reaction)) {
+          react(reaction as MessageReaction);
+          return;
+        }
+        if (id === "reply") reply();
+        if (id === "copy") copy();
+        if (id === "quote") quote();
+        if (id === "speak") speakMessage();
+        if (id === "select") select();
+        if (id === "selectMessages") selectMessages();
+        if (id === "unread") markUnread();
+      },
+      actionProps: {
+        onLongPress: Platform.OS === "ios" ? undefined : openSheet,
+        accessibilityActions: menuActions.map((action) => ({
+          name: action.name,
+          label: action.text,
+        })),
+        onAccessibilityAction: (event) => {
+          menuActions.find((action) => action.name === event.nativeEvent.actionName)?.onPress();
+        },
+      },
+    };
+  }, [
+    message,
+    actions,
+    markedUnread,
+    readOnly,
+    onCall,
+    colorScheme,
+    t,
+    locale,
+    waitingForUser,
+    hasLike,
+    optimisticLike,
+  ]);
+  const layout = messageRowLayout(message.blocks, { activityBotId, inGroup, columnWidth });
+  const choosable = selecting && canSelectMessage(message);
+  const selectionInset = choosable ? 30 : 0;
+  return (
+    <View
+      key={message.id}
+      onLayout={onLayout}
+      style={{
+        backgroundColor: highlighted || selected ? tokens.muted : undefined,
+        marginTop: headerAdjacent ? 0 : 12,
+        width: "100%",
+      }}
+    >
+      {separator ? <TimeSeparator createdAt={message.createdAt} /> : null}
+      {unreadDivider ? <UnreadDivider afterSeparator={separator} /> : null}
+      <View
+        style={{
+          width: "100%",
+          // Room for the check mark, so it never sits on the bubble.
+          paddingStart: selectionInset,
+          flexDirection: "row",
+          alignItems: "flex-start",
+          gap: 8,
+          justifyContent: message.role === "user" ? "flex-end" : "flex-start",
+        }}
+      >
+        {activityBotId ? (
+          <View style={{ paddingTop: 22 }}>
+            <BotAvatar
+              color={activityColor ?? tokens.mutedForeground}
+              avatarSet={activityAvatarSet}
+              identity={activityBotId}
+              size={inGroup ? 20 : 28}
+              status={activityStatus}
+              motion="running"
+              composing={liveMessageComposing(message.blocks)}
+              pokeable
+            />
+          </View>
+        ) : null}
+        <View
+          // Taps belong to the selection while messages are being chosen, not to links and buttons in them.
+          pointerEvents={selecting ? "none" : undefined}
+          importantForAccessibility={choosable ? "no-hide-descendants" : undefined}
+          accessibilityElementsHidden={choosable}
+          style={{
+            width: layout.width,
+            maxWidth: layout.maxWidth,
+            flex: activityBotId ? 1 : undefined,
+            flexShrink: 1,
+          }}
+        >
+          {isPeerReceiptBlocks(message.blocks) ? null : (
+            <ReplyLine
+              threadTarget={artifactTarget}
+              targetId={message.replyToMessageId}
+              quote={message.replyQuote}
+              preview={message.replyPreview}
+              author={replyAuthor}
+              fallbackText={replyFallbackText}
+              onJump={actions.jump}
+            />
+          )}
+          <MessageContextMenu
+            actions={menu}
+            fullWidth={layout.menuFullWidth}
+            maxWidth={layout.menuMaxWidth}
+            colorScheme={colorScheme}
+            onAction={onMenuAction}
+            onLongPress={actionProps.onLongPress}
+            onDoubleTap={messageHasInlineControls(message.blocks) ? undefined : likeMessage}
+          >
+            <ThreadReadOnlyContext.Provider value={readOnly}>
+              <MessageBubble
+                mentions={mentions}
+                botId={bubbleBotId}
+                groupId={groupId}
+                message={message}
+                authorName={authorName}
+                botName={botName}
+                hideSenderLabel={hideSenderLabel}
+                showBotSenderName={showBotSenderName}
+                bots={bots}
+                members={members}
+                canAnswer={canAnswer}
+                separateAnswers={separateAnswers}
+                canDismiss={canDismiss}
+                onAnswer={actions.answer}
+                onOpenBot={actions.openBot}
+                onOpenComputer={actions.openComputer}
+                onChoiceDismissed={onChoiceDismissed}
+                onPreviewFile={actions.previewFile}
+                onPreviewImage={actions.previewImage}
+                imageStackMaxWidth={layout.menuMaxWidth - selectionInset}
+                peerExchange={peerExchange}
+                onOpenPeerChat={actions.openPeerChat}
+                actionProps={actionProps}
+                doubleTapSurface={Boolean(likeMessage)}
+                onHelperToggle={actions.helperToggle}
+                userBubble={userBubble}
+              />
+            </ThreadReadOnlyContext.Provider>
+          </MessageContextMenu>
+          {displayedReactions.size > 0 ? (
+            <View
+              style={{
+                flexDirection: "row",
+                flexWrap: "wrap",
+                gap: 4,
+                marginTop: 4,
+                justifyContent: message.role === "user" ? "flex-end" : "flex-start",
+              }}
+            >
+              {[...displayedReactions].map(([emoji, count]) => (
+                <Animated.Text
+                  entering={
+                    emoji === "👍" && optimisticLike && !reducedMotion
+                      ? ZoomIn.duration(150).withInitialValues({ transform: [{ scale: 0.9 }] })
+                      : undefined
+                  }
+                  key={emoji}
+                  style={{
+                    color: tokens.foreground,
+                    backgroundColor: tokens.muted,
+                    borderRadius: 16,
+                    paddingHorizontal: 8,
+                    paddingVertical: 2,
+                    fontSize: 13,
+                  }}
+                >
+                  {emoji}
+                  {count > 1 ? ` ${count}` : ""}
+                </Animated.Text>
+              ))}
+            </View>
+          ) : null}
+        </View>
+        {choosable ? (
+          <Pressable
+            accessibilityRole="checkbox"
+            accessibilityLabel={previewMessageText(message)}
+            accessibilityState={{ checked: selected }}
+            onPress={() => actions.toggleSelection(message)}
+            style={{ position: "absolute", top: 0, bottom: 0, left: 0, right: 0 }}
+          >
+            <View style={{ position: "absolute", top: 4, start: 0 }}>
+              <NativeSymbol
+                ios={selected ? "checkmark.circle.fill" : "circle"}
+                android={selected ? "checkmark-circle" : "ellipse-outline"}
+                size={22}
+                color={selected ? tokens.primary : tokens.mutedForeground}
+              />
+            </View>
+          </Pressable>
+        ) : null}
+      </View>
+    </View>
+  );
+});

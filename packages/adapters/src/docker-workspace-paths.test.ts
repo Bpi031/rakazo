@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DockerSandboxProvider } from "./docker-sandbox.js";
+import { DockerSandboxProvider } from "./providers/computer/docker/docker-sandbox.js";
 
 const computer = { id: "computer", botId: "bot", kind: "docker" as const, providerRef: "computer" };
 const context = { operationId: "path-test", traceId: "path-test", spaceId: "space",

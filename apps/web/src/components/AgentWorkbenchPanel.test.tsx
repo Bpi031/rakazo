@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
+import { createQueryRoot } from "../lib/query/query-root.test-support";
 import { afterEach, expect, it, vi } from "vitest";
 vi.mock("../lib/rpc", () => ({ withSpaceHeaders: (headers = {}) => headers }));
 import { AgentWorkbenchPanel } from "./AgentWorkbenchPanel";
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-let root: Root, host: HTMLDivElement;
+let root: ReturnType<typeof createQueryRoot>, host: HTMLDivElement;
 afterEach(async () => {
   if (root) await act(async () => root.unmount());
   host?.remove();
@@ -78,7 +78,7 @@ async function fixture(initialTab = "goals", initialReview?: string) {
   vi.stubGlobal("fetch", fetcher);
   host = document.createElement("div");
   document.body.append(host);
-  root = createRoot(host);
+  root = createQueryRoot(host);
   await act(async () =>
     root.render(
       <AgentWorkbenchPanel

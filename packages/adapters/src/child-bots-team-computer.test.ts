@@ -4,8 +4,8 @@ import path from "node:path";
 import type { AdapterContext, JobPublisher, SandboxProvider } from "@rakazo/adapter-kit";
 import type { PrismaClient } from "@rakazo/db";
 import { expect, it, vi } from "vitest";
-import { archiveBot, destroyBot } from "./child-bots.js";
-import { LocalAgentHomeStore } from "./home.js";
+import { archiveBot, destroyBot } from "./bots/child-bots.js";
+import { LocalAgentHomeStore } from "./storage/home.js";
 
 it.each(["archive-first", "delete-first", "delete-second", "delete-last"])(
   "%s keeps the Team Computer and its workspace",
@@ -50,9 +50,12 @@ it.each(["archive-first", "delete-first", "delete-second", "delete-last"])(
         return { count: 1 };
       });
       const tx = {
-        $queryRaw: vi.fn().mockResolvedValue([]),
+        $queryRaw: vi.fn(async (sql: TemplateStringsArray, id: string) =>
+          sql[0]?.includes("FROM bots") ? [{ id, webhookSecretId: null }] : [],
+        ),
         checkpoint: { findMany: vi.fn().mockResolvedValue([]) },
         computer: {
+          findMany: vi.fn(async () => []),
           findUniqueOrThrow: vi.fn(async () => ({ ...computer })),
           update: vi.fn(async ({ data }) => Object.assign(computer, data)),
           updateMany,
@@ -74,6 +77,9 @@ it.each(["archive-first", "delete-first", "delete-second", "delete-last"])(
         computerExecutionLease: { updateMany: vi.fn(), deleteMany: vi.fn() },
         artifact: { findMany: vi.fn().mockResolvedValue([]), deleteMany: vi.fn() },
         chatGroup: { findMany: vi.fn().mockResolvedValue([]) },
+        page: { updateMany: vi.fn(), deleteMany: vi.fn() },
+        pageImage: { findMany: vi.fn(async () => []) },
+        secret: { findMany: vi.fn(async () => []), deleteMany: vi.fn() },
         botDeletion: { create: vi.fn() },
       };
       const prisma = {
@@ -109,6 +115,8 @@ it.each(["archive-first", "delete-first", "delete-second", "delete-last"])(
       };
       if (operation === "archive-first") await archiveBot(deps, target, context);
       else await destroyBot(deps, target, context, { deleteMemories: true });
+      if (operation === "archive-first") expect(target.archivedAt).toBeInstanceOf(Date);
+      else expect(bots).not.toContain(target);
       expect(stop).not.toHaveBeenCalled();
       expect(destroy).not.toHaveBeenCalled();
       expect(deletedComputer).not.toHaveBeenCalled();

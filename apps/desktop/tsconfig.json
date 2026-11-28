@@ -1,12 +1,11 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "rootDir": "src",
     "outDir": "dist",
-    "noEmit": false,
+    "noEmit": true,
     "lib": ["ES2023"],
     "types": ["node"]
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["src/**/*.test.ts"]
+  "exclude": ["src/main/windows/app-document-state.test.ts", "src/setup-renderer/setup.test.ts"]
 }

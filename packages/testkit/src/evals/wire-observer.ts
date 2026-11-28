@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import { isRecord } from "@rakazo/core";
+
 /** Synthetic eval transport evidence, after SDK serialization. No prompt or request identifiers. */
 export type DiagnosticWireObservation = {
   request: number;
@@ -6,6 +9,8 @@ export type DiagnosticWireObservation = {
   results?: Array<{
     position: number;
     bytes: number;
+    /** SHA-256 of the result as sent, so a rewrite shows without retaining text. */
+    contentDigest: string;
     jsonValid: boolean;
     cursor?: string;
     segment?: number;
@@ -20,8 +25,6 @@ const cursors = new Set([
   ...Array.from({ length: 11 }, (_, i) => `segment-${Math.imul(i + 74, 48271) >>> 0}`),
 ]);
 const cursor = (value: unknown): value is string => typeof value === "string" && cursors.has(value);
-const object = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** The upstream receives the exact input/init; only whitelisted synthetic controls survive parsing. */
 export function diagnosticWireFetch(
@@ -47,7 +50,7 @@ export function diagnosticWireFetch(
           };
         } else {
           const body: unknown = JSON.parse(init.body);
-          if (object(body) && body.model === modelId) {
+          if (isRecord(body) && body.model === modelId) {
             observation = {
               request: observations.length + 1,
               availability: "unavailable",
@@ -56,12 +59,12 @@ export function diagnosticWireFetch(
             if (Array.isArray(body.messages)) {
               const calls = new Map<string, string | undefined>();
               for (const message of body.messages) {
-                if (!object(message) || !Array.isArray(message.tool_calls)) continue;
+                if (!isRecord(message) || !Array.isArray(message.tool_calls)) continue;
                 for (const call of message.tool_calls) {
                   if (
-                    !object(call) ||
+                    !isRecord(call) ||
                     typeof call.id !== "string" ||
-                    !object(call.function) ||
+                    !isRecord(call.function) ||
                     call.function.name !== "CRM_READ_DIAGNOSTIC"
                   )
                     continue;
@@ -71,14 +74,17 @@ export function diagnosticWireFetch(
                   } catch {
                     /* Unavailable controls remain unknown. */
                   }
-                  calls.set(call.id, object(args) && cursor(args.cursor) ? args.cursor : undefined);
+                  calls.set(
+                    call.id,
+                    isRecord(args) && cursor(args.cursor) ? args.cursor : undefined,
+                  );
                 }
               }
               const results: NonNullable<DiagnosticWireObservation["results"]> = [];
               for (const message of body.messages) {
                 if (results.length >= 30) break;
                 if (
-                  !object(message) ||
+                  !isRecord(message) ||
                   message.role !== "tool" ||
                   typeof message.tool_call_id !== "string" ||
                   !calls.has(message.tool_call_id) ||
@@ -91,7 +97,7 @@ export function diagnosticWireFetch(
                 } catch {
                   /* JSON validity is evidence; text is never retained. */
                 }
-                const parsed = object(result) ? result : undefined;
+                const parsed = isRecord(result) ? result : undefined;
                 const valid = parsed !== undefined;
                 const nextCursorPresent = valid && Object.hasOwn(parsed, "nextCursor");
                 const next =
@@ -108,6 +114,7 @@ export function diagnosticWireFetch(
                 results.push({
                   position: results.length + 1,
                   bytes: Buffer.byteLength(message.content),
+                  contentDigest: createHash("sha256").update(message.content).digest("hex"),
                   jsonValid: valid,
                   ...(calls.get(message.tool_call_id)
                     ? { cursor: calls.get(message.tool_call_id) }
@@ -138,18 +145,5 @@ export function diagnosticWireFetch(
       if (observation) observations.push(observation);
     }
     return upstream(input, init);
-  };
-}
-
-/** CLI owns one synthetic workflow at a time; restore even when startup or cleanup throws. */
-export function installDiagnosticWireObserver(
-  modelId: string,
-  observations: DiagnosticWireObservation[],
-) {
-  const prior = globalThis.fetch;
-  const wrapped = diagnosticWireFetch(prior, modelId, observations);
-  globalThis.fetch = wrapped;
-  return () => {
-    if (globalThis.fetch === wrapped) globalThis.fetch = prior;
   };
 }

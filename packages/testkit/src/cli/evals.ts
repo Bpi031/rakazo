@@ -1,22 +1,122 @@
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
-import { ModelConnectInputSchema } from "@rakazo/contracts";
+import type { AgentContextStrategy, AgentRunRequest } from "@rakazo/adapter-kit";
+import { ModelConnectInputSchema, ReplyModeSchema } from "@rakazo/contracts";
 import { loadRootEnv } from "@rakazo/core/node/load-root-env";
-import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { PostgreSqlContainer } from "@testcontainers/postgresql";
-import { EVAL_CASES, HISTORY_EVAL_CASES } from "../evals/cases.js";
-import { HISTORY_FIXTURE_VERSION } from "../evals/history-fixtures.js";
+import { z } from "zod";
+import type { EvalCase } from "../evals/cases.js";
+import {
+  EVAL_CASES,
+  EVAL_INBOUND_EMAIL,
+  HISTORY_EVAL_CASES,
+  HISTORY_JUDGE_CALIBRATION,
+  PRODUCT_JUDGE_CALIBRATION,
+  PRODUCT_JUDGE_VERSION,
+  wakesRoutines,
+} from "../evals/cases.js";
+import {
+  caseFingerprint,
+  caseKey,
+  codeRevision,
+  firstRequestFetch,
+  requestBodyFetch,
+  runFingerprint,
+  workingDiffHash,
+} from "../evals/fingerprint.js";
+import { regradeTrial } from "../evals/grading.js";
+import { GROUP_ROUTING_EVAL_CASES, GROUP_ROUTING_FIXTURE_VERSION } from "../evals/group-routing.js";
+import { HISTORY_FIXTURE_VERSION, HISTORY_JUDGE_VERSION } from "../evals/history-fixtures.js";
 import type { DiagnosticToolObservation, HistoryDiagnostic } from "../evals/history-observer.js";
 import { observeSyntheticHistory } from "../evals/history-observer.js";
-import type { CacheDecisionMeasurement, EvalPricing } from "../evals/measurement.js";
+import type { EvalJudge, JudgeInput } from "../evals/judge.js";
+import { createEvalJudge, judgeSettings } from "../evals/judge.js";
+import type { CacheDecisionMeasurement, EvalPricing, MeasuredCall } from "../evals/measurement.js";
 import { measureCalls, SpendBudget, validatePricing } from "../evals/measurement.js";
-import { emptyTrial, redact, summarize, validateControls } from "../evals/report.js";
+import type { TrialResult } from "../evals/report.js";
+import {
+  emptyTrial,
+  holdBackJudged,
+  redact,
+  stopRemaining,
+  summarize,
+  validateControls,
+} from "../evals/report.js";
+import { ROUTINE_MODE_SUITE } from "../evals/routine-mode.js";
+import type { CasePlan } from "../evals/run-store.js";
+import { RunStore } from "../evals/run-store.js";
+import {
+  APPS_EVAL_CASES,
+  APPS_FIXTURE_VERSION,
+  APPS_JUDGE_CALIBRATION,
+  APPS_JUDGE_VERSION,
+} from "../evals/suites/apps.js";
+import { BOT_FILES_EVAL_CASES, BOT_FILES_FIXTURE_VERSION } from "../evals/suites/bot-files.js";
+import {
+  DELIBERATION_EVAL_CASES,
+  DELIBERATION_FIXTURE_VERSION,
+  DELIBERATION_JUDGE_CALIBRATION,
+  DELIBERATION_JUDGE_VERSION,
+} from "../evals/suites/deliberation.js";
+import {
+  GROUP_EVAL_CASES,
+  GROUP_FIXTURE_VERSION,
+  GROUP_JUDGE_CALIBRATION,
+  GROUP_JUDGE_VERSION,
+} from "../evals/suites/group.js";
+import {
+  INITIATIVE_EVAL_CASES,
+  INITIATIVE_FIXTURE_VERSION,
+  INITIATIVE_JUDGE_CALIBRATION,
+  INITIATIVE_JUDGE_VERSION,
+} from "../evals/suites/initiative.js";
+import {
+  MEMORY_EVAL_CASES,
+  MEMORY_FIXTURE_VERSION,
+  MEMORY_JUDGE_CALIBRATION,
+  MEMORY_JUDGE_VERSION,
+} from "../evals/suites/memory.js";
+import { PAGES_EVAL_CASES, PAGES_FIXTURE_VERSION } from "../evals/suites/pages.js";
+import {
+  loadRecallCases,
+  RECALL_EVAL_CASES,
+  RECALL_FIXTURE_VERSION,
+  RECALL_JUDGE_CALIBRATION,
+  RECALL_JUDGE_VERSION,
+} from "../evals/suites/recall.js";
+import {
+  SILENCE_EVAL_CASES,
+  SILENCE_FIXTURE_VERSION,
+  SILENCE_JUDGE_CALIBRATION,
+  SILENCE_JUDGE_VERSION,
+} from "../evals/suites/silence.js";
+import {
+  SUBAGENT_EVAL_CASES,
+  SUBAGENT_FIXTURE_VERSION,
+  SUBAGENT_JUDGE_CALIBRATION,
+  SUBAGENT_JUDGE_VERSION,
+} from "../evals/suites/subagents.js";
+import {
+  loadToolChoiceCases,
+  TOOL_CHOICE_FIXTURE_VERSION,
+  TOOL_CHOICE_JUDGE_CALIBRATION,
+  TOOL_CHOICE_JUDGE_VERSION,
+} from "../evals/suites/tool-choice.js";
+import { TOOL_CHOICE_CASES } from "../evals/suites/tool-choice-cases.js";
+import {
+  WEBHOOK_SILENCE_EVAL_CASES,
+  WEBHOOK_SILENCE_FIXTURE_VERSION,
+  WEBHOOK_SILENCE_JUDGE_CALIBRATION,
+  WEBHOOK_SILENCE_JUDGE_VERSION,
+} from "../evals/suites/webhook-silence.js";
+import type { ObservedToolCall, ObservedToolList } from "../evals/tool-calls.js";
 import type { DiagnosticWireObservation } from "../evals/wire-observer.js";
-import { installDiagnosticWireObserver } from "../evals/wire-observer.js";
+import { diagnosticWireFetch } from "../evals/wire-observer.js";
+import { APPROVAL_OPTIONS, refuseApprovalOptions, runApprovalSuite } from "./approval-eval.js";
+import type { DisposablePostgres } from "./postgres.js";
+import { disposableDatabaseEnv, startPostgres } from "./postgres.js";
 
 async function main() {
   const { values } = parseArgs({
@@ -32,22 +132,146 @@ async function main() {
       "wire-diagnostics": { type: "boolean", default: false },
       list: { type: "boolean", default: false },
       connection: { type: "string" },
+      "judge-connection": { type: "string" },
+      "judge-pricing": { type: "string" },
       provider: { type: "string" },
       model: { type: "string" },
       "api-key-env": { type: "string" },
       "base-url": { type: "string" },
+      /** JSON object merged into every eval model request body, such as a gateway's routing. */
+      "request-body": { type: "string" },
       "context-window": { type: "string" },
       "max-output-tokens": { type: "string" },
-      trials: { type: "string", default: "3" },
+      trials: { type: "string", default: "1" },
       case: { type: "string", multiple: true },
+      "cases-file": { type: "string" },
       "timeout-ms": { type: "string", default: "180000" },
       "max-tool-calls": { type: "string", default: "30" },
+      "reply-mode": { type: "string" },
       output: { type: "string", default: "test-report/evals/report.json" },
+      /** A private folder of finished runs; reuses stored trials whose fingerprint matches. */
+      store: { type: "string" },
+      fresh: { type: "boolean", default: false },
+      /** Adds an existing report file to the store, without running anything. */
+      import: { type: "string" },
+      label: { type: "string" },
+      ...APPROVAL_OPTIONS,
     },
   });
-  const cases =
-    values.suite === "history" ? HISTORY_EVAL_CASES : values.suite === "product" ? EVAL_CASES : [];
-  if (!cases.length) throw new Error("Unknown suite; use product or history");
+  const storeDir = values.store ?? process.env.EVAL_RUN_STORE;
+  const store = storeDir ? new RunStore(path.resolve(storeDir)) : undefined;
+  if (values.import) {
+    if (!store) throw new Error("--import needs --store or EVAL_RUN_STORE");
+    const entry = store.save(JSON.parse(readFileSync(values.import, "utf8")), {
+      label: values.label,
+    });
+    console.log(`Stored ${entry.legacy ? "legacy " : ""}run ${entry.fingerprint}`);
+    return;
+  }
+  if (values.fresh && !store) throw new Error("--fresh only applies with --store");
+  refuseApprovalOptions(values);
+  if (values.suite === "approval")
+    return runApprovalSuite(values, {
+      codeRevision: codeRevision(),
+      workingDiffHash: workingDiffHash(),
+      readConnection,
+    });
+  if (values["cases-file"] && values.suite !== "tool-choice" && values.suite !== "recall")
+    throw new Error("--cases-file adds tool-choice, recall or approval cases only");
+  const replyMode = ReplyModeSchema.safeParse(values["reply-mode"] ?? "chat");
+  if (!replyMode.success) throw new Error("Unknown reply mode; use chat or messages");
+  const suites: Record<
+    string,
+    {
+      cases: EvalCase[];
+      fixtureVersion: string;
+      judge?: { version: string; calibration: Array<{ input: JudgeInput; pass: boolean }> };
+    }
+  > = {
+    product: {
+      cases: EVAL_CASES,
+      fixtureVersion: "product-v4",
+      judge: { version: PRODUCT_JUDGE_VERSION, calibration: PRODUCT_JUDGE_CALIBRATION },
+    },
+    subagents: {
+      cases: SUBAGENT_EVAL_CASES,
+      fixtureVersion: SUBAGENT_FIXTURE_VERSION,
+      judge: { version: SUBAGENT_JUDGE_VERSION, calibration: SUBAGENT_JUDGE_CALIBRATION },
+    },
+    history: {
+      cases: HISTORY_EVAL_CASES,
+      fixtureVersion: HISTORY_FIXTURE_VERSION,
+      judge: { version: HISTORY_JUDGE_VERSION, calibration: HISTORY_JUDGE_CALIBRATION },
+    },
+    silence: {
+      cases: SILENCE_EVAL_CASES,
+      fixtureVersion: SILENCE_FIXTURE_VERSION,
+      judge: { version: SILENCE_JUDGE_VERSION, calibration: SILENCE_JUDGE_CALIBRATION },
+    },
+    "webhook-silence": {
+      cases: WEBHOOK_SILENCE_EVAL_CASES,
+      fixtureVersion: WEBHOOK_SILENCE_FIXTURE_VERSION,
+      judge: {
+        version: WEBHOOK_SILENCE_JUDGE_VERSION,
+        calibration: WEBHOOK_SILENCE_JUDGE_CALIBRATION,
+      },
+    },
+    initiative: {
+      cases: INITIATIVE_EVAL_CASES,
+      fixtureVersion: INITIATIVE_FIXTURE_VERSION,
+      judge: { version: INITIATIVE_JUDGE_VERSION, calibration: INITIATIVE_JUDGE_CALIBRATION },
+    },
+    "routine-mode": ROUTINE_MODE_SUITE,
+    memory: {
+      cases: MEMORY_EVAL_CASES,
+      fixtureVersion: MEMORY_FIXTURE_VERSION,
+      judge: { version: MEMORY_JUDGE_VERSION, calibration: MEMORY_JUDGE_CALIBRATION },
+    },
+    recall: {
+      cases: RECALL_EVAL_CASES,
+      fixtureVersion: RECALL_FIXTURE_VERSION,
+      judge: { version: RECALL_JUDGE_VERSION, calibration: RECALL_JUDGE_CALIBRATION },
+    },
+    deliberation: {
+      cases: DELIBERATION_EVAL_CASES,
+      fixtureVersion: DELIBERATION_FIXTURE_VERSION,
+      judge: { version: DELIBERATION_JUDGE_VERSION, calibration: DELIBERATION_JUDGE_CALIBRATION },
+    },
+    group: {
+      cases: GROUP_EVAL_CASES,
+      fixtureVersion: GROUP_FIXTURE_VERSION,
+      judge: { version: GROUP_JUDGE_VERSION, calibration: GROUP_JUDGE_CALIBRATION },
+    },
+    "group-routing": {
+      cases: GROUP_ROUTING_EVAL_CASES,
+      fixtureVersion: GROUP_ROUTING_FIXTURE_VERSION,
+    },
+    "tool-choice": {
+      cases: TOOL_CHOICE_CASES,
+      fixtureVersion: TOOL_CHOICE_FIXTURE_VERSION,
+      judge: { version: TOOL_CHOICE_JUDGE_VERSION, calibration: TOOL_CHOICE_JUDGE_CALIBRATION },
+    },
+    "bot-files": { cases: BOT_FILES_EVAL_CASES, fixtureVersion: BOT_FILES_FIXTURE_VERSION },
+    pages: { cases: PAGES_EVAL_CASES, fixtureVersion: PAGES_FIXTURE_VERSION },
+    apps: {
+      cases: APPS_EVAL_CASES,
+      fixtureVersion: APPS_FIXTURE_VERSION,
+      judge: { version: APPS_JUDGE_VERSION, calibration: APPS_JUDGE_CALIBRATION },
+    },
+  };
+  if (!Object.hasOwn(suites, values.suite!))
+    throw new Error(`Unknown suite; use ${[...Object.keys(suites), "approval"].join(", ")}`);
+  const suite = suites[values.suite!]!;
+  const suiteJudge = suite.judge;
+  const extraCases = values["cases-file"]
+    ? (values.suite === "recall" ? loadRecallCases : loadToolChoiceCases)(values["cases-file"])
+    : [];
+  const cases = [...suite.cases, ...extraCases];
+  const fixtureVersion = extraCases.length
+    ? `${suite.fixtureVersion}+${extraCases.length}-local`
+    : suite.fixtureVersion;
+  if (new Set(cases.map((c) => c.id)).size !== cases.length)
+    throw new Error("Case ids must be unique across the suite and --cases-file");
   if (values["wire-diagnostics"] && values.suite !== "history")
     throw new Error("Synthetic wire diagnostics require the history suite");
   const strategies = [...new Set(values.strategy?.length ? values.strategy : ["current"])];
@@ -79,13 +303,24 @@ async function main() {
         }),
       ),
     )
-    .flat();
+    .flat()
+    // Only the current strategy compacts, so a compaction case under another one cannot run.
+    .filter(
+      (trial) =>
+        trial.strategy === "current" ||
+        !selected.find((c) => c.id === trial.caseId)?.history?.compact,
+    );
+  if (!trials.length)
+    throw new Error("Compaction cases run only under the current strategy; add --strategy current");
   const output = path.resolve(values.output!);
   let budget: SpendBudget | undefined;
   let probeTotals: { costUsd: number | null; modelCalls: number } | undefined;
+  const standIns: TrialResult[] = [];
+  const judgeCalls = new Map<string, MeasuredCall>();
   const report = {
     version: 2,
     kind: "real-model-product-eval",
+    suite: values.suite!,
     startedAt: new Date().toISOString(),
     model: values.model ?? process.env.PI_DEFAULT_MODEL ?? null,
     provider: values.provider ?? null,
@@ -94,6 +329,7 @@ async function main() {
       maxOutputTokens: values["max-output-tokens"] ? Number(values["max-output-tokens"]) : null,
     },
     controls,
+    replyMode: replyMode.data,
     strategy: strategies.length === 1 ? strategies[0] : "comparison",
     strategies,
     executionOrder:
@@ -102,17 +338,33 @@ async function main() {
       values.suite === "history"
         ? "Short chats use originals. Larger ordinary cases use a synthetic prepared summary retaining common facts and omitting rare identifiers; backlog, failed-summary and oversized cases retain raw compaction stress."
         : null,
-    fixtureVersion: values.suite === "history" ? HISTORY_FIXTURE_VERSION : "product-v1",
+    fixtureVersion,
     caseFixtureVersions: Object.fromEntries(
-      selected.map((c) => [
-        c.id,
-        c.history?.version ?? (values.suite === "history" ? HISTORY_FIXTURE_VERSION : "product-v1"),
-      ]),
+      selected.map((c) => [c.id, c.history?.version ?? fixtureVersion]),
     ),
     codeRevision: codeRevision(),
     workingDiffHash: workingDiffHash(),
+    /**
+     * Per case and strategy: a hash of the first model request as sent (ids and dates
+     * normalized), the model settings, the case's fixture version and data, and the trial
+     * controls. The run's combines them. The judge is separate, so a new rubric regrades.
+     */
+    fingerprint: {
+      run: null as string | null,
+      cases: {} as Record<string, string | null>,
+    },
     promptOrder: "stable guidance before changing context",
     pricing: null as EvalPricing | null,
+    judge: null as null | {
+      model: string;
+      provider: string;
+      rubricVersion: string;
+      pricing: EvalPricing | null;
+      settings: ReturnType<typeof judgeSettings>;
+      calibration: Array<{ expected: boolean; pass: boolean; reason: string }>;
+      modelCalls: number;
+      costUsd: number | null;
+    },
     spendCapUsd: Number(values["spend-cap-usd"]),
     workflowTotals: { modelCalls: 0, costUsd: null as number | null },
     guardAccounting: {
@@ -127,17 +379,30 @@ async function main() {
     assistedRetries: false,
     limitations: [
       "Does not evaluate browser perception, native recording perception, or real external services.",
-      "Release routine grades a scheduled new-release read; unchanged-release notification deduplication is not covered.",
-      "Deterministic fact checks are deliberately narrow; they do not grade overall writing quality.",
+      "Silence cases observe routine chat, transient progress, and provider notification requests; native push delivery and UI pixels are outside the fixture.",
+      suiteJudge
+        ? "What replies, saved files and memory mean is graded by a calibrated LLM judge under the suite's rubric; effects, identifiers and structured output are checked deterministically."
+        : "This suite has no LLM judge: every criterion is a check in code.",
       "Cost uses provider-reported charges where available and explicit pricing estimates otherwise. Spend reservations are a guard, not a billing guarantee.",
-      "Tool trace contains names and statuses only; raw requests and responses are omitted.",
+      "Tool trace contains names and statuses only; raw requests and responses are omitted. The tool-calls artifact keeps model-supplied arguments, with only configured secrets redacted.",
     ],
     trials,
     summary: summarize(trials),
   };
   const save = () => {
+    report.fingerprint.run = runFingerprint(report.fingerprint.cases);
     report.summary = summarize(report.trials);
-    const attempted = trials.filter((trial) => trial.status !== "not-run");
+    if (report.judge) {
+      const measured = measureCalls([...judgeCalls.values()], report.judge.pricing ?? undefined);
+      report.judge.modelCalls = measured.modelCalls;
+      report.judge.costUsd = measured.costUsd;
+    }
+    // Only new spend: stored trials were paid for by the run that made them, and a stand-in pays
+    // only for calls before its first turn, since the calls it stopped never reached the provider.
+    const attempted = [
+      ...trials.filter((trial) => trial.status !== "not-run" && !trial.origin),
+      ...standIns.filter((trial) => (trial.costUsd ?? 0) > 0),
+    ];
     const costs = [
       ...attempted.map((trial) => trial.costUsd),
       ...(probeTotals ? [probeTotals.costUsd] : []),
@@ -146,7 +411,8 @@ async function main() {
       modelCalls:
         attempted.reduce((n, trial) => n + trial.modelCalls, 0) + (probeTotals?.modelCalls ?? 0),
       costUsd:
-        costs.length && costs.every((cost) => cost !== null)
+        (costs.length || trials.some((trial) => trial.origin)) &&
+        costs.every((cost) => cost !== null)
           ? costs.reduce<number>((n, cost) => n + cost!, 0)
           : null,
     };
@@ -184,25 +450,54 @@ async function main() {
         maxTokens: values["max-output-tokens"] ? Number(values["max-output-tokens"]) : undefined,
         label: "Eval model",
       };
-  const parsedConnection = ModelConnectInputSchema.safeParse(rawConnection);
-  if (!parsedConnection.success || !parsedConnection.data.modelId?.trim())
+  const { personalCliRuntime } = await import("@rakazo/adapters/personal-cli-runtime");
+  /**
+   * A connection, and for a model the person runs through their own signed-in CLI, how to route
+   * calls to it. That model needs no key. Every account in this run's disposable database is a
+   * fixture of the one person running it and the app never bills, so the sign-in serves only them.
+   */
+  const readModel = (raw: unknown) => {
+    // The connection's own fields, without the key it does not need.
+    const named = z.object(ModelConnectInputSchema.shape).safeParse(raw);
+    const onPlan =
+      named.success &&
+      named.data.modelId?.trim() &&
+      personalCliRuntime(named.data.provider, named.data.modelId, async () => undefined);
+    if (onPlan) return { connection: named.data, onPlan };
+    const parsed = ModelConnectInputSchema.safeParse(raw);
+    return parsed.success && parsed.data.modelId?.trim()
+      ? { connection: parsed.data, onPlan: undefined }
+      : undefined;
+  };
+  const subject = readModel(rawConnection);
+  if (!subject)
     return notRun(
       "A valid model connection is required: --connection with models/connect JSON, or --provider --model --api-key-env (and --base-url for compatible servers). All trials remain not-run.",
     );
-  let pricing: EvalPricing;
-  try {
-    pricing = validatePricing(
-      values.pricing ? JSON.parse(readFileSync(values.pricing, "utf8")) : null,
+  const subjectOnPlan = subject.onPlan;
+  if (subjectOnPlan && (subject.connection.contextWindow || subject.connection.maxTokens))
+    return notRun(
+      "A model on your own plan runs with its own context and output limits; drop them. All trials remain not-run.",
     );
+  // Usage on the person's own plan has no per-token price: its cost stays unknown, never $0.
+  let pricing: EvalPricing | undefined;
+  try {
+    if (!subjectOnPlan)
+      pricing = validatePricing(
+        values.pricing ? JSON.parse(readFileSync(values.pricing, "utf8")) : null,
+      );
   } catch {
     return notRun(
       "Live execution requires --pricing with explicit source, version and USD per million rates. All trials remain not-run.",
     );
   }
-  report.pricing = pricing;
+  report.pricing = pricing ?? null;
   budget = new SpendBudget(report.spendCapUsd, pricing);
   const liveBudget = budget;
-  const connection = parsedConnection.data;
+  const connection = subject.connection;
+  const requestBody = values["request-body"]
+    ? z.record(z.string(), z.unknown()).parse(JSON.parse(values["request-body"]))
+    : undefined;
   report.model = connection.modelId!;
   report.provider = connection.provider;
   Object.assign(report, { cacheCapabilities: connection.cacheCapabilities ?? null });
@@ -210,9 +505,132 @@ async function main() {
     contextWindow: connection.contextWindow ?? null,
     maxOutputTokens: connection.maxTokens ?? null,
   };
+  let judge: EvalJudge | undefined;
+  let heldBack = new Set<string>();
+  const judged = new Set(selected.filter((c) => c.judge).map((c) => c.id));
+  const judgeConnectionFile = values["judge-connection"];
+  const judgePricingFile = values["judge-pricing"];
+  if (judged.size && !values["cache-probe"] && !suiteJudge)
+    return notRun("This suite has no judge rubric; no inference was scheduled");
+  const judgeFileOnPlan = () => {
+    try {
+      return Boolean(readModel(readConnection(judgeConnectionFile!))?.onPlan);
+    } catch {
+      return false;
+    }
+  };
+  if (
+    judged.size &&
+    !values["cache-probe"] &&
+    (!judgeConnectionFile || (!judgePricingFile && !judgeFileOnPlan()))
+  ) {
+    const reason =
+      "Not run: graded by meaning, which needs --judge-connection and --judge-pricing; unqualified, not a pass";
+    if (judged.size === selected.length) return notRun(reason);
+    heldBack = holdBackJudged(trials, judged, reason);
+    console.log(
+      `Without a judge, ${heldBack.size} judged case(s) stay not-run and unqualified: ${[...heldBack].join(", ")}`,
+    );
+    save();
+  } else if (judged.size && !values["cache-probe"] && suiteJudge) {
+    let rawJudgeConnection: unknown;
+    try {
+      rawJudgeConnection = readConnection(judgeConnectionFile!);
+    } catch {
+      return notRun("A valid judge model connection file is required; no inference was scheduled");
+    }
+    const judgeModelRead = readModel(rawJudgeConnection);
+    if (!judgeModelRead) return notRun("A valid judge model connection is required");
+    const { connection: judgeConnection, onPlan: judgeOnPlan } = judgeModelRead;
+    let judgePricing: EvalPricing | undefined;
+    try {
+      if (!judgeOnPlan)
+        judgePricing = validatePricing(JSON.parse(readFileSync(judgePricingFile!, "utf8")));
+    } catch {
+      return notRun(
+        "A valid judge pricing file with explicit rates is required; no inference was scheduled",
+      );
+    }
+    const judgeModel = {
+      ...judgeConnection,
+      id: judgeConnection.modelId!,
+      allowPrivateEndpoint: true,
+      maxImagesPerPrompt: judgeConnection.maxImagesPerPrompt ?? undefined,
+      maxTokens: judgeConnection.maxTokens ?? 2048,
+    };
+    report.judge = {
+      model: judgeConnection.modelId!,
+      provider: judgeConnection.provider,
+      rubricVersion: suiteJudge.version,
+      pricing: judgePricing ?? null,
+      settings: judgeSettings(judgeModel),
+      calibration: [],
+      modelCalls: 0,
+      costUsd: null,
+    };
+    const { PiAgentRuntime } = await import("../../../adapters/src/runtime/pi/pi-runtime.ts");
+    const runtime = new PiAgentRuntime({
+      modelCallObserver: {
+        beforeCall: (call) => {
+          if (
+            call.provider !== judgeConnection.provider ||
+            call.modelId !== judgeConnection.modelId
+          )
+            throw new Error("Judge model has no configured pricing");
+          if (!judgePricing) return liveBudget.reserveCostBound(0);
+          return liveBudget.reserve(
+            call.inputTokensEstimate,
+            call.maxOutputTokens,
+            call.cacheWriteRetention,
+            judgePricing,
+          );
+        },
+        afterCall: (id, usage) => liveBudget.settleUsage(id, usage),
+      },
+    });
+    const collect: NonNullable<AgentRunRequest["onUsage"]> = (usage) => {
+      if (usage.callId) judgeCalls.set(usage.callId, { id: usage.callId, ...usage });
+    };
+    const rawJudge = createEvalJudge(
+      judgeOnPlan ? judgeOnPlan(runtime) : runtime,
+      judgeModel,
+      collect,
+    );
+    const judgeSecrets = [judgeConnection.apiKey ?? "", judgeConnection.baseUrl ?? ""];
+    judge = async (input, signal) => {
+      try {
+        const verdict = await rawJudge(input, signal);
+        return { ...verdict, reason: redact(verdict.reason, judgeSecrets) };
+      } catch (error) {
+        throw new Error(
+          redact(error instanceof Error ? error.message : "Unknown judge failure", judgeSecrets),
+        );
+      }
+    };
+    try {
+      for (const anchor of suiteJudge.calibration) {
+        const verdict = await judge(anchor.input, AbortSignal.timeout(60_000));
+        report.judge.calibration.push({
+          expected: anchor.pass,
+          pass: verdict.pass,
+          reason: verdict.reason,
+        });
+        save();
+        if (verdict.pass !== anchor.pass)
+          throw new Error(
+            "Judge disagreed with a calibration label; review the rubric before qualification",
+          );
+      }
+    } catch (error) {
+      return notRun(
+        `Judge calibration failed: ${error instanceof Error ? error.message : "Unknown failure"}`,
+      );
+    }
+  }
   save();
   if (values["cache-probe"]) {
-    const { PiAgentRuntime } = await import("../../../adapters/src/pi-runtime.ts");
+    if (!pricing) return notRun("The cache probe prices each call, so it needs --pricing");
+    const { PiAgentRuntime } = await import("../../../adapters/src/runtime/pi/pi-runtime.ts");
     const { runCachePrefixProbe } = await import("../evals/cache-probe.js");
     const decisions: CacheDecisionMeasurement[] = [];
     const runtime = new PiAgentRuntime({
@@ -246,6 +664,7 @@ async function main() {
       {
         ...connection,
         id: connection.modelId!,
+        allowPrivateEndpoint: true,
         maxImagesPerPrompt: connection.maxImagesPerPrompt ?? undefined,
         maxTokens: connection.maxTokens ?? undefined,
       },
@@ -283,19 +702,21 @@ async function main() {
   }
   // This CLI owns a disposable database. Never migrate or evaluate against an inherited database.
   const dataDir = mkdtempSync(path.join(tmpdir(), "rakazo-evals-"));
-  let postgres: StartedPostgreSqlContainer | undefined;
+  let postgres: DisposablePostgres | undefined;
   let stopRequested = false;
+  const stop = new AbortController();
   const requestStop = () => {
     stopRequested = true;
+    stop.abort();
   };
   process.on("SIGINT", requestStop);
   process.on("SIGTERM", requestStop);
   try {
-    postgres = await new PostgreSqlContainer("postgres:16-alpine").start();
-    const databaseUrl = postgres.getConnectionUri();
+    const started = await startPostgres(stop.signal);
+    postgres = started;
+    const databaseUrl = started.getConnectionUri();
     Object.assign(process.env, {
-      DATABASE_URL: databaseUrl,
-      REALTIME_DATABASE_URL: databaseUrl,
+      ...disposableDatabaseEnv(databaseUrl),
       WAKEUP_DRIVER: "memory",
       BETTER_AUTH_SECRET: "synthetic-eval-auth-secret-at-least-32-characters",
       ENCRYPTION_KEY: "synthetic-eval-encryption-key-at-least-32-characters",
@@ -310,12 +731,15 @@ async function main() {
       DATA_DIR: dataDir,
       MAX_TOOL_CALLS_PER_TURN: String(controls.maxToolCalls),
       WEB_PROVIDER: "fake",
-      LOG_LEVEL: "off",
+      LOG_LEVEL: "error",
       COMPOSIO_API_KEY: "",
       PIPEDREAM_CLIENT_ID: "",
       PIPEDREAM_CLIENT_SECRET: "",
       PIPEDREAM_PROJECT_ID: "",
       SMTP_URL: "",
+      BOT_EMAIL_SMTP_URL: "",
+      EMAIL_PROVIDER: "none",
+      EMAIL_API_KEY: "",
       SLACK_BOT_TOKEN: "",
       TELEGRAM_BOT_TOKEN: "",
       WHATSAPP_ACCESS_TOKEN: "",
@@ -324,6 +748,16 @@ async function main() {
       CURSOR_API_KEY: "",
       CLOUD_AGENT_PROVIDER: "",
       MODEL_API_KEY: "",
+      // Configured the way a self-hosted server runs its model through the CLI.
+      ...(subjectOnPlan && {
+        PI_DEFAULT_PROVIDER: connection.provider,
+        PI_DEFAULT_MODEL: connection.modelId,
+        PI_DEFAULT_CREDENTIALS: "host",
+      }),
+      // A developer .env with Stripe keys would put the disposable app behind billing.
+      STRIPE_SECRET_KEY: "",
+      STRIPE_WEBHOOK_SECRET: "",
+      STRIPE_PRICE_ID: "",
     });
     execFileSync("pnpm", ["--filter", "@rakazo/db", "generate"], {
       stdio: "pipe",
@@ -334,15 +768,41 @@ async function main() {
       timeout: 120_000,
     });
     // Import runtime modules only after generation; their barrel exports load Prisma.
-    const { createApp } = await import("../../../../apps/api/src/app.ts");
+    const { createApp } = await import("@rakazo/api/app");
     const { runTrial } = await import("../evals/runner.js");
-    const { PiAgentRuntime } = await import("@rakazo/adapters");
+    const { dispatcherFetch, PiAgentRuntime } = await import("@rakazo/adapters");
     const { EvalSandboxProvider } = await import("../evals/sandbox.js");
+    const { observeToolCalls } = await import("../evals/tool-calls.js");
+    type StoredPlan = Exclude<CasePlan, { kind: "run" }>;
+    const plans = new Map<string, CasePlan>();
+    const fromStore = async (
+      plan: StoredPlan,
+      trial: number,
+      scenario: EvalCase,
+    ): Promise<TrialResult> => {
+      const source = plan.trials.find((t) => t.trial === trial)!;
+      const origin = {
+        kind: plan.kind === "reuse" ? ("reused" as const) : ("regraded" as const),
+        fingerprint: plan.from.fingerprint,
+        startedAt: plan.from.startedAt,
+      };
+      if (plan.kind === "regrade")
+        return {
+          ...(await regradeTrial(scenario, source, judge, controls.timeoutMs)),
+          trial,
+          origin,
+        };
+      // A trial reused again still names the run that paid for it.
+      return {
+        ...structuredClone(source),
+        trial,
+        origin: source.origin?.kind === "reused" ? source.origin : origin,
+      };
+    };
     for (let i = 0; i < trials.length; i++) {
+      if (heldBack.has(trials[i]!.caseId)) continue;
       if (stopRequested) {
-        for (const remaining of trials.slice(i))
-          remaining.reason =
-            "Not run because graceful stop was requested; the in-flight workflow drained before scheduling stopped";
+        stopRemaining(trials.slice(i), heldBack);
         Object.assign(report, { termination: "graceful-stop-after-workflow" });
         save();
         process.exitCode = 130;
@@ -355,20 +815,69 @@ async function main() {
         values["wire-diagnostics"] &&
         (scenario.id === "history-1000-long-tool-loop" ||
           scenario.id === "history-10000-long-tool-loop");
-      const restoreFetch = observeWire
-        ? installDiagnosticWireObserver(connection.modelId!, wireDiagnostics)
-        : () => {};
-      try {
-        trials[i] = {
+      const key = caseKey(scenario.id, planned.strategy);
+      const known = plans.get(key);
+      // Set when this trial's first request matches a stored run: the run stops before it is sent.
+      const stored: { plan?: StoredPlan } =
+        known && known.kind !== "run" && known.trials.some((t) => t.trial === planned.trial)
+          ? { plan: known }
+          : {};
+      const fingerprintedFetch = firstRequestFetch(
+        observeWire
+          ? diagnosticWireFetch(dispatcherFetch, connection.modelId!, wireDiagnostics)
+          : dispatcherFetch,
+        connection.modelId!,
+        (body) => {
+          const fingerprint = caseFingerprint({
+            request: body,
+            connection,
+            caseVersion: report.caseFixtureVersions[scenario.id] ?? fixtureVersion,
+            scenario,
+            strategy: planned.strategy!,
+            replyMode: replyMode.data,
+            maxToolCalls: controls.maxToolCalls,
+          });
+          const seen = report.fingerprint.cases[key];
+          // A case whose first request differs between trials has no stable fingerprint.
+          report.fingerprint.cases[key] =
+            seen === undefined || seen === fingerprint ? fingerprint : null;
+          if (plans.has(key)) return true;
+          const plan: CasePlan =
+            store && !values.fresh
+              ? store.plan({
+                  scenario,
+                  trials: controls.trials,
+                  strategy: planned.strategy!,
+                  fingerprint,
+                  judge: report.judge,
+                })
+              : { kind: "run" };
+          plans.set(key, plan);
+          if (plan.kind === "run" || !plan.trials.some((t) => t.trial === planned.trial))
+            return true;
+          stored.plan = plan;
+          return liveBudget.refuse();
+        },
+        scenario,
+      );
+      const modelFetch = requestBody
+        ? requestBodyFetch(fingerprintedFetch, connection.modelId!, requestBody)
+        : fingerprintedFetch;
+      if (!stored.plan) {
+        const ran = {
           ...(await runTrial(scenario, planned.trial, {
             ...controls,
+            replyMode: replyMode.data,
             connection,
+            deploymentModel: Boolean(subjectOnPlan),
             pricing,
-            createApp: async (composio, messaging) => {
-              const sandbox = new EvalSandboxProvider();
+            judge,
+            createApp: async (composio, messaging, witnesses, site) => {
+              const sandbox = new EvalSandboxProvider(scenario.computer);
               let acceptingCalls = true;
               const cacheDecisions: CacheDecisionMeasurement[] = [];
               const runtime = new PiAgentRuntime({
+                modelFetch,
                 onContextDecision: (decision) => {
                   const measured = measureCalls([{ id: "call", ...decision.usage }], pricing);
                   cacheDecisions.push({
@@ -382,21 +891,30 @@ async function main() {
                   });
                 },
                 modelCallObserver: {
+                  // Other models the product calls, such as the Auto Review checker, run too, but
+                  // only ever at their own pricing: the eval model's rates would undercharge them
+                  // whenever their provider reports no cost.
                   beforeCall: ({
                     inputTokensEstimate,
                     maxOutputTokens,
                     provider,
                     modelId,
                     cacheWriteRetention,
+                    maxCostUsd,
                   }) => {
-                    if (provider !== connection.provider || modelId !== connection.modelId)
-                      throw new Error("Eval model has no configured pricing");
-                    if (!acceptingCalls) throw new Error("Eval trial stopped scheduling inference");
-                    return liveBudget.reserve(
-                      inputTokensEstimate,
-                      maxOutputTokens,
-                      cacheWriteRetention,
-                    );
+                    if (!acceptingCalls || stored.plan)
+                      throw new Error("Eval trial stopped scheduling inference");
+                    if (provider === connection.provider && modelId === connection.modelId)
+                      return pricing
+                        ? liveBudget.reserve(
+                            inputTokensEstimate,
+                            maxOutputTokens,
+                            cacheWriteRetention,
+                          )
+                        : liveBudget.reserveCostBound(0);
+                    if (typeof maxCostUsd !== "number")
+                      throw new Error("Other model has no configured pricing");
+                    return liveBudget.reserveCostBound(maxCostUsd);
                   },
                   afterCall: (id, usage) => liveBudget.settleUsage(id, usage),
                 },
@@ -404,18 +922,16 @@ async function main() {
               const historyDiagnostics: HistoryDiagnostic[] = [];
               const toolLoopDiagnostics: DiagnosticToolObservation[] = [];
               const observedRuntime = observeSyntheticHistory(
-                runtime,
+                subjectOnPlan ? subjectOnPlan(runtime) : runtime,
                 historyDiagnostics,
                 [connection.apiKey ?? "", connection.baseUrl ?? ""],
                 toolLoopDiagnostics,
               );
+              const toolCallObservations: ObservedToolCall[] = [];
+              const toolLists: ObservedToolList[] = [];
               const handles = await createApp({
-                runtime: observedRuntime,
-                contextStrategy: planned.strategy as
-                  | "current"
-                  | "retrieval"
-                  | "snapshots"
-                  | "cache-aware",
+                runtime: observeToolCalls(observedRuntime, toolCallObservations, toolLists),
+                contextStrategy: planned.strategy as AgentContextStrategy,
                 sandbox,
                 databaseUrl,
                 realtimeDatabaseUrl: databaseUrl,
@@ -425,6 +941,10 @@ async function main() {
                 wakeupDriver: "memory",
                 composio,
                 messaging,
+                web: composio.web,
+                ...(site ? { browser: site } : {}),
+                ...(scenario.botEmail ? { inboundEmail: EVAL_INBOUND_EMAIL } : {}),
+                ...(wakesRoutines(scenario) ? witnesses : {}),
                 messagingOpenSignup: false,
                 defaultProvider: connection.provider,
                 defaultModel: connection.modelId!,
@@ -434,11 +954,17 @@ async function main() {
                 cloudAgentProvider: "none",
                 signupsEnabled: "true",
                 signupAllowlist: "",
+                // The operator runs evals against the model server they chose, often on loopback.
+                mcpAllowPrivateEndpoint: true,
                 emailEmulator: true,
+                // Purchase tools appear only for a case that connects a wallet.
+                paymentWalletProvider: "emulator",
                 pipedreamClientId: undefined,
                 pipedreamClientSecret: undefined,
                 pipedreamProjectId: undefined,
                 smtpUrl: undefined,
+                emailProvider: "none",
+                emailApiKey: undefined,
                 emailFrom: undefined,
                 sendblueApiKeyId: undefined,
                 sendblueApiSecret: undefined,
@@ -448,8 +974,6 @@ async function main() {
                 larkAppId: undefined,
                 mcpStdioEnabled: false,
                 mcpStdioAllowedCommands: [],
-                updaterUrl: undefined,
-                updaterToken: undefined,
               });
               return {
                 ...handles,
@@ -457,6 +981,8 @@ async function main() {
                 cacheDecisions,
                 historyDiagnostics,
                 toolLoopDiagnostics,
+                toolCallObservations,
+                toolLists,
                 finalizeBackground: async () => {
                   acceptingCalls = false;
                   await handles.jobs.close();
@@ -475,13 +1001,21 @@ async function main() {
           strategy: planned.strategy,
           ...(observeWire ? { wireDiagnostics } : {}),
         };
-      } finally {
-        restoreFetch();
+        // A stand-in whose cleanup failed is kept, so the checks below stop the run.
+        if (!stored.plan || ran.cleanupFailed) {
+          trials[i] = ran;
+          stored.plan = undefined;
+        } else standIns.push(ran);
       }
+      if (stored.plan)
+        trials[i] = {
+          ...(await fromStore(stored.plan, planned.trial, scenario)),
+          strategy: planned.strategy,
+        };
       save();
       const result = trials[i]!;
       console.log(
-        `${result.caseId} ${result.strategy} trial ${result.trial}: ${result.status}${result.category ? ` (${result.category})` : ""}; ${result.toolCalls} tool calls; ${result.latencyMs}ms`,
+        `${result.caseId} ${result.strategy} trial ${result.trial}: ${result.origin ? `${result.origin.kind} ` : ""}${result.status}${result.category ? ` (${result.category})` : ""}; ${result.toolCalls} tool calls; ${result.latencyMs}ms`,
       );
       if (values["stop-on-failure"] && result.status === "failed") {
         for (const remaining of trials.slice(i + 1))
@@ -501,6 +1035,13 @@ async function main() {
       }
     }
     if (trials.some((r) => r.status !== "passed")) process.exitCode = 1;
+    if (store) {
+      const fresh = trials.filter((t) => t.status !== "not-run" && t.origin?.kind !== "reused");
+      if (fresh.length) {
+        const entry = store.save(report);
+        console.log(`Stored run ${entry.fingerprint} (${entry.path})`);
+      } else console.log("Every trial came from the store; nothing new to save");
+    }
   } finally {
     process.off("SIGINT", requestStop);
     process.off("SIGTERM", requestStop);
@@ -509,43 +1050,6 @@ async function main() {
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }
-  }
-}
-
-function workingDiffHash(): string | null {
-  try {
-    const root = execFileSync("git", ["rev-parse", "--show-toplevel"], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    const options = {
-      cwd: root,
-      stdio: ["ignore", "pipe", "ignore"] as ["ignore", "pipe", "ignore"],
-      maxBuffer: 64 * 1024 * 1024,
-    };
-    const hash = createHash("sha256").update(execFileSync("git", ["diff", "HEAD"], options));
-    const added = execFileSync("git", ["ls-files", "--others", "--exclude-standard", "-z"], {
-      ...options,
-      encoding: "utf8",
-    })
-      .split("\0")
-      .filter((p) => /\.(?:ts|tsx|json)$/.test(p) && /^(?:packages|apps)\//.test(p))
-      .sort();
-    for (const file of added) hash.update(file).update(readFileSync(path.join(root, file)));
-    return hash.digest("hex");
-  } catch {
-    return null;
-  }
-}
-
-function codeRevision(): string | null {
-  try {
-    return execFileSync("git", ["rev-parse", "HEAD"], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-  } catch {
-    return null;
   }
 }
 

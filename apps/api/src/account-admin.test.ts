@@ -1,8 +1,8 @@
 import { expect, it, vi } from "vitest";
 import { Hono } from "hono";
 const auth = vi.hoisted(() => ({ memberScope: vi.fn() }));
-vi.mock("@rakazo/adapters", async () => {
-  const policy = await import("../../../../packages/adapters/src/team-policy.js");
+vi.mock("@rakazo/adapters", async (importOriginal) => {
+  const policy = await importOriginal<typeof import("@rakazo/adapters")>();
   return { ...policy, memberScope: auth.memberScope };
 });
 import { AccountAdminService, mountAccountAdmin } from "./account-admin.js";
@@ -33,7 +33,10 @@ function fixture(role = "owner") {
   const db: any = {
     deploymentSettings: {
       findUnique: vi.fn(async () => settings),
-      update: vi.fn(async () => settings),
+    },
+    managedSignupPolicy: {
+      findUnique: vi.fn(async () => settings),
+      upsert: vi.fn(async () => settings),
     },
     member: {
       findMany: vi.fn(async () => [
@@ -116,7 +119,7 @@ it("a stale deployment-owner hint cannot read or change server registration", as
       password: "correct",
     }),
   ).rejects.toThrow();
-  expect(f.db.deploymentSettings.update).not.toHaveBeenCalled();
+  expect(f.db.managedSignupPolicy.upsert).not.toHaveBeenCalled();
 });
 it("registration saves only explicit reviewed fields, normalizes emails and audits without passwords", async () => {
   const f = fixture();
@@ -124,13 +127,15 @@ it("registration saves only explicit reviewed fields, normalizes emails and audi
     actor,
     await registration(f, { allowlist: ["NEW@example.test", "new@example.test", "@Example.test"] }),
   );
-  expect(f.db.deploymentSettings.update).toHaveBeenCalledWith({
+  const update = {
+    signupsEnabled: true,
+    signupAllowlist: "new@example.test,@example.test",
+    signupPolicyInitialized: true,
+  };
+  expect(f.db.managedSignupPolicy.upsert).toHaveBeenCalledWith({
     where: { id: "default" },
-    data: {
-      signupsEnabled: true,
-      signupAllowlist: "new@example.test,@example.test",
-      signupPolicyInitialized: true,
-    },
+    create: { id: "default", ...update },
+    update,
   });
   expect(JSON.stringify(f.db.teamAudit.create.mock.calls)).not.toContain("correct");
 });
@@ -143,7 +148,7 @@ it("a stale registration review or revoked live role cannot write", async () => 
   await expect(f.service.registration(actor, await registration(f))).rejects.toThrow(
     "authorization",
   );
-  expect(f.db.deploymentSettings.update).not.toHaveBeenCalled();
+  expect(f.db.managedSignupPolicy.upsert).not.toHaveBeenCalled();
 });
 it("uninitialized policy reads actual environment defaults, not schema defaults", async () => {
   const f = fixture();
@@ -177,14 +182,15 @@ it("requires same-origin browser authentication and a fresh correct password", a
   const f = fixture();
   const input = await registration(f);
   expect((await f.app.request("https://team.test/api/account-admin/view")).status).toBe(401);
-  for (const headers of [
+  const invalidHeaders: Record<string, string>[] = [
     { origin: "https://evil.test" },
     { authorization: "Bearer agent" },
     { cookie: "" },
-  ])
+  ];
+  for (const headers of invalidHeaders)
     expect((await f.post("registration", input, headers)).status).toBe(403);
   expect((await f.post("registration", { ...input, password: "wrong" })).status).toBe(403);
-  expect(f.db.deploymentSettings.update).not.toHaveBeenCalled();
+  expect(f.db.managedSignupPolicy.upsert).not.toHaveBeenCalled();
   expect((await f.post("registration", input, { origin: "https://other.test" })).status).toBe(200);
 });
 it("denies non-managers before password verification or mutation", async () => {
@@ -210,7 +216,7 @@ it("oversized bodies, invalid emails, extra privileges and missing confirmation 
     { phrase: "yes" },
   ])
     expect((await f.post("registration", { ...input, ...change })).status).toBe(400);
-  expect(f.db.deploymentSettings.update).not.toHaveBeenCalled();
+  expect(f.db.managedSignupPolicy.upsert).not.toHaveBeenCalled();
 });
 it("rate limits fresh-password attempts and never caches successful approval", async () => {
   const f = fixture();
@@ -218,5 +224,5 @@ it("rate limits fresh-password attempts and never caches successful approval", a
   for (let i = 0; i < 5; i++)
     expect((await f.post("registration", { ...input, password: "wrong" })).status).toBe(403);
   expect((await f.post("registration", input)).status).toBe(429);
-  expect(f.db.deploymentSettings.update).not.toHaveBeenCalled();
+  expect(f.db.managedSignupPolicy.upsert).not.toHaveBeenCalled();
 });

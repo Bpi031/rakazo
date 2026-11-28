@@ -1,8 +1,12 @@
 import { useEffect, useRef, useState } from "react";
+import { useEventListener } from "../lib/use-event-listener";
 import { Check, ChevronDown, Cpu, Search, X } from "lucide-react";
 import type { Bot, ModelCatalogEntry, ThinkingLevel } from "@rakazo/contracts";
 import { rpc } from "../lib/rpc";
-import { thinkingLevelLabel } from "../lib/model-catalog";
+import { useSave } from "../lib/query/query";
+import { thinkingLevelLabel as sharedThinkingLevelLabel } from "@rakazo/i18n/thinking-level";
+const thinkingLevelLabel = (level: ThinkingLevel) =>
+  level === "ultra" ? "Ultra" : sharedThinkingLevelLabel(level);
 import "../pages/workspace-motion.css";
 
 export function ManagedModelPicker({
@@ -17,11 +21,24 @@ export function ManagedModelPicker({
   const [models, setModels] = useState<ModelCatalogEntry[]>([]);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  const [catalogError, setCatalogError] = useState("");
   const root = useRef<HTMLDivElement>(null);
   const search = useRef<HTMLInputElement>(null);
-  const revision = useRef(0);
+  const save = useSave<{ botId: string; modelId: string | null; effort: ThinkingLevel | null; close: boolean }, Bot>({
+    save: (input, client) => client.bots.update({
+      botId: input.botId,
+      modelProvider: input.modelId ? "codex-foundry" : null,
+      modelId: input.modelId,
+      thinkingLevel: input.effort,
+    }),
+    onSaved: (updated, input) => {
+      if (updated.id !== bot.id) return;
+      onChange(updated);
+      if (input.close) setOpen(false);
+    },
+  });
+  const busy = save.pending;
+  const error = save.error ? "Model or effort choice was not saved. No fallback was used." : catalogError;
   useEffect(() => {
     let live = true;
     void rpc.models
@@ -30,32 +47,27 @@ export function ManagedModelPicker({
         if (live) setModels(rows);
       })
       .catch(() => {
-        if (live) setError("Models unavailable");
+        if (live) setCatalogError("Models unavailable");
       });
     return () => {
       live = false;
     };
   }, []);
   useEffect(() => {
-    revision.current++;
     setOpen(false);
     setQuery("");
-    setError("");
-    setBusy(false);
   }, [bot.id]);
   useEffect(() => {
     if (!open) return;
     search.current?.focus();
-    const close = (event: PointerEvent) => {
-      if (!root.current?.contains(event.target as Node)) setOpen(false);
-    };
-    document.addEventListener("pointerdown", close);
-    return () => document.removeEventListener("pointerdown", close);
   }, [open]);
+  useEventListener(open && typeof document !== "undefined" ? document : null, "pointerdown", (event) => {
+    if (event.target instanceof Node && !root.current?.contains(event.target)) setOpen(false);
+  });
   const active = models.find((model) => model.id === (bot.modelId ?? defaultModel));
   const levels = active?.thinkingLevels ?? [];
   const effort = bot.thinkingLevel ?? active?.defaultThinkingLevel;
-  async function choose(
+  function choose(
     id: string | null,
     thinkingLevel: ThinkingLevel | null = null,
     close = true,
@@ -63,26 +75,7 @@ export function ManagedModelPicker({
     if (busy || (id && !models.some((m) => m.id === id))) return;
     const model = models.find((m) => m.id === (id ?? defaultModel));
     if (thinkingLevel && !model?.thinkingLevels?.includes(thinkingLevel)) return;
-    const generation = revision.current;
-    setBusy(true);
-    setError("");
-    try {
-      const updated = await rpc.bots.update({
-        botId: bot.id,
-        modelProvider: id ? "codex-foundry" : null,
-        modelId: id,
-        thinkingLevel,
-      });
-      if (generation === revision.current) {
-        onChange(updated);
-        if (close) setOpen(false);
-      }
-    } catch {
-      if (generation === revision.current)
-        setError("Model or effort choice was not saved. No fallback was used.");
-    } finally {
-      if (generation === revision.current) setBusy(false);
-    }
+    save.run({ botId: bot.id, modelId: id, effort: thinkingLevel, close });
   }
   return (
     <div
@@ -102,14 +95,14 @@ export function ManagedModelPicker({
         aria-expanded={open}
         aria-haspopup="dialog"
         onClick={() => setOpen((v) => !v)}
-        className="flex min-w-0 max-w-72 items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent"
+        className="flex min-w-0 max-w-72 items-center gap-2 rounded-md px-2 py-1.5 text-body hover:bg-accent"
       >
         <Cpu size={17} className="shrink-0" />
         <span className="min-w-0 max-w-24 truncate sm:max-w-44">
           {active?.label ?? (bot.modelId ? "Unavailable model" : "Default model")}
         </span>
         {levels.length > 0 && effort && (
-          <span className="shrink-0 text-xs text-muted-foreground">
+          <span className="shrink-0 text-label text-muted-foreground">
             {levels.includes(effort) ? thinkingLevelLabel(effort) : "Unavailable effort"}
           </span>
         )}
@@ -122,7 +115,7 @@ export function ManagedModelPicker({
           className="workspace-panel-enter absolute right-0 top-full z-50 mt-2 w-[min(350px,calc(100vw-7rem))] rounded-lg border border-border bg-popover p-3 text-popover-foreground shadow-xl"
         >
           <div className="mb-3 flex items-center justify-between gap-3">
-            <h2 className="text-sm font-semibold">Models</h2>
+            <h2 className="text-body font-semibold">Models</h2>
             <button
               title="Close models"
               aria-label="Close models"
@@ -136,7 +129,7 @@ export function ManagedModelPicker({
             <Search size={16} />
             <input
               ref={search}
-              className="min-w-0 flex-1 bg-transparent py-2 text-sm outline-none"
+              className="min-w-0 flex-1 bg-transparent py-2 text-body outline-none"
               aria-label="Search approved models"
               placeholder="Search models"
               value={query}
@@ -144,14 +137,14 @@ export function ManagedModelPicker({
             />
           </label>
           {error && (
-            <p role="alert" className="mb-2 text-xs text-destructive">
+            <p role="alert" className="mb-2 text-label text-destructive">
               {error}
             </p>
           )}
           <div className="max-h-64 overflow-auto" role="group" aria-label="Model choices">
             {!query && (
               <button
-                className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-accent"
+                className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-body hover:bg-accent"
                 disabled={busy}
                 aria-pressed={!bot.modelId}
                 onClick={() => void choose(null)}
@@ -169,7 +162,7 @@ export function ManagedModelPicker({
                   key={model.id}
                   disabled={busy}
                   aria-pressed={bot.modelId === model.id}
-                  className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-accent disabled:opacity-50"
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-body hover:bg-accent disabled:opacity-50"
                   onClick={() => void choose(model.id)}
                 >
                   <span className="grid size-5 shrink-0 place-items-center">
@@ -179,14 +172,14 @@ export function ManagedModelPicker({
                 </button>
               ))}
             {!models.length && !error && (
-              <p role="status" className="p-2 text-xs">
+              <p role="status" className="p-2 text-label">
                 Loading approved models…
               </p>
             )}
           </div>
           {levels.length > 0 && (
             <fieldset className="mt-3 min-w-0 border-t border-border pt-3">
-              <legend className="px-1 text-xs text-muted-foreground">Reasoning effort</legend>
+              <legend className="px-1 text-label text-muted-foreground">Reasoning effort</legend>
               <div
                 role="radiogroup"
                 aria-label="Reasoning effort"
@@ -220,12 +213,12 @@ export function ManagedModelPicker({
                   aria-checked={bot.thinkingLevel == null}
                   disabled={busy}
                   onClick={() => void choose(bot.modelId, null, false)}
-                  className="rounded px-2 py-1.5 text-xs aria-checked:bg-background disabled:opacity-50"
+                  className="rounded px-2 py-1.5 text-label aria-checked:bg-background disabled:opacity-50"
                 >
                   Default
                   {active?.defaultThinkingLevel
-                    ? ` · ${thinkingLevelLabel(active.defaultThinkingLevel)}`
-                    : ""}
+                    ? <span className="ml-2 text-muted-foreground">{thinkingLevelLabel(active.defaultThinkingLevel)}</span>
+                    : null}
                 </button>
                 {levels.map((level) => (
                   <button
@@ -236,7 +229,7 @@ export function ManagedModelPicker({
                     disabled={busy}
                     onClick={() => void choose(bot.modelId, level, false)}
                     title={`${thinkingLevelLabel(level)} reasoning for the next turn`}
-                    className="rounded px-2 py-1.5 text-xs aria-checked:bg-background disabled:opacity-50"
+                    className="rounded px-2 py-1.5 text-label aria-checked:bg-background disabled:opacity-50"
                   >
                     {thinkingLevelLabel(level)}
                   </button>
@@ -244,8 +237,8 @@ export function ManagedModelPicker({
               </div>
             </fieldset>
           )}
-          <p className="mt-3 border-t border-border pt-3 text-xs text-muted-foreground">
-            Next turn · Same workspace and history
+          <p className="mt-3 border-t border-border pt-3 text-label text-muted-foreground">
+            Next turn <span className="ml-2">Same workspace and history</span>
           </p>
         </div>
       )}

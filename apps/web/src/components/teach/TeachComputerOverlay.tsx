@@ -2,16 +2,13 @@ import { Trans, useLingui } from "@lingui/react/macro";
 import type { ComputerStatus } from "@rakazo/contracts";
 import { Button, Label, Popover, PopoverContent, PopoverTrigger, Textarea } from "@rakazo/ui-web";
 import { useEffect, useRef, useState } from "react";
-import { rpc } from "../../lib/rpc";
-import { errorText } from "../../lib/user-error";
+import { runsOnUserMachine } from "../../lib/computers/computer-sandbox";
+import { rpc } from "../../lib/query/rpc";
+import { errorText } from "../../lib/query/user-error";
 
 /**
- * Compact Teach a task control for the computer chrome bar above the screen
- * (not painted on the framebuffer, and not in the agent sidepanel).
- *
- * Mount with key={botId} from Shell so a bot switch remounts clean state.
- * Async completions still check botIdRef so a late response from bot A cannot
- * mutate bot B if the instance is reused.
+ * Mount with key={botId} so a bot switch remounts clean state. Async completions still check
+ * botIdRef so a late response from bot A cannot mutate bot B if the instance is reused.
  */
 export function TeachComputerOverlayControl({
   botId,
@@ -45,9 +42,8 @@ export function TeachComputerOverlayControl({
   const startLocked = needsRefresh || syncingRecording;
   const recoveryVisible = !goalOpen && needsRefresh && recoveryOpen;
 
-  // Re-seed the lock from server state on mount / bot change. Local needsRefresh
-  // is lost on remount and can leak across bots if not cleared when idle.
-  // Lock immediately while the probe runs so a remount cannot start twice.
+  // Local needsRefresh is lost on remount and can leak across bots, so re-seed it from the
+  // server, locked while the probe runs so a remount cannot start twice.
   useEffect(() => {
     let cancelled = false;
     const probeBotId = botId;
@@ -93,7 +89,7 @@ export function TeachComputerOverlayControl({
   }, [botId, onRefresh]); // t omitted: identity churn must not re-lock Start
 
   // Hide only for desktop-host bots. Null computer still shows the control so teaching can boot.
-  if (computer?.kind === "desktop") return null;
+  if (runsOnUserMachine(computer)) return null;
 
   async function refreshView() {
     const requestBotId = botId;
@@ -138,7 +134,6 @@ export function TeachComputerOverlayControl({
       await rpc.computer.boot({ botId: requestBotId });
       await rpc.skills.start({ botId: requestBotId, goal: requestGoal });
       if (botIdRef.current !== requestBotId) return;
-      // Recording has started. Keep Start locked; only refresh the view.
       setGoalOpen(false);
       setNeedsRefresh(true);
       try {
@@ -186,7 +181,6 @@ export function TeachComputerOverlayControl({
         }
         if (syncingRecording) return;
         if (needsRefresh) {
-          // Keep Start recording locked; only reopen refresh recovery.
           setRecoveryOpen(true);
           return;
         }
@@ -216,7 +210,7 @@ export function TeachComputerOverlayControl({
           <>
             <Label
               htmlFor="teach-goal-input"
-              className="text-[13px] font-normal text-muted-foreground"
+              className="text-body-sm font-normal text-muted-foreground"
             >
               <Trans>What result will you demonstrate?</Trans>
             </Label>
@@ -229,7 +223,7 @@ export function TeachComputerOverlayControl({
               placeholder={t`Export this week's list from the CRM and drop it in the shared folder`}
             />
             {error ? (
-              <div role="alert" className="text-[13px] text-destructive">
+              <div role="alert" className="text-body-sm text-destructive">
                 {error}
               </div>
             ) : null}
@@ -252,11 +246,11 @@ export function TeachComputerOverlayControl({
         ) : (
           <>
             {error ? (
-              <div role="alert" className="text-[13px] text-destructive">
+              <div role="alert" className="text-body-sm text-destructive">
                 {error}
               </div>
             ) : (
-              <p className="text-[13px] text-muted-foreground">
+              <p className="text-body-sm text-muted-foreground">
                 <Trans>Recording started. Refresh the view to continue.</Trans>
               </p>
             )}

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readManagedRuntimeAsset } from "./storage/managed-runtime-assets.js";
 import {
   GoalInput,
   HelperInput,
@@ -7,18 +7,46 @@ import {
   safeText,
   type Actor,
 } from "@rakazo/contracts";
-import { createRepos, type PrismaClient, type Prisma } from "@rakazo/db";
+import { createRepos, readJsonColumn, storedMessageBlocks, type PrismaClient, type Prisma } from "@rakazo/db";
 import type { SandboxProvider, AdapterContext } from "@rakazo/adapter-kit";
-import { memberScope } from "./team-storage.js";
-import { teamDigest } from "./team-policy.js";
-import { toComputerRef } from "./computer-support.js";
-import { workflowText } from "./workflow-text.js";
+import { memberScope } from "./teams/team-storage.js";
+import { teamDigest } from "./teams/team-policy.js";
+import { toComputerRef } from "./computers/screens/computer-support.js";
+import { workflowText } from "./teams/workflow-text.js";
 import { z } from "zod";
 import { assertManagedTeamComputer, workspaceRelativeRoots } from "./managed-workspace.js";
 
-const files = readFileSync(new URL("./workbench-files.py", import.meta.url), "utf8");
-const filesDigest = createHash("sha256").update(files).digest("hex");
+const workbenchFiles = () => readManagedRuntimeAsset("workbench-files.py");
+const filesDigest = () => createHash("sha256").update(workbenchFiles()).digest("hex");
 const json = (value: unknown) => JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+const namedRecord = z.object({
+  title: z.string().optional(), name: z.string().optional(), path: z.string().optional(),
+  objective: z.string().optional(), hook: z.string().optional(),
+});
+const skillsRecord = z.object({
+  skills: z.array(z.looseObject({ id: z.string(), path: z.string(), name: z.string() })).max(64),
+});
+const goalRecord = z.object({ revision: z.number().int().nonnegative() });
+const changeRecord = z.looseObject({
+  path: z.string(), proposedText: z.string(), helperSha256: z.string(), sourceSha256: z.string(),
+});
+const analysisOutput = z.looseObject({
+  name: z.string(), text: z.string(), needsApproval: z.boolean(),
+  solveStarted: z.literal(false), policyApprovalGranted: z.literal(false),
+});
+const analysisRecord = z.looseObject({
+  inputDigest: z.string(), scopeDigest: z.string(), result: analysisOutput.optional(),
+});
+const scenarioMessageRecord = z.looseObject({
+  nonce: z.string(), question: z.string(), answer: z.string(), needsApproval: z.boolean(),
+});
+const scenarioRecord = z.looseObject({
+  title: z.string(), context: z.array(z.json()), messages: z.array(scenarioMessageRecord),
+  activeNonce: z.string().optional(),
+});
+function workbenchRecord<T extends z.ZodType>(schema: T, row: { id: string; payload: unknown }) {
+  return readJsonColumn(schema, row.payload, { table: "agent_workbench_records", column: "payload", id: row.id }, "reject");
+}
 const now = () => new Date();
 const stableId = (key: string) => {
   const h = teamDigest(key);
@@ -147,6 +175,7 @@ export class AgentWorkbench {
     });
     const selected = metadata.find((r) => r.kind === "skill_selection");
     const goal = metadata.find((r) => r.kind === "goal");
+    const skills = metadata.find((r) => r.kind === "skills");
     return {
       botId,
       goal: goal?.payload ?? { objective: "", status: "paused", revision: 0 },
@@ -155,22 +184,25 @@ export class AgentWorkbench {
       manifestDigest: teamDigest(protectedHooks),
       records: rows
         .filter((r) => !["skill_selection", "goal", "skills"].includes(r.kind))
-        .map((r) => ({
+        .map((r) => {
+          const label = workbenchRecord(namedRecord, r);
+          return {
           id: r.id,
           kind: r.kind,
           status: r.status,
           digest: r.digest,
           createdAt: r.createdAt.toISOString(),
           title: String(
-            (r.payload as any).title ??
-              (r.payload as any).name ??
-              (r.payload as any).path ??
-              (r.payload as any).objective ??
-              (r.payload as any).hook ??
+            label.title ??
+              label.name ??
+              label.path ??
+              label.objective ??
+              label.hook ??
               r.kind,
           ).slice(0, 200),
-        })),
-      skills: (metadata.find((r) => r.kind === "skills")?.payload as any)?.skills ?? [],
+          };
+        }),
+      skills: skills ? workbenchRecord(skillsRecord, skills).skills : [],
       policyApprovalGranted: false,
       solveStarted: false,
     };
@@ -193,7 +225,7 @@ export class AgentWorkbench {
       await this.owned(actor, botId, tx as PrismaClient);
       const id = teamDigest({ ...this.where(actor, botId), kind: "goal" });
       const old = await tx.agentWorkbenchRecord.findUnique({ where: { id } });
-      if (((old?.payload as any)?.revision ?? 0) !== revision)
+      if ((old ? workbenchRecord(goalRecord, old).revision : 0) !== revision)
         throw new Error("Goal changed; refresh first");
       const payload = {
         ...goal,
@@ -236,7 +268,7 @@ export class AgentWorkbench {
     for await (const event of this.deps.sandbox.execute(
       toComputerRef(bot.computer),
       {
-        argv: ["/opt/office-python/bin/python3", "-I", "-c", files, encoded, JSON.stringify(workspaceRelativeRoots(bot.computer!.scope, botId))],
+        argv: ["/opt/office-python/bin/python3", "-I", "-c", workbenchFiles(), encoded, JSON.stringify(workspaceRelativeRoots(bot.computer!.scope, botId))],
         cwd: "/home/rakazo",
         timeoutMs: 15000,
         unsetEnv: ["PYTHONPATH", "PYTHONHOME", "LD_PRELOAD"],
@@ -335,7 +367,7 @@ export class AgentWorkbench {
       where: { ...this.where(actor, botId), id, kind: "change" },
     });
     if (old) {
-      const payload = old.payload as any;
+      const payload = workbenchRecord(changeRecord, old);
       if (payload.path !== path || payload.proposedText !== proposedText)
         throw new Error("Draft replay changed");
       return {
@@ -366,7 +398,7 @@ export class AgentWorkbench {
       {
         ...source,
         proposedText,
-        helperSha256: filesDigest,
+        helperSha256: filesDigest(),
         policyApprovalGranted: false,
         solveStarted: false,
       },
@@ -389,8 +421,8 @@ export class AgentWorkbench {
       !["draft", "saved"].includes(row.status)
     )
       throw new Error("Draft review changed or expired");
-    const payload = row.payload as any;
-    if (teamDigest(payload) !== digest || payload.helperSha256 !== filesDigest)
+    const payload = workbenchRecord(changeRecord, row);
+    if (teamDigest(payload) !== digest || payload.helperSha256 !== filesDigest())
       throw new Error("Review implementation changed");
     const saved = await this.executeFiles(actor, botId, {
       operation: "save",
@@ -424,7 +456,7 @@ export class AgentWorkbench {
       where: { ...this.where(actor, botId), id, kind: "scenario" },
     });
     if (old) {
-      if ((old.payload as any).title !== title) throw new Error("Scenario replay changed");
+      if (workbenchRecord(scenarioRecord, old).title !== title) throw new Error("Scenario replay changed");
       return old;
     }
     if (
@@ -443,7 +475,7 @@ export class AgentWorkbench {
     const context = source.reverse().map((m) => ({
       role: m.role,
       messageId: m.id,
-      text: (m.blocks as any[])
+      text: storedMessageBlocks(m)
         .filter((b) => b.kind === "text")
         .map((b) => b.text)
         .join("\n")
@@ -533,9 +565,11 @@ export class AgentWorkbench {
           old.userId !== actor.userId ||
           old.spaceId !== actor.spaceId ||
           old.botId !== botId ||
-          (old.payload as any).inputDigest !== inputDigest ||
-          (old.payload as any).scopeDigest !== scopeDigest
+          old.kind !== kind
         )
+          throw new Error("Analysis replay changed");
+        const prior = workbenchRecord(analysisRecord, old);
+        if (prior.inputDigest !== inputDigest || prior.scopeDigest !== scopeDigest)
           throw new Error("Analysis replay changed");
         if (old.status === "completed") return old;
         throw new Error("Analysis already started or needs review; no automatic retry");
@@ -560,7 +594,11 @@ export class AgentWorkbench {
         tx as PrismaClient,
       );
     });
-    if (reservation.status === "completed") return (reservation.payload as any).result;
+    const storedReservation = workbenchRecord(analysisRecord, reservation);
+    if (reservation.status === "completed") {
+      if (!storedReservation.result) throw new Error("Completed analysis has no result");
+      return storedReservation.result;
+    }
     try {
       const result = await (this.deps.generate ?? workflowText)({
         userId: actor.userId,
@@ -595,7 +633,7 @@ export class AgentWorkbench {
         where: { id },
         data: {
           status: "completed",
-          payload: json({ ...(reservation.payload as any), result: value }),
+          payload: json({ ...storedReservation, result: value }),
         },
       });
       return value;
@@ -642,8 +680,8 @@ export class AgentWorkbench {
     const payload = await this.db.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${"scenario:" + id}, 0))`;
       const row = await this.row(actor, botId, id, "scenario", tx as PrismaClient);
-      const current = row.payload as any;
-      const old = current.messages.find((m: any) => m.nonce === nonce);
+      const current = workbenchRecord(scenarioRecord, row);
+      const old = current.messages.find((m) => m.nonce === nonce);
       if (old) {
         if (old.question !== message) throw new Error("Scenario replay changed");
         return { ...current, replay: old };
@@ -657,15 +695,17 @@ export class AgentWorkbench {
       });
       return next;
     });
-    if (payload.replay)
+    if ("replay" in payload && scenarioMessageRecord.safeParse(payload.replay).success) {
+      const replay = scenarioMessageRecord.parse(payload.replay);
       return {
         name: payload.title,
-        text: payload.replay.answer,
-        needsApproval: payload.replay.needsApproval,
+        text: replay.answer,
+        needsApproval: replay.needsApproval,
         replayed: true,
         solveStarted: false,
         policyApprovalGranted: false,
       };
+    }
     if (payload.messages.length >= 12)
       throw new Error("Scenario conversation cap; create a new explicit branch");
     try {
@@ -686,9 +726,9 @@ export class AgentWorkbench {
       await this.db.$transaction(async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${"scenario:" + id}, 0))`;
         const fresh = await this.row(actor, botId, id, "scenario", tx as PrismaClient);
-        const current = fresh.payload as any;
+        const current = workbenchRecord(scenarioRecord, fresh);
         if (current.activeNonce !== nonce) throw new Error("Scenario claim changed");
-        if (!current.messages.some((m: any) => m.nonce === nonce)) {
+        if (!current.messages.some((m) => m.nonce === nonce)) {
           delete current.activeNonce;
           const updated = {
             ...current,
@@ -717,7 +757,7 @@ export class AgentWorkbench {
         const row = await tx.agentWorkbenchRecord.findFirst({
           where: { ...this.where(actor, botId), id, kind: "scenario" },
         });
-        const current = row?.payload as any;
+        const current = row ? workbenchRecord(scenarioRecord, row) : null;
         if (current?.activeNonce === nonce) {
           delete current.activeNonce;
           await tx.agentWorkbenchRecord.update({

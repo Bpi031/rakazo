@@ -117,7 +117,7 @@ it("previews the node prompt on focus and supports dragging the fixed canvas", a
   expect(tooltip.textContent).toContain("…");
   expect(tooltip.querySelector("time")?.dateTime).toBe("2026-11-14T00:59:00Z");
   await act(async () => button.click());
-  expect(select).toHaveBeenCalledWith(view.checkpoints[0]);
+  expect(select).toHaveBeenCalledWith(view.checkpoints[0], button);
   const viewport = host.querySelector<HTMLElement>(
     'section[aria-label="Checkpoint tree, drag to pan"]',
   )!;

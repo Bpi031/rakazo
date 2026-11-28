@@ -1,6 +1,5 @@
 name: Self-host setup
 description: Cannot start Rakazo, run compose, migrate, or build the sandbox
-title: "[Self-host]: "
 labels:
   - self-host
 body:
@@ -43,6 +42,13 @@ body:
     validations:
       required: true
 
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics report
+      description: If the stack starts, paste the output of `docker compose -f docker-compose.images.yml exec api node dist/cli/diagnostics.js`. It contains no secrets.
+      render: markdown
+
   - type: input
     id: version
     attributes:
@@ -75,6 +81,6 @@ body:
     id: node
     attributes:
       label: Node.js version
-      placeholder: v22.x
+      placeholder: v24.x
     validations:
       required: true

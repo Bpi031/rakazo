@@ -3,9 +3,23 @@ import { Button } from "@rakazo/ui-web/components/ui/button";
 import { cn } from "@rakazo/ui-web/lib/utils";
 import { EyeIcon, EyeOffIcon } from "lucide-react";
 import * as React from "react";
+import type { FieldSize } from "../../lib/control-size.js";
+import { controlHeight } from "../../lib/control-size.js";
+
+type InputProps = Omit<React.ComponentProps<"input">, "size"> & {
+  size?: FieldSize;
+};
 
 const inputClass =
-  "h-8 w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 py-1 text-base transition-colors outline-none file:inline-flex file:h-6 file:border-0 file:bg-transparent file:text-sm file:font-medium file:text-foreground placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:cursor-not-allowed disabled:bg-input/50 disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 md:text-sm dark:bg-input/30 dark:disabled:bg-input/80 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40";
+  // off-scale: 16px below md stops iOS Safari zooming into a focused field.
+  "w-full min-w-0 rounded-lg border border-input bg-transparent dark:bg-input/30 px-3 py-1 text-[16px]/6 text-foreground transition-colors outline-none file:inline-flex file:h-6 file:border-0 file:bg-transparent file:text-body file:font-medium file:text-foreground placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:cursor-not-allowed disabled:bg-input/50 disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 md:text-body dark:disabled:bg-input/80 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40";
+
+const inputSize: Record<FieldSize, string> = {
+  sm: controlHeight.sm,
+  default: controlHeight.default,
+  lg: controlHeight.lg,
+  xl: `${controlHeight.xl} rounded-xl px-4 md:text-body-lg`,
+};
 
 /** The labels of the show/hide button on hidden fields; the kit itself is not translated. */
 const RevealLabelsContext = React.createContext({ show: "Show password", hide: "Hide password" });
@@ -24,13 +38,14 @@ function InputRevealLabelsProvider({
   return <RevealLabelsContext.Provider value={labels}>{children}</RevealLabelsContext.Provider>;
 }
 
-function Input({ className, type, ...props }: React.ComponentProps<"input">) {
-  if (type === "password") return <HiddenInput className={className} {...props} />;
+function Input({ className, type, size = "default", ...props }: InputProps) {
+  if (type === "password") return <HiddenInput className={className} size={size} {...props} />;
   return (
     <InputPrimitive
       type={type}
       data-slot="input"
-      className={cn(inputClass, className)}
+      data-size={size}
+      className={cn(inputClass, inputSize[size], className)}
       {...props}
     />
   );
@@ -43,9 +58,10 @@ function Input({ className, type, ...props }: React.ComponentProps<"input">) {
  */
 function HiddenInput({
   className,
+  size = "default",
   disabled,
   ...props
-}: Omit<React.ComponentProps<"input">, "type">) {
+}: Omit<InputProps, "type">) {
   const labels = React.useContext(RevealLabelsContext);
   const [shown, setShown] = React.useState(false);
   // Disabling the field, say while a form submits, hides the value again, and it stays hidden
@@ -57,20 +73,30 @@ function HiddenInput({
       <InputPrimitive
         type={visible ? "text" : "password"}
         data-slot="input"
+        data-size={size}
         disabled={disabled}
-        className={cn(inputClass, "block", className, "pr-9")}
+        className={cn(
+          inputClass,
+          inputSize[size],
+          "block",
+          className,
+          size === "xl" ? "pr-12" : "pr-9",
+        )}
         {...props}
       />
       <Button
         type="button"
         variant="ghost"
-        size="icon-sm"
+        size={size === "xl" ? "icon" : "icon-sm"}
         disabled={disabled}
         aria-label={visible ? labels.hide : labels.show}
         // A click leaves the caret in the field; the keyboard still reaches the button.
         onMouseDown={(event) => event.preventDefault()}
         onClick={() => setShown((current) => !current)}
-        className="absolute inset-y-0 right-1 my-auto text-muted-foreground"
+        className={cn(
+          "absolute inset-y-0 my-auto text-muted-foreground",
+          size === "xl" ? "right-2" : "right-1",
+        )}
       >
         {visible ? <EyeOffIcon /> : <EyeIcon />}
       </Button>

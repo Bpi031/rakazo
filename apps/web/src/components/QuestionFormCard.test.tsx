@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
+import { createQueryRoot } from "../lib/query/query-root.test-support";
 import { afterEach, expect, it, vi } from "vitest";
 import { QuestionFormCard } from "./QuestionFormCard";
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-let root: Root, host: HTMLDivElement;
+let root: ReturnType<typeof createQueryRoot>, host: HTMLDivElement;
 afterEach(async () => {
   if (root) await act(async () => root.unmount());
   host?.remove();
@@ -26,7 +26,7 @@ const form = {
 async function render(onAnswer: (s: string) => Promise<void>, value = form) {
   host = document.createElement("div");
   document.body.append(host);
-  root = createRoot(host);
+  root = createQueryRoot(host);
   await act(async () =>
     root.render(
       <QuestionFormCard question="Review these facts" form={value} onAnswer={onAnswer} />,
@@ -35,11 +35,18 @@ async function render(onAnswer: (s: string) => Promise<void>, value = form) {
 }
 const button = (text: string) =>
   Array.from(host.querySelectorAll("button")).find((b) => b.textContent === text)!;
+async function choose(value: string) {
+  const trigger = host.querySelector<HTMLElement>('[role="combobox"]')!;
+  await act(async () => trigger.click());
+  const option = Array.from(document.querySelectorAll<HTMLElement>('[role="option"]'))
+    .find((item) => item.textContent === value)!;
+  await act(async () => option.click());
+}
 async function change(selector: string, value: string) {
   const el = host.querySelector(selector) as HTMLInputElement;
   await act(async () => {
     Object.getOwnPropertyDescriptor(
-      el.tagName === "SELECT" ? HTMLSelectElement.prototype : HTMLInputElement.prototype,
+      HTMLInputElement.prototype,
       "value",
     )!.set!.call(el, value);
     el.dispatchEvent(new Event("change", { bubbles: true }));
@@ -51,7 +58,7 @@ it("waits quietly with no defaults and accepts a deliberate zero", async () => {
   await render(onAnswer);
   expect(button("Continue").disabled).toBe(true);
   expect(onAnswer).not.toHaveBeenCalled();
-  await change("select", "Keep");
+  await choose("Keep");
   await change('input[type="number"]', "0");
   await change('input[type="date"]', "2026-11-01");
   await act(async () => button("Answer later").click());
@@ -69,7 +76,7 @@ it("never treats a failed submission as answered", async () => {
     throw new Error("failed");
   });
   await render(answer, { ...form, fields: [form.fields[0]!] });
-  await change("select", "Review");
+  await choose("Review");
   await act(async () => button("Continue").click());
   expect(host.querySelector('[role="alert"]')?.textContent).toContain("not confirmed");
   expect(host.textContent).not.toContain("Answered");

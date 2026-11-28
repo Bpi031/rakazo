@@ -1,8 +1,5 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { Hono } from "hono";
-vi.mock("@rakazo/adapters", async () => {
-  const module = await import("../../../../packages/adapters/src/policy-priorities.js"); return { prioritySchemas: module.prioritySchemas };
-});
 import { mountPriorityHttp } from "./policy-priorities-http.js";
 const actor = { userId: "u", spaceId: "s", email: "test@example.invalid", isDeploymentOwner: false };
 const id = "e375d057-e532-4416-b617-3a6d2ab5a7c1"; const digest = "a".repeat(64);

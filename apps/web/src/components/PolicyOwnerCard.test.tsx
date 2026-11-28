@@ -1,14 +1,18 @@
 // @vitest-environment jsdom
 import { act } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
+import { createQueryRoot } from "../lib/query/query-root.test-support";
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-vi.mock('../lib/rpc',()=>({rpc:{threads:{followUp:vi.fn(async()=>({ok:true}))}}}));
+vi.mock('../lib/query/rpc',()=> {
+  const client = { threads: { followUp: vi.fn(async () => ({ok:true})) } };
+  return { rpc: client, createSpaceRpc: () => client, selectedSpaceId: () => null,
+    withSpaceHeaders: (headers: Record<string, string>) => headers };
+});
 import { rpc } from '../lib/rpc';
 import { PolicyOwnerCard } from './PolicyOwnerCard';
-let root:Root,host:HTMLDivElement,fetcher:any;
+let root:ReturnType<typeof createQueryRoot>,host:HTMLDivElement,fetcher:any;
 const row={id:'a'.repeat(64),botId:'b',digest:'d'.repeat(64),status:'pending',expiresAt:'2099-01-01T00:00:00Z',
   review:{reason:'Respect confirmed no-holiday rounds.',purpose:'model_correction',snapshot:{sourceDiff:'-old\n+new',cnlDiff:'-old meaning\n+corrected meaning',candidate:{policy:'workspace/new.rost',cnl:'All confirmed rules'}}}};
-beforeEach(()=>{(globalThis as any).IS_REACT_ACT_ENVIRONMENT=true;fetcher=vi.fn(async()=>new Response(JSON.stringify(row),{status:200}));vi.stubGlobal('fetch',fetcher);host=document.createElement('div');root=createRoot(host);});
+beforeEach(()=>{(globalThis as any).IS_REACT_ACT_ENVIRONMENT=true;fetcher=vi.fn(async()=>new Response(JSON.stringify(row),{status:200}));vi.stubGlobal('fetch',fetcher);host=document.createElement('div');root=createQueryRoot(host);});
 afterEach(async()=>{await act(async()=>root.unmount());vi.unstubAllGlobals();vi.clearAllMocks();});
 const render=()=>act(async()=>root.render(<PolicyOwnerCard botId="b" reviewId={row.id}/>));
 it('shows exact changes and requires deliberate confirmation without a solve',async()=>{

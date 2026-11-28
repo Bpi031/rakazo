@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { createDb } from '../../db/src/client.ts';
-import { recordUsage } from '../../db/src/usage.ts';
+import { createDb, recordUsage } from '@rakazo/db';
 import { CodexProtocolRuntime } from './codex-protocol.mjs';
 import { validateCodexQuestion } from './codex-question-validation.ts';
 

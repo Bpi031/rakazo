@@ -2,13 +2,15 @@ import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "
 import os from "node:os";
 import path from "node:path";
 import type { ServerUpdateRun } from "@rakazo/contracts";
+import { deferred } from "@rakazo/core/test-async";
 import { afterEach, describe, expect, it } from "vitest";
+import type { UpdaterCommandRunner } from "./index.js";
 import {
+  applyStableUpdate,
   commandEnvironment,
   createUpdaterApp,
   restoreCheckoutArgv,
   runHostCommand,
-  type UpdaterCommandRunner,
 } from "./index.js";
 import { resolveUpdaterConfig } from "./updater-logic.js";
 
@@ -41,11 +43,18 @@ async function deployment(env = "RAKAZO_IMAGE_TAG=v1.0.0\nRAKAZO_IMAGE_TAG_PREVI
 }
 
 function ok(output = "") {
-  return { ok: true, exitCode: 0, output };
+  return { ok: true, exitCode: 0, stdout: output, output };
+}
+
+function cachedImage(args: string[]) {
+  if (args[0] === "inspect" || (args[0] === "image" && args[1] === "inspect"))
+    return ok(`sha256:${"a".repeat(64)}`);
+  if (args[0] === "image" && args[1] === "tag") return ok();
+  return null;
 }
 
 function failed(output: string) {
-  return { ok: false, exitCode: 1, output };
+  return { ok: false, exitCode: 1, stdout: "", output };
 }
 
 function request(app: ReturnType<typeof createUpdaterApp>, pathname: string, body?: unknown) {
@@ -125,6 +134,260 @@ describe("updater HTTP surface", () => {
     expect(payload.error).toMatch(/no \.git directory/);
   });
 
+  it("scheduled updates deploy a stable release and refresh the computer image", async () => {
+    const fixture = await deployment();
+    fixture.config.autoUpdateIntervalMs = 6 * 3_600_000;
+    fixture.config.updateServices = ["api", "worker", "web", "supervisor", "computer"];
+    let runningCommit = currentCommit;
+    let computerRef = "ghcr.io/elie222/rakazo/computer:latest";
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const run: UpdaterCommandRunner = async (command, args) => {
+      calls.push({ command, args });
+      if (command === "git" && args.includes("ls-remote")) {
+        return ok(
+          [
+            `${currentCommit}\trefs/tags/v1.0.0`,
+            `${targetCommit}\trefs/tags/v1.1.0`,
+            `${"3".repeat(40)}\trefs/tags/v2.0.0-beta.1`,
+            `${"4".repeat(40)}\trefs/heads/main`,
+          ].join("\n"),
+        );
+      }
+      const cached = cachedImage(args);
+      if (cached) return cached;
+      if (command === "docker" && args[0] === "ps") return ok("a".repeat(12));
+      if (command === "docker" && args[0] === "exec")
+        return ok(
+          args.at(-1) === "process.env.RAKAZO_COMPUTER_IMAGE" ? computerRef : runningCommit,
+        );
+      if (args.includes("up")) {
+        runningCommit = targetCommit;
+        computerRef = `ghcr.io/elie222/rakazo/computer:sha-${targetCommit}`;
+      }
+      return ok();
+    };
+    const subject = createUpdaterApp(fixture.config, { run });
+    await applyStableUpdate(subject);
+    expect(await readFile(fixture.config.envFile, "utf8")).toContain(
+      `RAKAZO_IMAGE_TAG=sha-${targetCommit}`,
+    );
+    expect(calls.find(({ args }) => args.includes("ls-remote"))?.args).toContain("--tags");
+    expect(calls.find(({ args }) => args.includes("pull"))?.args).toContain("computer");
+    expect(calls.find(({ args }) => args.includes("up"))?.args).toContain("computer");
+    const deployments = () =>
+      calls.filter(({ args }) => args.includes("up") || args.includes("pull"));
+    const deployed = deployments().length;
+    await applyStableUpdate(subject);
+    expect(deployments()).toHaveLength(deployed);
+  });
+
+  it.each(["worker", "web", "supervisor", "missing-worker"])(
+    "reconciles %s even when the API and environment are already current",
+    async (outdated) => {
+      const env = `RAKAZO_IMAGE_TAG=sha-${targetCommit}\nRAKAZO_IMAGE_TAG_PREVIOUS=sha-${currentCommit}\n`;
+      const fixture = await deployment(env);
+      fixture.config.updateServices = ["api", "worker", "web", "supervisor"];
+      const ids = {
+        api: "a".repeat(12),
+        worker: "b".repeat(12),
+        web: "c".repeat(12),
+        supervisor: "d".repeat(12),
+      };
+      let reconciled = false;
+      const calls: string[][] = [];
+      const run: UpdaterCommandRunner = async (command, args) => {
+        calls.push(args);
+        if (command === "git")
+          return ok(`${currentCommit}\trefs/tags/v1.0.0\n${targetCommit}\trefs/tags/v1.1.0\n`);
+        const cached = cachedImage(args);
+        if (cached) return cached;
+        if (args[0] === "ps") {
+          const service = Object.keys(ids).find((name) =>
+            args.includes(`label=com.docker.compose.service=${name}`),
+          );
+          if (!service) throw new Error("Only application runtimes should be inspected");
+          if (outdated === "missing-worker" && service === "worker" && !reconciled) return ok();
+          return ok(ids[service as keyof typeof ids]);
+        }
+        if (args[0] === "exec") {
+          const old = outdated === "missing-worker" ? "worker" : outdated;
+          return ok(
+            !reconciled && args[1] === ids[old as keyof typeof ids] ? currentCommit : targetCommit,
+          );
+        }
+        if (args.includes("up")) reconciled = true;
+        return ok();
+      };
+      const subject = createUpdaterApp(fixture.config, { run });
+      await applyStableUpdate(subject);
+      expect(reconciled).toBe(true);
+      expect(calls.filter((args) => args.includes("up"))).toHaveLength(1);
+      expect(await readFile(fixture.config.envFile, "utf8")).toContain(
+        `RAKAZO_IMAGE_TAG_PREVIOUS=sha-${currentCommit}`,
+      );
+      await applyStableUpdate(subject);
+      expect(calls.filter((args) => args.includes("up"))).toHaveLength(1);
+    },
+  );
+
+  it.each(["latest", "local"])("accepts a current stable build stamped under %s", async (tag) => {
+    const fixture = await deployment(`RAKAZO_IMAGE_TAG=${tag}\n`);
+    fixture.config.autoUpdateIntervalMs = 6 * 3_600_000;
+    const run: UpdaterCommandRunner = async (command, args) => {
+      if (command === "git") return ok(`${targetCommit}\trefs/tags/v1.1.0\n`);
+      const cached = cachedImage(args);
+      if (cached) return cached;
+      if (args[0] === "ps") return ok("a".repeat(12));
+      if (args[0] === "exec") return ok(targetCommit);
+      throw new Error("A current image must not be pulled or recreated");
+    };
+    await applyStableUpdate(createUpdaterApp(fixture.config, { run }));
+    expect(await readFile(fixture.config.envFile, "utf8")).toBe(
+      `RAKAZO_IMAGE_TAG=sha-${targetCommit}\n`,
+    );
+  });
+
+  it.each([
+    ["edge", "3".repeat(40)],
+    [`sha-${"3".repeat(40)}`, "3".repeat(40)],
+    ["latest", "3".repeat(40)],
+    ["v1.0.0", "3".repeat(40)],
+    ["local", ""],
+  ])(
+    "refuses an unverified running build even when the environment pin is %s",
+    async (tag, runningCommit) => {
+      const fixture = await deployment(`RAKAZO_IMAGE_TAG=${tag}\n`);
+      fixture.config.autoUpdateIntervalMs = 6 * 3_600_000;
+      const run: UpdaterCommandRunner = async (command, args) => {
+        if (command === "git") return ok(`${targetCommit}\trefs/tags/v1.1.0\n`);
+        const cached = cachedImage(args);
+        if (cached) return cached;
+        if (args[0] === "ps") return ok("a".repeat(12));
+        if (args[0] === "exec") return ok(runningCommit);
+        throw new Error("An unverified source must not pull or recreate containers");
+      };
+      await expect(applyStableUpdate(createUpdaterApp(fixture.config, { run }))).rejects.toThrow(
+        /avoid downgrading an edge or unknown build/,
+      );
+      expect(await readFile(fixture.config.envFile, "utf8")).toBe(`RAKAZO_IMAGE_TAG=${tag}\n`);
+    },
+  );
+
+  it("keeps an operator's apply independent from scheduled source safeguards", async () => {
+    const fixture = await deployment("RAKAZO_IMAGE_TAG=edge\n");
+    fixture.config.autoUpdateIntervalMs = 6 * 3_600_000;
+    const run: UpdaterCommandRunner = async (command, args) => {
+      if (command === "git") return ok(`${targetCommit}\trefs/tags/v1.1.0\n`);
+      const cached = cachedImage(args);
+      if (cached) return cached;
+      if (args[0] === "ps") return ok("a".repeat(12));
+      if (args[0] === "exec") return ok("3".repeat(40));
+      return ok();
+    };
+    const subject = createUpdaterApp(fixture.config, { run });
+    await expect(applyStableUpdate(subject)).rejects.toThrow(/avoid downgrading/);
+    const response = await request(subject, "/apply", {
+      repoUrl: "https://github.com/elie222/rakazo",
+      branch: "main",
+    });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ ok: true });
+  });
+
+  it("leaves status, apply and rollback available when mirror scheduling is disabled", async () => {
+    const fixture = await deployment();
+    const config = resolveUpdaterConfig({
+      RAKAZO_DEPLOY_DIR: fixture.deployDir,
+      RAKAZO_UPDATER_TOKEN: token,
+      RAKAZO_IMAGE: "registry.example.com/mirror/app",
+      RAKAZO_AUTO_UPDATE_INTERVAL_HOURS: "6",
+    });
+    const run: UpdaterCommandRunner = async (command) =>
+      command === "git" ? ok(`${targetCommit}\trefs/tags/v1.1.0\n`) : ok();
+    const subject = createUpdaterApp(config, { run });
+    const state = await subject.request("/state", { headers: authorized });
+    expect(state.status).toBe(200);
+    await expect(state.json()).resolves.toMatchObject({
+      autoUpdateIntervalHours: 0,
+      autoUpdateDisabledReason: expect.stringContaining("manual controls"),
+    });
+    await expect(applyStableUpdate(subject)).rejects.toThrow(/official stable release image/);
+    const applied = await request(subject, "/apply", {
+      repoUrl: "https://github.com/elie222/rakazo",
+      branch: "main",
+    });
+    await expect(applied.json()).resolves.toMatchObject({ ok: true });
+    const rolledBack = await request(subject, "/rollback");
+    await expect(rolledBack.json()).resolves.toMatchObject({ ok: true });
+  });
+
+  it("reports a disabled schedule for a managed computer mirror", async () => {
+    const fixture = await deployment();
+    const config = resolveUpdaterConfig({
+      RAKAZO_DEPLOY_DIR: fixture.deployDir,
+      RAKAZO_UPDATER_TOKEN: token,
+      RAKAZO_COMPUTER_IMAGE: "registry.example.com/mirror/computer",
+      RAKAZO_UPDATE_SERVICES: "supervisor,computer",
+      RAKAZO_AUTO_UPDATE_INTERVAL_HOURS: "6",
+    });
+    const subject = createUpdaterApp(config, { run: async () => ok() });
+    const state = await subject.request("/state", { headers: authorized });
+    expect(state.status).toBe(200);
+    await expect(state.json()).resolves.toMatchObject({
+      autoUpdateIntervalHours: 0,
+      autoUpdateDisabledReason: expect.stringContaining("managed computer"),
+    });
+    await expect(applyStableUpdate(subject)).rejects.toThrow(/managed computer/);
+  });
+
+  it.each([true, false])("logs whether image recovery succeeded: %s", async (recovered) => {
+    const fixture = await deployment();
+    const run: UpdaterCommandRunner = async (command, args, options) => {
+      if (command === "git")
+        return ok(`${currentCommit}\trefs/tags/v1.0.0\n${targetCommit}\trefs/tags/v1.1.0\n`);
+      const cached = cachedImage(args);
+      if (cached) return cached;
+      if (args[0] === "ps") return ok("a".repeat(12));
+      if (args[0] === "exec") return ok(currentCommit);
+      if (args.includes("up")) {
+        if (options.env?.RAKAZO_IMAGE_TAG === `sha-${currentCommit}` && recovered) return ok();
+        return failed("container health check failed");
+      }
+      return ok();
+    };
+    const error = await applyStableUpdate(createUpdaterApp(fixture.config, { run })).catch(
+      (error: unknown) => error,
+    );
+    expect(error).toHaveProperty(
+      "message",
+      expect.stringContaining(
+        recovered ? "Recovery status: not-required" : "Recovery status: manual",
+      ),
+    );
+    expect(error).toHaveProperty(
+      "message",
+      expect.stringContaining(
+        recovered ? "restored the previously running" : "runtime may contain a mix of versions",
+      ),
+    );
+    expect(error).toHaveProperty(
+      "message",
+      expect.stringContaining("container health check failed"),
+    );
+  });
+
+  it("reports an unavailable stable release without deploying main as a fallback", async () => {
+    const fixture = await deployment();
+    const run = async (command: string) => {
+      expect(command).toBe("git");
+      return ok(`${targetCommit}\trefs/tags/v2.0.0-rc.1\n`);
+    };
+    await expect(applyStableUpdate(createUpdaterApp(fixture.config, { run }))).rejects.toThrow(
+      /no published release tags/,
+    );
+    expect(await readFile(fixture.config.envFile, "utf8")).toContain("RAKAZO_IMAGE_TAG=v1.0.0");
+  });
+
   it("refuses a rollback when no previous tag was recorded", async () => {
     const fixture = await deployment("RAKAZO_IMAGE_TAG=v1.0.0\n");
     const response = await createUpdaterApp(fixture.config).request("/rollback", {
@@ -155,35 +418,94 @@ describe("updater HTTP surface", () => {
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toMatchObject({ error: expect.stringMatching(/\.env/) });
   });
+
+  it("refuses a failed plan without leaving a rejection that could stop the process", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const subject = createUpdaterApp(
+        resolveUpdaterConfig({
+          RAKAZO_DEPLOY_DIR: "/rakazo-updater-tests-no-such-directory",
+          RAKAZO_UPDATER_TOKEN: token,
+        }),
+      );
+      const input = { repoUrl: "https://github.com/elie222/rakazo", branch: "main" };
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const response = await request(subject, "/plan", input);
+        expect(response.status).toBe(400);
+        await expect(response.json()).resolves.toMatchObject({
+          error: expect.stringMatching(/\.env/),
+        });
+      }
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+    expect(unhandled).toEqual([]);
+  });
 });
 
 describe("updater orchestration", () => {
   it("serializes updates before their asynchronous preflight can race", async () => {
     const fixture = await deployment();
-    let releaseGate: ((result: ReturnType<typeof ok>) => void) | undefined;
-    const pendingRelease = new Promise<ReturnType<typeof ok>>((resolve) => {
-      releaseGate = resolve;
-    });
-    let reachedRemote!: () => void;
-    const atRemote = new Promise<void>((resolve) => {
-      reachedRemote = resolve;
-    });
+    const pendingRelease = deferred<ReturnType<typeof ok>>();
+    const atRemote = deferred();
     const run: UpdaterCommandRunner = async (command, args) => {
       if (command === "git" && args.includes("ls-remote")) {
-        reachedRemote();
-        return pendingRelease;
+        atRemote.resolve();
+        return pendingRelease.promise;
       }
       return ok();
     };
     const subject = createUpdaterApp(fixture.config, { run });
     const input = { repoUrl: "https://github.com/elie222/rakazo", branch: "main" };
     const first = request(subject, "/apply", input);
-    await atRemote;
+    await atRemote.promise;
     const second = await request(subject, "/apply", input);
     expect(second.status).toBe(400);
     await expect(second.json()).resolves.toEqual({ error: "An update is already running." });
-    releaseGate?.(ok(`${targetCommit}\trefs/tags/v1.1.0\n`));
+    pendingRelease.resolve(ok(`${targetCommit}\trefs/tags/v1.1.0\n`));
     expect((await first).status).toBe(200);
+  });
+
+  it.each([
+    ["decoys listed first", ["feature/main", "old-main", "main"]],
+    ["decoys listed last", ["main", "feature/main", "old-main"]],
+  ])("plans a fork build from exactly refs/heads/main with %s", async (_label, names) => {
+    const fixture = await deployment();
+    await mkdir(path.join(fixture.deployDir, ".git"));
+    const decoyCommit = "9".repeat(40);
+    const lines = names.map(
+      (name) => `${name === "main" ? targetCommit : decoyCommit}\trefs/heads/${name}`,
+    );
+    const calls: string[][] = [];
+    const run: UpdaterCommandRunner = async (_command, args) => {
+      calls.push(args);
+      if (args.includes("ls-remote")) return ok(`${lines.join("\n")}\n`);
+      return ok();
+    };
+    const subject = createUpdaterApp(fixture.config, { run });
+    const response = await request(subject, "/plan", {
+      repoUrl: "https://github.com/example/fork",
+      branch: "main",
+    });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ targetCommit });
+    expect(calls.find((args) => args.includes("ls-remote"))?.at(-1)).toBe("refs/heads/main");
+  });
+
+  it("refuses a fork branch that only decoy refs match", async () => {
+    const fixture = await deployment();
+    await mkdir(path.join(fixture.deployDir, ".git"));
+    const run: UpdaterCommandRunner = async (_command, args) =>
+      args.includes("ls-remote") ? ok(`${"9".repeat(40)}\trefs/heads/feature/main\n`) : ok();
+    const subject = createUpdaterApp(fixture.config, { run });
+    const response = await request(subject, "/plan", {
+      repoUrl: "https://github.com/example/fork",
+      branch: "main",
+    });
+    expect(response.status).toBe(400);
   });
 
   it("restores the previous remote when a fork update fails after repointing it", async () => {
@@ -366,6 +688,24 @@ describe("updater orchestration", () => {
     expect(await readFile(envFile, "utf8")).toMatch(/FAKE_SETTING=kept/);
   });
 
+  it("adds a missing app database password before recreating, so newer Compose files start", async () => {
+    const fixture = await deployment("POSTGRES_PASSWORD=kept\nRAKAZO_IMAGE_TAG=v1.0.0\n");
+    const envFile = path.join(fixture.deployDir, ".env");
+    let envAtRecreate = "";
+    const run: UpdaterCommandRunner = async (command, args) => {
+      if (command === "git") return ok(`${targetCommit}\trefs/tags/v1.1.0\n`);
+      if (args.includes("up")) envAtRecreate = await readFile(envFile, "utf8");
+      return ok();
+    };
+    const response = await request(createUpdaterApp(fixture.config, { run }), "/apply", {
+      repoUrl: "https://github.com/elie222/rakazo",
+      branch: "main",
+    });
+    await expect(response.json()).resolves.toMatchObject({ ok: true });
+    expect(envAtRecreate).toMatch(/^POSTGRES_APP_PASSWORD=[0-9a-f]{32}$/m);
+    expect(envAtRecreate).toMatch(/^POSTGRES_PASSWORD=kept$/m);
+  });
+
   it("refuses to replace a symlinked deployment environment", async () => {
     const fixture = await deployment();
     const envFile = path.join(fixture.deployDir, ".env");
@@ -413,7 +753,7 @@ describe("child process environment", () => {
   it("declares the deployment directory safe so git works on a non-root checkout", () => {
     // The child environment is rebuilt from an allowlist, so GIT_CONFIG_* set on the Compose
     // service never reaches git. Without these three, every git call exits 128 with "detected
-    // dubious ownership" on the layout docs/self-host.md recommends.
+    // dubious ownership" on the layout docs/self-host-production.md recommends.
     const env = commandEnvironment({ RAKAZO_DEPLOY_DIR: "/srv/rakazo" });
     expect(env.GIT_CONFIG_COUNT).toBe("1");
     expect(env.GIT_CONFIG_KEY_0).toBe("safe.directory");
@@ -517,6 +857,7 @@ describe("runHostCommand", () => {
     expect(refused).toEqual({
       ok: false,
       exitCode: null,
+      stdout: "",
       output: "Refusing to run an unexpected program.",
     });
     await expect(readFile(marker, "utf8")).rejects.toThrow();
@@ -525,6 +866,7 @@ describe("runHostCommand", () => {
     expect(nul).toEqual({
       ok: false,
       exitCode: null,
+      stdout: "",
       output: "Refusing to run an unexpected program.",
     });
   });

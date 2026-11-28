@@ -1,7 +1,7 @@
 import type { Actor } from "@rakazo/contracts";
 import { expect, it, vi } from "vitest";
-import type { PrismaClient } from "./client.js";
-import { createRepos } from "./repos.js";
+import type { PrismaClient } from "./database/client.js";
+import { createRepos } from "./bots/bot-repository.js";
 
 const actor: Actor = { userId: "owner", spaceId: "space", email: "", isDeploymentOwner: false };
 
@@ -35,7 +35,7 @@ function fixture() {
     computerSwitching: false,
     computerId: `computer-${id}`,
     computer: computer(`computer-${id}`),
-    thread: { id: `thread-${id}`, unread: false },
+    thread: { id: `thread-${id}`, reads: [] },
     createdAt: new Date(),
     updatedAt: new Date(),
   });
@@ -61,6 +61,7 @@ function fixture() {
   const tx = {
     $queryRaw: vi.fn().mockResolvedValue([]),
     computer: {
+      findUnique: vi.fn(async () => null),
       findMany: vi.fn(async ({ where }) =>
         [...computers.values()].filter((item) => where.id.in.includes(item.id)),
       ),
@@ -73,6 +74,7 @@ function fixture() {
     },
     bot: {
       findFirst,
+      findMany: vi.fn(async () => []),
       update,
       aggregate: vi.fn().mockResolvedValue({ _max: { position: null } }),
       create: vi.fn(async ({ data }) => Object.assign(target, data)),
@@ -85,6 +87,7 @@ function fixture() {
     browserProfile: { create: vi.fn() },
     memoryDocument: { create: vi.fn() },
     spaceMember: {
+      findFirst: vi.fn(async () => ({ userId: actor.userId })),
       findUnique: vi.fn().mockResolvedValue({ organizationId: "org", space: { deletingAt: null } }),
     },
     deploymentSettings: { findUnique: vi.fn().mockResolvedValue(null) },
@@ -219,6 +222,7 @@ it("lets an owner leave a legacy foreign-owned Team Computer for its own Private
 });
 
 const newBot = {
+  id: "target",
   name: "New Bot",
   title: "",
   description: "",

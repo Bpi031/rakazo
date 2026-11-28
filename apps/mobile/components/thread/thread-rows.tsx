@@ -1,0 +1,292 @@
+import { useLingui } from "@lingui/react/macro";
+import type { ThreadItem } from "@rakazo/core";
+import {
+  answerableAskMessageIds,
+  continuedSenderMessageIds,
+  dismissableAskMessageIds,
+  groupVoiceChats,
+  memberName,
+  otherAuthor,
+  separateAskAnswers,
+  timeSeparatorIds,
+  unreadDividerMessageId,
+  voiceChatHoldsMessage,
+} from "@rakazo/core";
+import { useCallback, useLayoutEffect, useMemo, useRef } from "react";
+import type { ListRenderItemInfo } from "react-native";
+import { StyleSheet, View } from "react-native";
+import type { MobileBot, MobileMessage, MobileSnapshot } from "../../lib/api/mobile-types";
+import { useUiLocale } from "../../lib/i18n/i18n";
+import type { UserBubble } from "../../lib/messages/user-bubble";
+import { threadHeaderFloats } from "../../lib/thread/scroll/thread-edges";
+import { previewMessageText } from "../../lib/thread/thread-message-text";
+import type { useThreadTranscript } from "../../lib/thread/thread-transcript";
+import { VoiceChatCard } from "../calls/VoiceChatCard";
+import { hasSenderLabelContent } from "./message-bubble";
+import type { MessageRowActions } from "./message-row";
+import { MessageRow } from "./message-row";
+import { TimeSeparator } from "./time-separator";
+import { UnreadDivider } from "./unread-divider";
+
+const rowStyles = StyleSheet.create({
+  row: { marginTop: 12, width: "100%" },
+});
+
+/** Stable row actions that call the latest screen actions, so settled rows don't re-render. */
+export function useLatestRowActions(current: MessageRowActions): MessageRowActions {
+  const rowActionsRef = useRef(current);
+  useLayoutEffect(() => {
+    rowActionsRef.current = current;
+  });
+  return useMemo<MessageRowActions>(
+    () => ({
+      helperToggle: (measure, toggle, opening) =>
+        rowActionsRef.current.helperToggle(measure, toggle, opening),
+      reply: (message) => rowActionsRef.current.reply(message),
+      quote: (message) => rowActionsRef.current.quote(message),
+      select: (text) => rowActionsRef.current.select(text),
+      startSelection: (message) => rowActionsRef.current.startSelection(message),
+      toggleSelection: (message) => rowActionsRef.current.toggleSelection(message),
+      speak: (message) => rowActionsRef.current.speak(message),
+      react: (message, reaction) => rowActionsRef.current.react(message, reaction),
+      markUnread: (message) => rowActionsRef.current.markUnread(message),
+      answer: (message, answer, fields, dismiss, remember) =>
+        rowActionsRef.current.answer(message, answer, fields, dismiss, remember),
+      openBot: (id, name) => rowActionsRef.current.openBot(id, name),
+      openComputer: (id, name) => rowActionsRef.current.openComputer(id, name),
+      previewFile: (artifactId) => rowActionsRef.current.previewFile(artifactId),
+      previewImage: (target, gallery) => rowActionsRef.current.previewImage(target, gallery),
+      jump: (id) => rowActionsRef.current.jump(id),
+      dismissChoice: (id, question) => rowActionsRef.current.dismissChoice(id, question),
+      openPeerChat: (peer) => rowActionsRef.current.openPeerChat(peer),
+      layout: (id, y, index) => rowActionsRef.current.layout(id, y, index),
+    }),
+    [],
+  );
+}
+
+/** Renders the chat's message rows and voice call cards for the live list and pinned pages. */
+export function useThreadRows({
+  snap,
+  userId,
+  transcript,
+  rowActions,
+  botId,
+  groupId,
+  inGroup,
+  readOnly,
+  onCall,
+  displayName,
+  mentionBots,
+  currentBot,
+  currentBotStatus,
+  userBubble,
+  columnWidth,
+  readSeq,
+  markedUnreadMessageId,
+  highlightedMessageId,
+  selectedIds,
+}: {
+  snap: MobileSnapshot | null;
+  userId: string;
+  transcript: ReturnType<typeof useThreadTranscript>;
+  rowActions: MessageRowActions;
+  botId?: string;
+  groupId?: string;
+  inGroup: boolean;
+  readOnly: boolean;
+  onCall: boolean;
+  displayName?: string;
+  mentionBots: MobileBot[];
+  currentBot?: MobileBot;
+  currentBotStatus?: string;
+  userBubble?: UserBubble;
+  columnWidth: number;
+  /** What the user had read up to when this visit began. */
+  readSeq: number | null;
+  markedUnreadMessageId?: string;
+  highlightedMessageId: string | null;
+  /** The messages chosen to copy together; null while not choosing. */
+  selectedIds: ReadonlySet<string> | null;
+}) {
+  const { t } = useLingui();
+  const locale = useUiLocale();
+  const { showBotSenderName, reactionView, exchanges, visibleMessages } = transcript;
+  const separateAnswers = useMemo(() => separateAskAnswers(visibleMessages), [visibleMessages]);
+  const answerableAskIds = useMemo(() => answerableAskMessageIds(snap, userId), [snap, userId]);
+  const dismissableAskIds = useMemo(() => dismissableAskMessageIds(snap, userId), [snap, userId]);
+  const separatorIds = useMemo(() => timeSeparatorIds(visibleMessages), [visibleMessages]);
+  const unreadDividerId = useMemo(
+    () => unreadDividerMessageId(visibleMessages, readSeq, snap?.olderCursor ?? null, userId),
+    [visibleMessages, readSeq, snap?.olderCursor, userId],
+  );
+  // Group calls in reading order, then reverse for the inverted list.
+  const { liveItems, continuedSenderIds } = useMemo(() => {
+    const items = groupVoiceChats(visibleMessages);
+    const continuedSenderIds = continuedSenderMessageIds(
+      items,
+      separatorIds,
+      unreadDividerId,
+      hasSenderLabelContent,
+    );
+    return { liveItems: items.reverse(), continuedSenderIds };
+  }, [visibleMessages, separatorIds, unreadDividerId]);
+  const messagesById = useMemo(
+    () => new Map((snap?.messages ?? []).map((message) => [message.id, message])),
+    [snap?.messages],
+  );
+
+  const renderMessageRow = useCallback(
+    (message: MobileMessage, options?: { enableJump?: boolean; index?: number }) => {
+      const parent = message.replyToMessageId
+        ? messagesById.get(message.replyToMessageId)
+        : undefined;
+      const replyBotId = message.replyPreview?.botId ?? parent?.botId;
+      const replyAuthor =
+        (message.replyPreview?.role ?? parent?.role) === "user"
+          ? (otherAuthor(message.replyPreview?.author ?? parent?.author, userId)?.name ?? t`You`)
+          : (memberName(snap?.members, replyBotId) ??
+            mentionBots.find((bot) => bot.id === replyBotId)?.name ??
+            displayName ??
+            t`Bot`);
+      const messageReactions = reactionView.reactions.get(message.id);
+      const activityBotId =
+        !inGroup && message.role === "bot" && message.id.startsWith("progress:")
+          ? (message.botId ?? botId)
+          : undefined;
+      const activityBot = activityBotId
+        ? (snap?.members?.find((member) => member.botId === activityBotId) ??
+          (currentBot?.id === activityBotId ? currentBot : undefined))
+        : undefined;
+      const activityStatus = activityBotId
+        ? (snap?.activeRuns?.find((run) => run.botId === activityBotId)?.status ??
+          (snap?.run?.botId === activityBotId ? snap.run.status : currentBotStatus))
+        : undefined;
+      return (
+        <MessageRow
+          key={message.id}
+          message={message}
+          separateAnswers={separateAnswers.get(message.id)}
+          actions={rowActions}
+          botId={botId}
+          bubbleBotId={botId ?? snap?.members?.[0]?.botId ?? ""}
+          groupId={groupId}
+          botName={displayName}
+          hideSenderLabel={!options?.enableJump && continuedSenderIds.has(message.id)}
+          showBotSenderName={showBotSenderName}
+          bots={mentionBots}
+          members={snap?.members}
+          readOnly={readOnly}
+          onCall={onCall}
+          canAnswer={!readOnly && answerableAskIds.has(message.id)}
+          canDismiss={dismissableAskIds.has(message.id)}
+          highlighted={highlightedMessageId === message.id}
+          separator={separatorIds.has(message.id)}
+          headerAdjacent={threadHeaderFloats() && message.id === visibleMessages[0]?.id}
+          unreadDivider={message.id === unreadDividerId}
+          markedUnread={message.id === markedUnreadMessageId}
+          authorName={
+            message.role === "user" ? otherAuthor(message.author, userId)?.name : undefined
+          }
+          replyAuthor={replyAuthor}
+          replyFallbackText={parent ? previewMessageText(parent) : undefined}
+          waitingForUser={[...(snap?.activeRuns ?? []), ...(snap?.run ? [snap.run] : [])].some(
+            (run) =>
+              run.id === message.runId &&
+              (run.status === "waiting_input" || run.status === "waiting_takeover"),
+          )}
+          messageReactions={messageReactions}
+          mentions={reactionView.mentions.get(message.id)}
+          peerExchange={exchanges.lines.get(message.id)}
+          activityBotId={activityBotId}
+          activityColor={activityBot?.color}
+          activityAvatarSet={activityBot?.avatarSet}
+          activityStatus={activityStatus}
+          userBubble={userBubble}
+          inGroup={inGroup}
+          columnWidth={columnWidth}
+          enableJump={options?.enableJump ?? false}
+          index={options?.index ?? 0}
+          selecting={selectedIds !== null}
+          selected={selectedIds?.has(message.id) ?? false}
+        />
+      );
+    },
+    [
+      messagesById,
+      separateAnswers,
+      continuedSenderIds,
+      showBotSenderName,
+      snap?.members,
+      snap?.activeRuns,
+      snap?.run,
+      mentionBots,
+      displayName,
+      reactionView,
+      exchanges,
+      inGroup,
+      botId,
+      groupId,
+      currentBot,
+      currentBotStatus,
+      userBubble,
+      rowActions,
+      readOnly,
+      onCall,
+      answerableAskIds,
+      dismissableAskIds,
+      highlightedMessageId,
+      selectedIds,
+      separatorIds,
+      visibleMessages[0]?.id,
+      unreadDividerId,
+      markedUnreadMessageId,
+      columnWidth,
+      userId,
+      t,
+      locale,
+    ],
+  );
+
+  const renderItem = useCallback(
+    ({ item }: ListRenderItemInfo<ThreadItem<MobileMessage>>) =>
+      item.kind === "voiceChat" ? (
+        <View
+          style={[
+            rowStyles.row,
+            threadHeaderFloats() && item.messages[0]?.id === visibleMessages[0]?.id
+              ? { marginTop: 0 }
+              : undefined,
+          ]}
+        >
+          {item.messages[0] && separatorIds.has(item.messages[0].id) ? (
+            <TimeSeparator createdAt={item.messages[0].createdAt} />
+          ) : null}
+          {voiceChatHoldsMessage(item, unreadDividerId) ? (
+            <UnreadDivider
+              afterSeparator={Boolean(item.messages[0] && separatorIds.has(item.messages[0].id))}
+            />
+          ) : null}
+          <VoiceChatCard
+            group={item}
+            selectedIds={selectedIds}
+            onToggleSelection={rowActions.toggleSelection}
+            onStartSelection={rowActions.startSelection}
+          />
+        </View>
+      ) : (
+        renderMessageRow(item.message)
+      ),
+    [
+      renderMessageRow,
+      rowActions.startSelection,
+      rowActions.toggleSelection,
+      selectedIds,
+      separatorIds,
+      unreadDividerId,
+      visibleMessages[0]?.id,
+    ],
+  );
+
+  return { liveItems, renderMessageRow, renderItem };
+}

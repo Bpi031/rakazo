@@ -1,27 +1,33 @@
 // @vitest-environment jsdom
+import { deferred } from "@rakazo/core/test-async";
 
 import { act, type ReactNode } from "react";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { createRoot, type Root } from "react-dom/client";
+import { createQueryRoot } from "../lib/query/query-root.test-support";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@lingui/react/macro", () => ({
   Trans: ({ children }: { children: ReactNode }) => children,
-  useLingui: () => ({ t: (parts: TemplateStringsArray, ...values: unknown[]) =>
-    parts.reduce((text, part, i) => text + part + (values[i] ?? ""), "") }),
+  useLingui: () => ({
+    t: (parts: TemplateStringsArray, ...values: unknown[]) =>
+      parts.reduce((text, part, i) => text + part + (values[i] ?? ""), ""),
+  }),
 }));
-vi.mock("@rakazo/chat-ui/web", () => ({ ChatMarkdown: ({ children }: { children: ReactNode }) => <div>{children}</div> }));
-vi.mock("../lib/rpc", () => ({ rpc: {} }));
+vi.mock("@rakazo/chat-ui/web", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@rakazo/chat-ui/web")>()),
+  ChatMarkdown: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+}));
+vi.mock("../lib/query/rpc", () => ({ rpc: {}, selectedSpaceId: () => null, createSpaceRpc: () => ({}) }));
 
-import { AskCard, type AskBlock } from "./AskCard";
+import { AskCard, type AskBlock } from "./messages/AskCard";
 import { QuestionCard } from "./QuestionCard";
 
 const actions = [
   { id: "choice-1", label: "Keep coverage (Recommended)" },
   { id: "choice-2", label: "Change the test quota" },
 ];
-const mounted: Array<{ root: Root; container: HTMLDivElement }> = [];
+const mounted: Array<{ root: ReturnType<typeof createQueryRoot>; container: HTMLDivElement }> = [];
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 afterEach(async () => {
@@ -35,14 +41,33 @@ afterEach(async () => {
 async function mount(onAnswer = vi.fn(async (_answer: string) => {}), block?: AskBlock) {
   const container = document.createElement("div");
   document.body.append(container);
-  const root = createRoot(container);
+  const root = createQueryRoot(container);
   mounted.push({ root, container });
-  await act(async () => root.render(block
-    ? <AskCard block={block} canAnswer onAnswer={onAnswer} />
-    : <QuestionCard question="Which test quota should change?" actions={actions} onAnswer={onAnswer} />));
-  const button = (label: string) => Array.from(container.querySelectorAll("button"))
-    .find((node) => node.textContent?.trim() === label)!;
-  const radios = () => Array.from(container.querySelectorAll<HTMLInputElement>('input[type="radio"]'));
+  await act(async () =>
+    root.render(
+      block ? (
+        <AskCard
+          block={block}
+          canAnswer
+          canDismiss={false}
+          onAnswer={onAnswer}
+          onDismiss={async () => {}}
+        />
+      ) : (
+        <QuestionCard
+          question="Which test quota should change?"
+          actions={actions}
+          onAnswer={onAnswer}
+        />
+      ),
+    ),
+  );
+  const button = (label: string) =>
+    Array.from(container.querySelectorAll("button")).find(
+      (node) => node.textContent?.trim() === label,
+    )!;
+  const radios = () =>
+    Array.from(container.querySelectorAll<HTMLInputElement>('input[type="radio"]'));
   return { container, onAnswer, button, radios };
 }
 
@@ -53,10 +78,18 @@ async function click(element: HTMLElement) {
 describe("QuestionCard", () => {
   it("ships readable fallback labels in every production catalog", () => {
     for (const locale of ["en", "de", "es", "fr", "hi", "ko", "pt-BR", "ru", "tr", "zh-CN"]) {
-      const catalog = readFileSync(resolve("apps/web/src/locales", locale, "messages.po"), "utf8");
-      for (const label of ["Question", "Answer later", "Answer question", "Choose an answer",
-        "Your own response", "Or write your own response", "Recommended", "Sending..."]) {
-        expect(catalog).toContain(`msgid "${label}"\nmsgstr "${label}"`);
+      const catalog = readFileSync(resolve("packages/i18n/locales", locale, "messages.po"), "utf8");
+      for (const label of [
+        "Question",
+        "Answer later",
+        "Answer question",
+        "Choose an answer",
+        "Your own response",
+        "Or write your own response",
+        "Recommended",
+        "Sending...",
+      ]) {
+        expect(catalog).toContain(`msgid "${label}"`);
       }
     }
   });
@@ -83,7 +116,10 @@ describe("QuestionCard", () => {
     await click(radios()[0]!);
     const textarea = container.querySelector("textarea")!;
     await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, "  Leave the test unchanged  ");
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(
+        textarea,
+        "  Leave the test unchanged  ",
+      );
       textarea.dispatchEvent(new Event("input", { bubbles: true }));
     });
     expect(radios().some((radio) => radio.checked)).toBe(false);
@@ -118,40 +154,61 @@ describe("QuestionCard", () => {
     const { container, button, radios } = await mount(onAnswer);
     await click(radios()[0]!);
     await click(button("Continue"));
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Connection interrupted");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "Connection interrupted",
+    );
     expect(radios()[0]!.checked).toBe(true);
     await click(button("Continue"));
     expect(onAnswer).toHaveBeenCalledTimes(2);
   });
 
   it("prevents duplicate submissions while awaiting the server", async () => {
-    let release!: () => void;
-    const onAnswer = vi.fn((_answer: string) => new Promise<void>((resolve) => { release = resolve; }));
+    const waiting = deferred<void>();
+    const onAnswer = vi.fn((_answer: string) => waiting.promise);
     const { container, button, radios } = await mount(onAnswer);
     await click(radios()[1]!);
     await act(async () => {
-      container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-      container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      container
+        .querySelector("form")!
+        .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      container
+        .querySelector("form")!
+        .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     });
     expect(onAnswer).toHaveBeenCalledTimes(1);
     expect(button("Sending...").disabled).toBe(true);
-    await act(async () => release());
+    await act(async () => waiting.resolve());
     expect(button("Answered").disabled).toBe(true);
   });
 });
 
 describe("AskCard protected boundaries", () => {
   it("uses the question panel only for an active ordinary choice", async () => {
-    const { container } = await mount(undefined, { kind: "ask", text: "Test question", actions, status: "pending" });
+    const { container } = await mount(undefined, {
+      kind: "ask",
+      text: "Test question",
+      actions,
+      status: "pending",
+    });
     expect(container.querySelector('[data-testid="choice-question-card"]')).not.toBeNull();
   });
 
   it.each([
-    { approvalEffectId: "effect", actions: [{ id: "allow", label: "Allow" }, { id: "deny", label: "Deny" }] },
+    {
+      approvalEffectId: "effect",
+      actions: [
+        { id: "allow", label: "Allow" },
+        { id: "deny", label: "Deny" },
+      ],
+    },
     { input: "secret" as const, actions: undefined },
     { status: "answered" as const, answer: "choice-2", actions },
   ])("does not replace approval, secret or answered cards: %j", async (extra) => {
-    const { container } = await mount(undefined, { kind: "ask", text: "Protected question", ...extra });
+    const { container } = await mount(undefined, {
+      kind: "ask",
+      text: "Protected question",
+      ...extra,
+    });
     expect(container.querySelector('[data-testid="choice-question-card"]')).toBeNull();
     expect(container.querySelector("textarea")).toBeNull();
   });

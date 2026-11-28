@@ -31,7 +31,9 @@ export function useOptionalServiceStatus(
       .then((status) => {
         if (!cancelled) setVoice(status);
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (!cancelled) setVoice(null);
+      });
     return () => {
       cancelled = true;
     };

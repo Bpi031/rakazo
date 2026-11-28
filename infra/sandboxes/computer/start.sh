@@ -11,10 +11,9 @@ export NPM_CONFIG_PREFIX="$AGENT_HOME/.local"
 export PIP_USER=1
 cd "$AGENT_HOME"
 
-# This script is PID 1. Without a handler, PID 1 ignores SIGTERM and `docker stop` waits its
-# full grace period before killing the container, so every stop, sleep and computer switch
-# took ten seconds. Install the handler before any child starts so a stop during startup is
-# honoured too: forward the signal to the desktop processes and exit promptly.
+# This script is PID 1, which ignores SIGTERM without a handler, so `docker stop` would wait out
+# its grace period. Install the handler before any child starts so a stop during startup is
+# honoured too.
 XVFB_PID=""
 shutdown() {
   trap - TERM INT
@@ -30,7 +29,10 @@ shutdown() {
 trap shutdown TERM INT
 
 if [[ -n "${RAKAZO_COMPUTER_CONTROL_TOKEN:-}" ]]; then
-  /usr/local/bin/rakazo-computer-control >/tmp/rakazo/control.log 2>&1 &
+  while true; do
+    /usr/local/bin/rakazo-computer-control
+    sleep 1
+  done >/tmp/rakazo/control.log 2>&1 &
 fi
 
 rm -f /tmp/.X1-lock /tmp/.X11-unix/X1
@@ -52,11 +54,12 @@ if [[ "$ready" -ne 1 ]]; then
   exit 1
 fi
 
-if command -v dbus-launch >/dev/null 2>&1; then
-  eval "$(dbus-launch --sh-syntax)"
-  # rakazo-browser is launched later without this session's environment; the
-  # file-chooser portals only work if the browser finds the same bus.
-  printf 'export DBUS_SESSION_BUS_ADDRESS=%s\n' "$DBUS_SESSION_BUS_ADDRESS" \
+rm -f /tmp/rakazo/session-bus /tmp/rakazo/dbus-session
+# The image sets this; keep a default for runtimes that drop image ENV.
+export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=/tmp/rakazo/session-bus}"
+if dbus-daemon --session --fork --address="$DBUS_SESSION_BUS_ADDRESS"; then
+  # Keep the address file for browser launchers with a minimal environment.
+  printf 'export DBUS_SESSION_BUS_ADDRESS=%q\n' "$DBUS_SESSION_BUS_ADDRESS" \
     > /tmp/rakazo/dbus-session
 fi
 
@@ -90,16 +93,49 @@ register_browser_handler() {
     exit 1
   fi
 }
-register_browser_handler x-scheme-handler/http
-register_browser_handler x-scheme-handler/https
-register_browser_handler text/html
-if ! xdg-settings set default-web-browser rakazo-browser.desktop >/dev/null 2>&1 \
-  || [[ "$(xdg-settings get default-web-browser 2>/dev/null || true)" != "rakazo-browser.desktop" ]]; then
-  echo "failed to set default web browser to rakazo-browser" >&2
-  exit 1
+# xdg-mime and xdg-settings are long shell scripts. Under gVisor the calls below took about
+# 20 s of every boot, before the screen gateway opened. The image's /etc/xdg/mimeapps.list
+# already names rakazo-browser for every type they set, and xdg-mime reads the user's file
+# first, then that one. When the user's file leaves those types alone or names
+# rakazo-browser too, there is nothing to change and the calls are skipped.
+browser_handlers_set() {
+  local user="$AGENT_HOME/.config/mimeapps.list" system=/etc/xdg/mimeapps.list
+  [[ -z "${BROWSER:-}" && -z "${XDG_CONFIG_HOME:-}" && -z "${XDG_CONFIG_DIRS:-}" && -z "${XDG_CURRENT_DESKTOP:-}" ]] || return 1
+  [[ -f "$system" && ! -L "$user" ]] || return 1
+  local files=("$system")
+  [[ -e "$user" ]] && files=("$user" "$system")
+  awk '
+    FNR == 1 { section = "" }
+    /^\[/ { section = $0; next }
+    # Spaced keys or a removed association: leave those to the registration.
+    section == "[Removed Associations]" && /rakazo-browser/ { odd = 1 }
+    index($0, "=") > 1 && substr($0, index($0, "=") - 1, 1) ~ /[ 	]/ { odd = 1 }
+    section == "[Default Applications]" && index($0, "=") > 1 {
+      type = substr($0, 1, index($0, "=") - 1)
+      if (!(type in first)) first[type] = substr($0, index($0, "=") + 1)
+    }
+    END {
+      if (odd) exit 1
+      n = split("x-scheme-handler/http x-scheme-handler/https text/html x-scheme-handler/about x-scheme-handler/unknown", types, " ")
+      for (i = 1; i <= n; i++) {
+        value = first[types[i]]
+        if (value != "rakazo-browser.desktop" && value != "rakazo-browser.desktop;") exit 1
+      }
+    }
+  ' "${files[@]}"
+}
+if ! browser_handlers_set; then
+  register_browser_handler x-scheme-handler/http
+  register_browser_handler x-scheme-handler/https
+  register_browser_handler text/html
+  if ! xdg-settings set default-web-browser rakazo-browser.desktop >/dev/null 2>&1 \
+    || [[ "$(xdg-settings get default-web-browser 2>/dev/null || true)" != "rakazo-browser.desktop" ]]; then
+    echo "failed to set default web browser to rakazo-browser" >&2
+    exit 1
+  fi
 fi
 
-x11vnc -display :1 -forever -shared -viewonly -nopw -listen 127.0.0.1 -rfbport 5900 -xkb -ncache 0 >/tmp/rakazo/x11vnc.log 2>&1 &
+x11vnc -display :1 -forever -shared -viewonly -repeat -nopw -listen 127.0.0.1 -rfbport 5900 -xkb -ncache 0 >/tmp/rakazo/x11vnc.log 2>&1 &
 
 NOVNC_ROOT=/usr/share/novnc
 if [[ ! -d "$NOVNC_ROOT" ]]; then
@@ -118,7 +154,9 @@ if [[ ! -f "$NOVNC_ROOT/mobile-keyboard.js" ]]; then
   echo "noVNC mobile-keyboard.js is missing from the computer image" >&2
   exit 1
 fi
-websockify --heartbeat=30 --web="$NOVNC_ROOT" --token-plugin=TokenFile --token-source=/tmp/rakazo/view-target-1 0.0.0.0:6080 >/tmp/rakazo/novnc.log 2>&1 &
+# The screen proxy reaches this isolated container through its bridge interface. Started by its
+# full path and without the user's site-packages, so nothing in the home runs inside it.
+PYTHONNOUSERSITE=1 /usr/bin/websockify --heartbeat=30 --web="$NOVNC_ROOT" --token-plugin=TokenFile --token-source=/tmp/rakazo/view-target-1 0.0.0.0:6080 >/tmp/rakazo/novnc.log 2>&1 &
 
 wait "$XVFB_PID"
 echo "Xvfb exited" >&2

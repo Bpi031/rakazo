@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
 import type { Bot, ModelCatalogEntry } from "@rakazo/contracts";
+import { OptionSelect } from "@rakazo/ui-web";
 import { RefreshCw } from "lucide-react";
-import { rpc, withSpaceHeaders } from "../lib/rpc";
+import { withSpaceHeaders } from "../lib/rpc";
+import { useSave } from "../lib/query/query";
+import { useBoundSpaceId, useSpaceRpc } from "../lib/query/space-rpc";
 
 type Budget = { resetsAt: number; models: Array<{ model: string; calls: number; outputReserved: number;
   knownUsageCalls: number; inputTokens: number | null; outputTokens: number | null;
@@ -10,17 +13,29 @@ type Budget = { resetsAt: number; models: Array<{ model: string; calls: number; 
 export function ManagedModelsPanel() {
   const [models, setModels] = useState<ModelCatalogEntry[]>([]);
   const [bots, setBots] = useState<Bot[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  const rpc = useSpaceRpc();
+  const spaceId = useBoundSpaceId();
+  const [loadError, setLoadError] = useState("");
   const [ready, setReady] = useState(false);
   const [budget, setBudget] = useState<Budget | null>(null);
   const [budgetError, setBudgetError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
   const [saved, setSaved] = useState("");
+  const save = useSave({
+    save: ({ botId, modelId }: { botId: string; modelId: string }, client) =>
+      client.bots.update({ botId, modelProvider: modelId ? "codex-foundry" : null,
+        modelId: modelId || null, thinkingLevel: null }),
+    onSaved: (updated) => {
+      setBots((rows) => rows.map((bot) => bot.id === updated.id ? updated : bot));
+      setSaved("Saved for the next agent turn. Active roster jobs are unchanged.");
+    },
+  });
+  const busy = save.pending;
+  const error = loadError || (save.error ? "The model choice was not saved. Please try again." : "");
   async function refresh() {
     setRefreshing(true);
     try {
-      const response = await fetch("/api/managed-models/usage", { credentials: "include", headers: withSpaceHeaders() });
+      const response = await fetch("/api/managed-models/usage", { credentials: "include", headers: withSpaceHeaders({}, spaceId) });
       if (!response.ok || !response.headers.get("content-type")?.includes("application/json")) throw new Error();
       setBudget(await response.json() as Budget); setBudgetError("");
     } catch { setBudget(null); setBudgetError("Usage unavailable; existing limits remain enforced."); }
@@ -30,23 +45,17 @@ export function ManagedModelsPanel() {
     let live = true;
     void Promise.all([rpc.models.list(), rpc.bots.list()]).then(([catalog, rows]) => {
       if (live) { setModels(catalog); setBots(rows); setReady(true); }
-    }).catch(() => { if (live) setError("Models could not be loaded. Please try again."); });
+    }).catch(() => { if (live) setLoadError("Models could not be loaded. Please try again."); });
     return () => { live = false; };
-  }, []);
+  }, [rpc]);
   useEffect(() => { void refresh(); }, []);
-  async function choose(botId: string, modelId: string) {
+  function choose(botId: string, modelId: string) {
     if (busy || (modelId && !models.some((m) => m.id === modelId))) return;
-    setBusy(true); setError(""); setSaved("");
-    try {
-      const updated = await rpc.bots.update({ botId, modelProvider: modelId ? "codex-foundry" : null,
-        modelId: modelId || null, thinkingLevel: null });
-      setBots((rows) => rows.map((bot) => bot.id === botId ? updated : bot));
-      setSaved("Saved for the next agent turn. Active roster jobs are unchanged.");
-    } catch { setError("The model choice was not saved. Please try again."); }
-    finally { setBusy(false); }
+    setSaved("");
+    save.run({ botId, modelId });
   }
-  return <section className="space-y-5 p-5 text-sm">
-    <h2 className="text-base font-semibold">Available Models</h2>
+  return <section className="space-y-5 p-5 text-body">
+    <h2 className="text-body-lg font-semibold">Available Models</h2>
     {error && <p role="alert" className="text-red-700">{error}</p>}
     {saved && <p role="status">{saved}</p>}
     {!ready && !error && <p role="status">Loading models…</p>}
@@ -55,12 +64,14 @@ export function ManagedModelsPanel() {
       {!bots.length && <p>No bots yet.</p>}
       {bots.map((bot) => <label key={bot.id} className="flex flex-wrap items-center justify-between gap-3 border-b border-border py-3">
         <span className="min-w-0 break-words">{bot.name}</span>
-        <select aria-label={"Model for " + bot.name} className="max-w-full border border-border bg-background p-2"
-          disabled={busy} value={bot.modelId ?? ""} onChange={(event) => void choose(bot.id, event.target.value)}>
-          <option value="">Space default</option>
-          {bot.modelId && !models.some((model) => model.id === bot.modelId) && <option value={bot.modelId} disabled>Unavailable model</option>}
-          {models.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}
-        </select>
+        <OptionSelect aria-label={"Model for " + bot.name} className="max-w-full"
+          disabled={busy} value={bot.modelId ?? ""} onValueChange={(value) => void choose(bot.id, value)}
+          options={[
+            { value: "", label: "Space default" },
+            ...(bot.modelId && !models.some((model) => model.id === bot.modelId)
+              ? [{ value: bot.modelId, label: "Unavailable model", disabled: true }] : []),
+            ...models.map((model) => ({ value: model.id, label: model.label })),
+          ]} />
       </label>)}
       <dl className="grid gap-2 text-muted-foreground"><div><dt className="inline font-medium">Selection: </dt><dd className="inline">Next turn</dd></div>
         <div><dt className="inline font-medium">Workspace and history: </dt><dd className="inline">Same bot</dd></div>
@@ -71,7 +82,7 @@ export function ManagedModelsPanel() {
         onClick={() => void refresh()} className="p-2 disabled:opacity-50"><RefreshCw size={16} /></button></div>
     {budgetError && <p role="alert">{budgetError}</p>}
     {!budget && !budgetError && <p role="status">Loading usage…</p>}
-    {budget && <><div className="overflow-x-auto"><table className="w-full text-left text-xs"><thead><tr>
+    {budget && <><div className="overflow-x-auto"><table className="w-full text-left text-label"><thead><tr>
       <th className="py-2 pr-3">Model</th><th className="pr-3">Calls / Limit</th><th className="pr-3">Output Reserved / Limit</th><th>Reported Input / Output</th>
     </tr></thead><tbody>{budget.models.filter((row) => models.some((model) => model.id === row.model)).map((row) => <tr key={row.model} className="border-t border-border">
       <td className="py-3 pr-3">{models.find((model) => model.id === row.model)?.label}
@@ -80,14 +91,14 @@ export function ManagedModelsPanel() {
       <td className="pr-3">{row.outputReserved.toLocaleString()} / {row.limits.output_tokens.toLocaleString()}</td>
       <td>{row.inputTokens?.toLocaleString() ?? "Unavailable"} / {row.outputTokens?.toLocaleString() ?? "Unavailable"}
         <span className="block text-muted-foreground">{row.knownUsageCalls} of {row.calls} calls reported</span></td>
-    </tr>)}</tbody></table></div><p className="text-xs text-muted-foreground">Resets {new Date(budget.resetsAt * 1000).toLocaleString()} · UTC day</p></>}
+    </tr>)}</tbody></table></div><p className="text-label text-muted-foreground">Resets {new Date(budget.resetsAt * 1000).toLocaleString()} <span>(UTC day)</span></p></>}
   </section>;
 }
 
 export function ManagedMemoryPanel() {
-  return <section className="space-y-4 p-5 text-sm">
-    <h2 className="text-base font-semibold">Memory</h2>
-    <dl className="space-y-3"><div><dt className="font-medium">Workspace memory</dt><dd>MEMORY.md · Available</dd></div>
+  return <section className="space-y-4 p-5 text-body">
+    <h2 className="text-body-lg font-semibold">Memory</h2>
+    <dl className="space-y-3"><div><dt className="font-medium">Workspace memory</dt><dd>MEMORY.md <span className="text-muted-foreground">Available</span></dd></div>
       <div><dt className="font-medium">Semantic recall</dt><dd>Not enabled by the operator</dd></div></dl>
   </section>;
 }

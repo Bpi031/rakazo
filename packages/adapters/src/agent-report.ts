@@ -1,9 +1,8 @@
-import { readFileSync } from "node:fs";
+import { readManagedRuntimeAsset } from "./storage/managed-runtime-assets.js";
 import type { SandboxProvider, AdapterContext, ComputerRef } from "@rakazo/adapter-kit";
 import { AgentReportBlock, ReportWorkspacePath } from "@rakazo/contracts";
 import { z } from "zod";
 
-const reader = readFileSync(new URL("./agent-report-reader.py", import.meta.url), "utf8");
 export const reportInput = z.union([
   z.object({ help: z.literal(true) }).strict(),
   z.object({ report_path: ReportWorkspacePath, help: z.literal(false).optional() }).strict(),
@@ -48,7 +47,7 @@ export async function readAgentReport(sandbox: SandboxProvider, computer: Comput
   if (args.help === true) return { guide: REPORT_GUIDE };
   let stdout = ""; let code: number | undefined;
   for await (const event of sandbox.execute(computer, {
-    argv: ["/opt/office-python/bin/python3", "-I", "-c", reader, Buffer.from(args.report_path).toString("base64")],
+    argv: ["/opt/office-python/bin/python3", "-I", "-c", readManagedRuntimeAsset("agent-report-reader.py"), Buffer.from(args.report_path).toString("base64")],
     cwd: "/home/rakazo", timeoutMs: 15_000, unsetEnv: ["PYTHONPATH", "PYTHONHOME", "LD_PRELOAD"],
   }, context)) {
     if (event.type === "stdout") { stdout += event.data; if (Buffer.byteLength(stdout) > 400_000) throw new Error("Report output cap exceeded"); }

@@ -29,7 +29,7 @@ it("allows configured per-bot selection or space default, not hidden providers/r
   expect(managedChoiceAllowed(null, null, null, env)).toBe(true);
   for (const choice of [["openai", "GPT-6.1-Sol", null], [null, "GPT-6.1-Sol", null],
     ["codex-foundry", "hidden", null], ["codex-foundry", "GPT-6.1-Sol", "high"]] as const)
-    expect(managedChoiceAllowed(...choice, env)).toBe(false);
+    expect(managedChoiceAllowed(choice[0], choice[1], choice[2], env)).toBe(false);
 });
 it("blocks direct credential, OAuth, memory and voice mutations before effects", async () => {
   const app = new Hono(); const effect = vi.fn(() => new Response("effect"));

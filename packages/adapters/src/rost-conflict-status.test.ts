@@ -1,7 +1,7 @@
 import { beforeEach, expect, it, vi } from 'vitest';
 import { readRostConflictStatus } from './rost-conflict-status.js';
 import { observeRostJob, RostJobObservationError } from './rost-job-watch.js';
-import { teamDigest } from './team-policy.js';
+import { teamDigest } from './teams/team-policy.js';
 
 vi.mock('./rost-job-watch.js', async () => ({
   ...(await vi.importActual<typeof import('./rost-job-watch.js')>('./rost-job-watch.js')), observeRostJob: vi.fn(),

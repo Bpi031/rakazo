@@ -1,0 +1,69 @@
+appId: com.rakazo.app
+name: Pages
+---
+- runFlow:
+    file: ../subflows/sign-in.yaml
+    env:
+      RAKAZO_ACTIVE_EMAIL: ${RAKAZO_SCREENSHOT_EMAIL}
+- openLink: "rakazo:///thread?botId=${RAKAZO_SCREENSHOT_BOT_ID}&name=Researcher"
+- extendedWaitUntil:
+    visible: "Open Launch dashboard"
+    timeout: 20000
+- takeScreenshot: 01-page-card
+- tapOn: "Open Launch dashboard"
+- extendedWaitUntil:
+    visible: "Share"
+    timeout: 20000
+- takeScreenshot: 02-page-screen
+- tapOn: "Share"
+- extendedWaitUntil:
+    visible: "Who can view"
+    timeout: 10000
+- takeScreenshot: 03-share-sheet
+- tapOn: "Specific people"
+- extendedWaitUntil:
+    visible: "Account email"
+    timeout: 10000
+- takeScreenshot: 03-specific-people
+- tapOn: "Anyone with the link"
+- extendedWaitUntil:
+    visible: "Copy link"
+    timeout: 10000
+- takeScreenshot: 04-share-link
+- tapOn: "Only you"
+- swipe:
+    start: 50%, 24%
+    end: 50%, 90%
+- tapOn: "Review page"
+- extendedWaitUntil:
+    visible: "Comments"
+    timeout: 10000
+- tapOn: "Comments"
+- extendedWaitUntil:
+    visible: "Post comment"
+    timeout: 10000
+- extendedWaitUntil:
+    visible: "Section"
+    timeout: 10000
+- takeScreenshot: 04-page-review
+- tapOn: "Section"
+- extendedWaitUntil:
+    visible: "Launch dashboard"
+    timeout: 10000
+- takeScreenshot: 04-page-review-sections
+- tapOn: "Launch dashboard"
+- openLink: "rakazo:///pages?botId=${RAKAZO_SCREENSHOT_BOT_ID}"
+- extendedWaitUntil:
+    visible: "Launch dashboard"
+    timeout: 20000
+- takeScreenshot: 05-pages-list
+- longPressOn: "Launch dashboard"
+- extendedWaitUntil:
+    visible: "Pin"
+    timeout: 10000
+- takeScreenshot: 06-pages-menu
+- openLink: "rakazo:///shared-pages"
+- extendedWaitUntil:
+    visible: "No pages shared with you yet."
+    timeout: 20000
+- takeScreenshot: 07-shared-pages

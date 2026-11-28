@@ -1,0 +1,262 @@
+import type { ByokTier } from "@rakazo/contracts";
+import {
+  BYOK_TIERS,
+  byokTierPriceCents,
+  MODEL_CREDIT_AMOUNTS,
+  TRIAL_DAYS,
+  TRIAL_SANDBOX_ALLOWANCE_CENTS,
+} from "@rakazo/contracts";
+import { APP_URL, SELF_HOST_GUIDE_PATH } from "./site";
+
+function dollars(cents: number) {
+  const rounded = Math.round(cents);
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: rounded % 100 === 0 ? 0 : 2,
+  }).format(rounded / 100);
+}
+
+const STANDARD = BYOK_TIERS.standard;
+const STANDARD_ANNUAL_CENTS = byokTierPriceCents("standard", "year");
+
+export type PricingPlan = {
+  name: string;
+  price: string;
+  note?: string;
+  /** The same plan billed yearly, for the billing toggle. */
+  yearly?: { price: string; note: string };
+  features: string[];
+  action: { label: string; href: string };
+};
+
+/** Ends each computer hover, so the hours don't read as a meter on everything a bot does. */
+const COMPUTER_TIME_NOTE =
+  "Counts only while your bot uses its computer, which most work doesn't need. It pauses when idle.";
+
+function yearlyPrice(annualCents: number) {
+  return {
+    price: `${dollars(annualCents / 12)}/mo`,
+    note: `${dollars(annualCents)} billed yearly`,
+  };
+}
+
+/** How much less paying yearly costs than twelve monthly payments, in whole percent. */
+export const YEARLY_SAVING_PERCENT =
+  STANDARD.monthlyPriceCents === null || STANDARD.annualPriceCents === null
+    ? null
+    : Math.round((1 - STANDARD.annualPriceCents / (STANDARD.monthlyPriceCents * 12)) * 100);
+
+const SANDBOX_PROVIDERS = [
+  "Docker",
+  "Kubernetes",
+  "Incus",
+  "Boat",
+  "Boxd",
+  "CreateOS",
+  "Daytona",
+  "E2B",
+  "InstaBox",
+  "Novita",
+  "Railway",
+  "Wuying",
+  "Apple container",
+];
+
+const CREDITS_PRICE = `From ${dollars(MODEL_CREDIT_AMOUNTS[0])}/mo`;
+
+const SELF_HOSTED_PLAN: PricingPlan = {
+  name: "Self-hosted",
+  price: "Free",
+  features: [
+    "Open source, Apache-2.0",
+    "Your server or your own computer",
+    "Bot computers in Docker or a sandbox",
+    "Any model you connect",
+  ],
+  action: { label: "Self-hosting guide", href: SELF_HOST_GUIDE_PATH },
+};
+
+const STANDARD_YEARLY =
+  STANDARD_ANNUAL_CENTS === null ? undefined : yearlyPrice(STANDARD_ANNUAL_CENTS);
+
+const OWN_MODEL_PLAN: PricingPlan = {
+  name: "Your model",
+  price: STANDARD.monthlyPriceCents === null ? "Free" : `${dollars(STANDARD.monthlyPriceCents)}/mo`,
+  note: STANDARD_YEARLY && `${STANDARD_YEARLY.price} billed yearly`,
+  yearly: STANDARD_YEARLY,
+  features: [
+    "Hosted by us",
+    "Claude, ChatGPT, or any API key",
+    "Bot computer included",
+    `${TRIAL_DAYS}-day free trial`,
+  ],
+  action: { label: "Start free trial", href: APP_URL },
+};
+
+export const PRICING_PLANS: PricingPlan[] = [SELF_HOSTED_PLAN, OWN_MODEL_PLAN];
+
+/** The less common hosted option, shown below the main plans. */
+export const CREDITS_PLAN: PricingPlan = {
+  name: "Rakazo credits",
+  price: CREDITS_PRICE,
+  note: "Model usage with no markup, plus computer hours",
+  features: [
+    "Hosted by us",
+    "No model account needed",
+    "Model usage at the provider's price, no markup",
+    "Bot computer hours included",
+    "Top up any time",
+  ],
+  action: { label: "Get started", href: APP_URL },
+};
+
+/** A comparison cell: included, not included, or a short value with optional detail on hover. */
+export type PricingCell = boolean | string | { label: string; detail: string };
+
+const TIERS = (Object.keys(BYOK_TIERS) as ByokTier[]).flatMap((tier) => {
+  const monthly = byokTierPriceCents(tier, "month");
+  if (monthly === null && tier !== "standard") return [];
+  const annual = byokTierPriceCents(tier, "year");
+  const terms = BYOK_TIERS[tier];
+  return [
+    {
+      name: terms.name,
+      monthlyCents: monthly ?? 0,
+      price: monthly === null ? "Free" : `${dollars(monthly)}/mo`,
+      yearlyPrice: annual === null ? undefined : yearlyPrice(annual).price,
+      computerAllowanceCents: terms.computerAllowanceCents,
+    },
+  ];
+});
+
+/** Compare allowances at the same size without assuming a provider's hourly rate. */
+function tierComputerCell(tier: (typeof TIERS)[number]): PricingCell {
+  const usage = tier.computerAllowanceCents / STANDARD.computerAllowanceCents;
+  return {
+    label: usage === 1 ? "Included" : `${usage}× the allowance`,
+    detail: `${dollars(tier.computerAllowanceCents)} in computer time a month. ${COMPUTER_TIME_NOTE}`,
+  };
+}
+
+const COLUMN_COUNT = TIERS.length + 2;
+const included = (cell: PricingCell): PricingCell[] => Array(COLUMN_COUNT).fill(cell);
+
+export const PRICING_COMPARISON = {
+  // Short button labels so they fit the narrow columns.
+  columns: [
+    {
+      name: SELF_HOSTED_PLAN.name,
+      price: SELF_HOSTED_PLAN.price,
+      action: { ...SELF_HOSTED_PLAN.action, label: "Self-host" },
+    },
+    ...TIERS.map((tier) => ({
+      name: tier.name,
+      price: tier.price,
+      yearlyPrice: tier.yearlyPrice,
+      action: {
+        ...OWN_MODEL_PLAN.action,
+        label: "Start trial",
+        ariaLabel: `Start ${tier.name} trial`,
+      },
+    })),
+    { name: CREDITS_PLAN.name, price: CREDITS_PRICE, action: CREDITS_PLAN.action },
+  ],
+  /** Most important first: what sets Rakazo apart, then the limits. */
+  rows: [
+    {
+      feature: "Any model",
+      cells: [
+        ...included(true).slice(1),
+        { label: "Our catalog", detail: "Credits cover the models Rakazo offers" },
+      ],
+    },
+    {
+      feature: "Sandbox",
+      cells: [
+        {
+          label: `Your computer or any of ${SANDBOX_PROVIDERS.length}`,
+          detail: `Your own computer through the desktop app, or ${SANDBOX_PROVIDERS.join(", ")}`,
+        },
+        ...TIERS.map(() => "Included"),
+        "Included",
+      ],
+    },
+    {
+      feature: "Model usage",
+      cells: [
+        "Unlimited",
+        ...TIERS.map(() => "Unlimited"),
+        { label: "Credits", detail: "Charged at the provider's price, with no markup" },
+      ],
+    },
+    { feature: "Integrations and MCP", cells: included(true) },
+    {
+      feature: "Bot computer",
+      hint: "A computer your bot can use to run code, edit files, and browse.",
+      cells: [
+        "Unlimited",
+        ...TIERS.map(tierComputerCell),
+        {
+          label: "Included",
+          detail: `Your computer allowance grows with your monthly plan. ${COMPUTER_TIME_NOTE}`,
+        },
+      ],
+    },
+    { feature: "EU hosting", cells: ["Your choice", ...TIERS.map(() => true), true] },
+    {
+      feature: "Free trial",
+      cells: [
+        false,
+        ...TIERS.map(() => ({
+          label: `${TRIAL_DAYS} days`,
+          detail: `Includes ${dollars(TRIAL_SANDBOX_ALLOWANCE_CENTS)} in computer time`,
+        })),
+        false,
+      ],
+    },
+    { feature: "Open source", cells: included(true) },
+  ] satisfies { feature: string; hint?: string; cells: PricingCell[] }[],
+};
+
+export const PRICE_OFFERS: readonly (
+  | { name: string; monthlyCents: number }
+  | { name: string; fromMonthlyCents: number; description: string }
+)[] = [
+  { name: SELF_HOSTED_PLAN.name, monthlyCents: 0 },
+  ...TIERS.map((tier) => ({ name: tier.name, monthlyCents: tier.monthlyCents })),
+  {
+    name: CREDITS_PLAN.name,
+    fromMonthlyCents: MODEL_CREDIT_AMOUNTS[0],
+    description: CREDITS_PLAN.note ?? "",
+  },
+];
+
+function markdownCell(cell: PricingCell) {
+  if (cell === true) return "Yes";
+  if (cell === false) return "—";
+  return typeof cell === "string"
+    ? cell.replaceAll("\n", ", ")
+    : `${cell.label.replaceAll("\n", ", ")} (${cell.detail})`;
+}
+
+function planMarkdown(plan: PricingPlan) {
+  return `## ${plan.name}
+
+${plan.price}${plan.note ? ` (${plan.note})` : ""}
+
+${plan.features.map((feature) => `- ${feature}`).join("\n")}
+
+[${plan.action.label}](${new URL(plan.action.href, "https://rakazo.com").href})`;
+}
+
+export const PRICING_MARKDOWN = `# Rakazo pricing
+
+${[...PRICING_PLANS, CREDITS_PLAN].map(planMarkdown).join("\n\n")}
+
+## Compare plans
+
+| | ${PRICING_COMPARISON.columns.map((column) => `${column.name} (${column.price})`).join(" | ")} |
+| --- | ${PRICING_COMPARISON.columns.map(() => "---").join(" | ")} |
+${PRICING_COMPARISON.rows.map((row) => `| ${"hint" in row ? `${row.feature} (${row.hint})` : row.feature} | ${row.cells.map(markdownCell).join(" | ")} |`).join("\n")}
+`;

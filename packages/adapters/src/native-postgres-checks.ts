@@ -40,8 +40,10 @@ export async function nativeChecks(db:PrismaClient, actor:Actor, other:Actor, bo
   const claim={schema:'rakazo/completion/v1',kind:'artifacts',outcome:'complete',message:'Draft files',deliverables:[{path:'workspace/draft.xlsx',sha256:'a'.repeat(64)}],evidence:[{kind:'validation',path:'workspace/validation.json',sha256:'a'.repeat(64)}]};
   ok((await service.receipt(first.id,claim)).status==='files_verified');
   const view=await service.view(actor,botId);
-  const completion=view.records.find(r=>r.kind==='native_completion')!.payload as any;
-  ok(completion.validationAssessment==='model_supplied_unverified'&&completion.policyApprovalGranted===false);
+  const record=view.records.find(r=>r.kind==='native_completion');
+  const completion=record?.payload;
+  ok(completion && typeof completion === 'object' && !Array.isArray(completion) &&
+    completion.validationAssessment==='model_supplied_unverified'&&completion.policyApprovalGranted===false);
   ok((await service.receipt(first.id,{...claim,deliverables:[{path:'workspace/draft.xlsx',sha256:'b'.repeat(64)}]})).status==='needs_review');
   await reject(service.receipt(first.id,{...claim,deliverables:[]}));
   await service.finish(first.id,{completed:true,threadId:'native-thread',turnId:'native-turn'});
@@ -49,7 +51,7 @@ export async function nativeChecks(db:PrismaClient, actor:Actor, other:Actor, bo
   await choose({mode:'execute',persistence:true,action:'fork'});
   const next=await run();const fork=await service.prepare(next.id,'fingerprint');
   ok(fork.previous?.threadId==='native-thread'&&fork.action==='fork'&&fork.mode==='plan');
-  ok((await service.view(actor,botId)).preferences && ((await service.view(actor,botId)).preferences as any).action==='none');
+  ok((await service.view(actor,botId)).preferences.action==='none');
   await db.run.update({where:{id:next.id},data:{status:'cancelled'}});
   await service.finish(next.id,{completed:true,threadId:'not-resumable',turnId:'cancelled'});
   const third=await run();ok(!(await service.prepare(third.id,'fingerprint')).previous);

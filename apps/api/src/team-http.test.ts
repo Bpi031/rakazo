@@ -1,9 +1,5 @@
 import { expect, it, vi } from "vitest";
 import { Hono } from "hono";
-vi.mock("@rakazo/adapters", async () => {
-  const policy = await import("../../../../packages/adapters/src/team-policy.js");
-  return { teamHttpSchemas: policy.teamHttpSchemas };
-});
 import { mountTeamHttp, mountDisabledTeamHttp } from "./team-http.js";
 it("returns authenticated structured disabled evidence instead of a text 404", async () => {
   const app = new Hono(); mountDisabledTeamHttp(app, async (req) => req.headers.has("cookie") ? {} : null);

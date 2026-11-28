@@ -1,48 +1,51 @@
-type DemoCardLine = {
-  k: string;
-  v: string;
+import type { DemoTextKey } from "./i18n/demo-text";
+
+/** `Text` is `DemoTextKey` for the English seed, so every seeded string must have a translation. */
+export type DemoCardLine<Text extends string = string> = {
+  k: Text;
+  v: Text;
 };
 
-export type DemoMessage =
-  | { type: "time"; text: string }
-  | { type: "meta"; text: string }
-  | { type: "user"; text: string }
-  | { type: "bot"; text: string }
+export type DemoMessage<Text extends string = string> =
+  | { type: "time"; text: Text }
+  | { type: "meta"; text: Text }
+  | { type: "user"; text: Text }
+  | { type: "bot"; text: Text }
   | { type: "typing" }
-  | { type: "computer"; text: string }
-  | { type: "card"; lines: DemoCardLine[] };
+  | { type: "computer"; text: Text }
+  | { type: "card"; lines: DemoCardLine<Text>[] };
 
-export type DemoRoutine = {
-  name: string;
-  when: string;
-  instruction?: string;
+export type DemoRoutine<Text extends string = string> = {
+  name: Text;
+  when: Text;
+  instruction?: Text;
   active?: boolean;
-  runs?: DemoRoutineRun[];
+  runs?: DemoRoutineRun<Text>[];
 };
 
-export type DemoRoutineRun = {
+export type DemoRoutineRun<Text extends string = string> = {
   mark: string;
   color: string;
-  text: string;
-  time: string;
+  text: Text;
+  time: Text;
 };
 
-export type DemoScreen = {
+export type DemoScreen<Text extends string = string> = {
   host: string;
-  title: string;
-  lines: string[];
+  title: Text;
+  lines: Text[];
 };
 
-export type DemoBot = {
+export type DemoBot<Text extends string = string> = {
   id: string;
   name: string;
   color: string;
-  time: string;
-  preview: string;
-  routines: DemoRoutine[];
-  screen: DemoScreen;
-  thread: DemoMessage[];
-  reply: string;
+  time: Text;
+  preview: Text;
+  routines: DemoRoutine<Text>[];
+  screen: DemoScreen<Text>;
+  thread: DemoMessage<Text>[];
+  reply: Text;
 };
 
 export type RosterBot = {
@@ -52,7 +55,7 @@ export type RosterBot = {
   desc: string;
 };
 
-export const DEMO_BOTS: DemoBot[] = [
+export const DEMO_BOTS: DemoBot<DemoTextKey>[] = [
   {
     id: "chief",
     name: "Chief of Staff",
@@ -307,56 +310,5 @@ export const DEMO_BOTS: DemoBot[] = [
       },
     ],
     reply: "i will reproduce it and attach the steps to the issue.",
-  },
-];
-
-export const DEMO_ROSTER: RosterBot[] = [
-  {
-    name: "Sales Outbound",
-    color: "#F5A03C",
-    slug: "rakazo/sales-outbound",
-    desc: "Researches accounts overnight, scores intent, drafts in your voice, leaves a review list.",
-  },
-  {
-    name: "Inbox Manager",
-    color: "#6A6BF5",
-    slug: "rakazo/inbox-manager",
-    desc: "Archives the noise, replies to routine threads, parks drafts that need your read.",
-  },
-  {
-    name: "Talent Scout",
-    color: "#3B82F6",
-    slug: "rakazo/talent-scout",
-    desc: "Reads every applicant, shortlists against your bar, writes the intro emails.",
-  },
-  {
-    name: "Expense Manager",
-    color: "#F2622A",
-    slug: "rakazo/expense-manager",
-    desc: "Matches receipts to charges, files the report, asks before guessing.",
-  },
-  {
-    name: "Coding Agent",
-    color: "#5B6EE1",
-    slug: "rakazo/coding-agent",
-    desc: "Interviews you about the repo and the change, then works on your machine and checks back before going further.",
-  },
-  {
-    name: "Account Manager",
-    color: "#9B5CF6",
-    slug: "rakazo/account-manager",
-    desc: "Keeps renewal context, answers known questions, escalates the rest.",
-  },
-  {
-    name: "Paid Media",
-    color: "#3EC5A8",
-    slug: "rakazo/paid-media",
-    desc: "Watches spend daily, pauses what is not converting, reports what changed.",
-  },
-  {
-    name: "Chief of Staff",
-    color: "#8B93A8",
-    slug: "rakazo/chief-of-staff",
-    desc: "Runs the week: briefings, bookings, and handoffs between your other bots.",
   },
 ];

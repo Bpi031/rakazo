@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { deferred } from "@rakazo/core/test-async";
 import type { SpaceMemoryConfig, VoiceStatus } from "@rakazo/contracts";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -60,20 +61,10 @@ it("keeps optional services working in unmanaged deployments", async () => {
 it.each(["managed", "revision", "unmount"])(
   "ignores late optional configuration after %s",
   async (reason) => {
-    let memoryDone!: (value: SpaceMemoryConfig | null) => void;
-    let voiceDone!: (value: VoiceStatus) => void;
-    vi.mocked(rpc.memory.providerConfig).mockImplementation(
-      () =>
-        new Promise((done) => {
-          memoryDone = done;
-        }),
-    );
-    vi.mocked(rpc.voice.status).mockImplementation(
-      () =>
-        new Promise((done) => {
-          voiceDone = done;
-        }),
-    );
+    const memory = deferred<SpaceMemoryConfig | null>();
+    const voice = deferred<VoiceStatus>();
+    vi.mocked(rpc.memory.providerConfig).mockImplementation(() => memory.promise);
+    vi.mocked(rpc.voice.status).mockImplementation(() => voice.promise);
     const update = await render(false);
     if (reason === "managed") await update(true);
     if (reason === "revision") revision.current += 1;
@@ -81,8 +72,8 @@ it.each(["managed", "revision", "unmount"])(
     setMemory.mockClear();
     setVoice.mockClear();
     await act(async () => {
-      memoryDone({} as SpaceMemoryConfig);
-      voiceDone({} as VoiceStatus);
+      memory.resolve({} as SpaceMemoryConfig);
+      voice.resolve({} as VoiceStatus);
     });
     expect(setMemory).not.toHaveBeenCalled();
     expect(setVoice).toHaveBeenCalledTimes(reason === "revision" ? 1 : 0);
